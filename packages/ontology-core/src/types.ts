@@ -121,6 +121,7 @@ export interface MetadataRepository {
   // 动作 / 函数
   createAction(def: ActionType): Promise<void>;
   createFunction(def: OntologyFunction): Promise<void>;
+  getFunction(apiName: string): Promise<OntologyFunction | null>;
 }
 
 // ---- 接口方法运行时引擎契约 ----

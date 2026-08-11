@@ -1,0 +1,15 @@
+{
+  "name": "@ontology/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@ontology/ontology-core": "*",
+    "@ontology/data-integration": "*",
+    "pg": "^8.12.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

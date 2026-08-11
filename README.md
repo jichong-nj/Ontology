@@ -15,6 +15,8 @@
 | S5 AI 决策编排 | [S5-ai-orchestration.md](docs/S5-ai-orchestration.md) | AIP（重要） | 语义搜索 / LLM 函数 / 智能体 / NL2Query |
 | S6 权限与治理 | [S6-governance.md](docs/S6-governance.md) | Foundry Security / Ontology Manager | RBAC / 对象级授权 / 审计 |
 | S7 技术栈选型 | [S7-tech-stack.md](docs/S7-tech-stack.md) | — | 语言/框架/运行时工程约束 |
+| S1 接口文档（实现态） | [S1-api.md](docs/S1-api.md) | — | 映射 SDK / 质量门禁 |
+| S2 接口文档（实现态） | [S2-api.md](docs/S2-api.md) | — | 元数据仓库 / 方法运行时 |
 
 ## 架构
 

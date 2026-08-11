@@ -31,10 +31,12 @@ export class DefaultInterfaceMethodEngine implements InterfaceMethodEngine {
         error: `No implementation bound for ${ctx.interfaceApi}.${ctx.methodApi} on ${ctx.objectType}`,
       };
     }
-    // 2. 沙箱执行（资源/IO 受限，详见 S2 F2.6）
-    //    运行时分期（见 S2 F2.6 / S5 F5.2）：
-    //    - resolve 阶段对 python 函数仍返回其 apiName（可见、可规划）；
-    //    - invoke/execute 阶段仅支持 language='typescript'，python 由 FunctionSandbox 返回"未实现"。
+    // 2. 运行时分期（见 S2 F2.6 / S5 F5.2）：第一期仅执行 typescript，python 仅占位。
+    const fn = await this.repo.getFunction(fnApi);
+    if (fn && fn.language === 'python') {
+      return { ok: false, error: 'Python 函数暂未实现（第一期仅支持 TypeScript 沙箱）', executedFunction: fnApi };
+    }
+    // 3. 沙箱执行（资源/IO 受限）
     try {
       const value = await this.sandbox.execute(fnApi, ctx.args);
       return { ok: true, value, executedFunction: fnApi };
