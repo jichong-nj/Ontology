@@ -1,0 +1,21 @@
+# 依赖
+node_modules/
+.pnp/
+.pnp.js
+
+# 构建产物
+dist/
+build/
+*.tsbuildinfo
+
+# 运行时/环境
+.env
+.env.local
+*.log
+
+# 编辑器/IDE
+.vscode/
+.idea/
+
+# 项目本地数据（非源码，按规范不入库）
+.codebuddy/
