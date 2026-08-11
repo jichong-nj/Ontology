@@ -59,6 +59,8 @@ CREATE TABLE object_write (
   actor       TEXT NOT NULL,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 每个对象实例在可写侧仅保留一行；修改属性时合并而非覆盖。
+CREATE UNIQUE INDEX uq_object_write_inst ON object_write (object_type, object_rid);
 
 CREATE TABLE interface_def (
   api_name     TEXT PRIMARY KEY,

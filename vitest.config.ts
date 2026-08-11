@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['packages/*/src/**/*.test.ts'],
+    include: ['packages/*/src/**/*.test.ts', 'apps/*/src/**/*.test.ts'],
     // 真实 PG 集成测试，串行避免表竞争
     fileParallelism: false,
     hookTimeout: 20000,

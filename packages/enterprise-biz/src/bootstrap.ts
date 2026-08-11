@@ -52,6 +52,12 @@ export async function seedEnterpriseBiz(pool: Pool): Promise<PostgresMetadataRep
   }
 
   const byApi = new Map(objectTypes.map((o) => [o.apiName, o]));
+  // 1) 先创建全部对象类型（含无外部数据源映射、由平台内部生成的类型，如 Alert）
+  for (const ot of objectTypes) {
+    await repo.createObjectType(ot);
+    console.log(`  - 对象类型已创建: ${ot.apiName}`);
+  }
+  // 2) 再为带映射的对象类型注册 S1 数据源字段映射
   for (const m of objectTypeMappings) {
     const full = byApi.get(m.objectType.apiName);
     if (!full) {

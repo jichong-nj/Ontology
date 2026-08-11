@@ -212,8 +212,11 @@ export class PostgresMetadataRepository implements MetadataRepository {
   }
 
   async writeObjectPatch(objectType: string, objectRid: string, patch: unknown, actor: string): Promise<void> {
+    // 每实例一行：存在则合并 patch（修改单个属性不覆盖其他属性），不存在则插入。
     await this.pool.query(
-      `INSERT INTO object_write (object_type, object_rid, patch, actor) VALUES ($1,$2,$3,$4)`,
+      `INSERT INTO object_write (object_type, object_rid, patch, actor) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (object_type, object_rid)
+       DO UPDATE SET patch = object_write.patch || EXCLUDED.patch, actor = EXCLUDED.actor`,
       [objectType, objectRid, JSON.stringify(patch), actor],
     );
   }
