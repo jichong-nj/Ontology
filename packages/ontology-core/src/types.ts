@@ -14,10 +14,36 @@ export interface PropertyDef {
   derived?: boolean;
   // 派生属性的两种计算方式（二选一）：
   // - reducerFn: 引用一个 OntologyFunction.apiName，由函数引擎计算（推荐，可复用、可沙箱）；
-  // - reducer: 内联安全表达式字符串（轻量场景）。
+  // - reducer: 内联安全表达式字符串（轻量场景）。本平台用 reducer 承载结构化 DerivedSpec 的 JSON 序列化。
   reducer?: string;
   reducerFn?: string;      // 关联 OntologyFunction.apiName（派生属性↔函数 闭环）
   sourceMapping?: string;  // 关联 S1 fieldMapping（基础属性来源）
+}
+
+// 派生属性计算规格（序列化为 PropertyDef.reducer 的 JSON 字符串）。
+// 当前支持算子：
+// - countLinks: 统计某关系类型中以本对象为 source/target 的实例数量（如"部门人数"）。
+// - avgLinks:   通过某关系聚合对端对象的某一数值属性求平均值（如"部门平均上班时间"），需 prop 指定属性。
+export interface DerivedSpec {
+  op: 'countLinks' | 'countObject' | 'sumObject' | 'avgLinks' | 'expression';
+  // countLinks / avgLinks 专用
+  linkType?: string;        // 关系类型 apiName
+  side?: 'source' | 'target'; // 本对象在关系中的角色（部门人数：target）
+  prop?: string;            // avgLinks 专用：对端对象上用于求平均的数值属性 apiName
+  // expression 专用（轻量、仅占位，第一期不执行）
+  expr?: string;
+}
+
+export function parseDerivedSpec(reducer?: string): DerivedSpec | null {
+  if (!reducer) return null;
+  try {
+    const v = JSON.parse(reducer);
+    if (v && typeof v === 'object' && 'op' in v) return v as DerivedSpec;
+  } catch {
+    // 兼容旧版纯表达式字符串
+    return { op: 'expression', expr: reducer };
+  }
+  return null;
 }
 
 export interface ObjectType {
@@ -26,6 +52,10 @@ export interface ObjectType {
   description?: string;
   properties: PropertyDef[];
   implementsInterfaces: string[];
+  // 内嵌 S1 映射：对象类型直接携带其来源（由 with-mapping 创建时写入）。
+  // 字段级映射记录在 properties[].sourceMapping；源实例由 S1 下推（instanceSource='source'）。
+  sourceConnectionId?: string;
+  sourceTable?: string;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -101,14 +131,26 @@ export interface MetadataRepository {
   listObjectTypes(): Promise<ObjectType[]>;
   getObjectType(apiName: string): Promise<ObjectType | null>;
   createObjectType(def: ObjectType): Promise<void>;
+  updateObjectType(apiName: string, def: ObjectType): Promise<void>;
+  deleteObjectType(apiName: string): Promise<void>;
   // 关系类型
   listLinkTypes(): Promise<LinkType[]>;
+  getLinkType(apiName: string): Promise<LinkType | null>;
   createLinkType(def: LinkType): Promise<void>;
+  deleteLinkType(apiName: string): Promise<void>;
   // 关系实例（本体侧维护，供 S3 图谱探索）
   createLinkInstance(linkType: string, sourceRid: string, targetRid: string): Promise<void>;
   listLinkInstances(linkType: string, sourceRid?: string): Promise<{ sourceRid: string; targetRid: string }[]>;
   // 本体可写侧：Action effect.kind='write' 落此处（不写回只读源端）
   writeObjectPatch(objectType: string, objectRid: string, patch: unknown, actor: string): Promise<void>;
+  // 清空某对象类型的全部可写侧实例（演示数据重灌用，生产应由 Action 驱动）
+  clearObjectWrites(objectType: string): Promise<void>;
+  // 清空某关系类型的全部实例
+  clearLinkInstances(linkType: string): Promise<void>;
+  // 计算派生属性（countLinks / avgLinks / expression 等）
+  computeDerived(objectType: string, propApiName: string, objectRid: string): Promise<{ value: unknown }>;
+  // 读取某对象类型下所有实例的（最新一次 patch 合并后的）属性，供函数/动作读取实例数据
+  listObjectProperties(objectType: string): Promise<{ objectRid: string; properties: Record<string, unknown> }[]>;
   // 接口与实现
   listInterfaces(): Promise<InterfaceDef[]>;
   setObjectInterface(objectApi: string, interfaceApi: string): Promise<void>;
@@ -120,8 +162,31 @@ export interface MetadataRepository {
   getObjectsImplementing(interfaceApi: string): Promise<string[]>;
   // 动作 / 函数
   createAction(def: ActionType): Promise<void>;
+  getAction(apiName: string): Promise<ActionType | null>;
   createFunction(def: OntologyFunction): Promise<void>;
   getFunction(apiName: string): Promise<OntologyFunction | null>;
+  // 告警规则（后台定时任务；条件命中后由可配置的 Action 生成告警对象）
+  createAlertRule(def: AlertRule): Promise<void>;
+  listAlertRules(): Promise<AlertRule[]>;
+}
+
+// 告警规则：后台定时任务。周期执行某个可配置 Function（条件评估），
+// 当返回「命中对象」时调用某个可配置 Action 生成告警对象（写入本体可写侧）。
+export interface AlertRule {
+  apiName: string;
+  displayName: string;
+  enabled: boolean;
+  // 触发周期（cron 或简单间隔）。第一期支持 intervalSeconds（简版，便于演示）。
+  intervalSeconds: number;
+  // 可配置的条件评估函数（必须是已注册的 OntologyFunction apiName）
+  functionApiName: string;
+  // 可配置的动作：命中后由该 Action 生成告警对象
+  actionApiName: string;
+  // 传入条件函数的参数（如 threshold）
+  params?: Record<string, unknown>;
+  // 告警对象写入的目标对象类型（如 Alert）
+  alertObjectType: string;
+  version: number;
 }
 
 // ---- 接口方法运行时引擎契约 ----
@@ -144,7 +209,9 @@ export interface MethodInvocationResult {
 
 // 函数沙箱：隔离执行 OntologyFunction（限制资源与 IO，详见 S2 F2.6）
 // 分期：第一期 execute 仅对 language='typescript' 执行；language='python' 抛"未实现"（接口保留）。
+export type TsFn = (args: Record<string, unknown>) => unknown | Promise<unknown>;
 export interface FunctionSandbox {
+  register(fnApiName: string, fn: TsFn): void;
   execute(fnApiName: string, args: Record<string, unknown>): Promise<unknown>;
 }
 

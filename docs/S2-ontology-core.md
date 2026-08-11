@@ -107,6 +107,26 @@ S2 是平台的语义中枢。它把现实世界的实体与关系建模为**对
 - 执行全程受 S6 权限约束（调用前校验调用方对该对象/方法的权限）。
 - S5 智能体可仅调用 `resolve` 做步骤规划，再决定是否 `invoke` 执行。
 
+### F2.8 告警规则（后台定时任务 / 可观测）
+**用户故事**：作为治理运营，我想配置一条「定时巡检规则」——周期性调用某个**可配置的条件评估函数**判断对象是否异常；当命中时，调用某个**可配置的动作**生成告警对象，从而把"离线计算 + 异常发现 + 落地告警"自动化，而非手动触发。
+
+**输入**：`alert_rule`（`apiName`、`enabled`、`intervalSeconds`、`functionApiName`、`actionApiName`、`params`、`alertObjectType`）。
+**输出**：周期性地在 `object_write` 写入 `Alert` 对象（本体可写侧，不回写只读源端）。
+
+**规则**：
+- `functionApiName` 与 `actionApiName` 均通过 `apiName` 解耦引用，逻辑与调度分离，可热替换（对标 Foundry Ontology 的 Functions + Actions + Scheduling）。
+- 调度器 `AlertScheduler` 按 `intervalSeconds` 节流执行；`enabled=false` 的规则被跳过。
+- 条件函数返回形如 `{ flagged: [{rid, ...}] }` 的命中集合；调度器提取命中项后调用 `actionApiName` 落地告警对象。
+- 源端只读，`Alert` 对象只写本体可写侧 `object_write`。
+
+### 实现状态（截至 2026-08-11）
+- ✅ 派生属性：支持 `countLinks`（部门人数）、`avgLinks`（部门平均上班时间）算子，配置即生效（`Department.employeeCount` / `Department.avgWorkHours`）。
+- ✅ 离职风险函数 `evaluateDimissionRisk`：按部门计算平均上班时间，低于阈值（默认 80%）置 `Employee.dimissionRisk=true`。
+- ✅ 告警规则 `dimissionRiskRule` + 动作 `createDimissionAlert`：后台定时（60s）巡检，命中后生成 `Alert` 对象（已实现端到端，含 9 项 e2e 测试）。
+- ✅ 派生属性 API：`GET /api/s2/object-types/:apiName/derived/:propApiName?rid=`
+- ✅ 函数触发 API：`POST /api/s2/functions/:fnApiName/invoke`
+- ✅ 告警 API：`GET /api/s2/alert-rules`、`POST /api/s2/alert-rules/run`、`GET /api/s2/alerts`
+
 ## 4. 接口契约
 
 ```typescript
@@ -210,7 +230,11 @@ export interface MetadataRepository {
   getObjectsImplementing(interfaceApi: string): Promise<string[]>;
   // 动作 / 函数
   createAction(def: ActionType): Promise<void>;
+  getAction(apiName: string): Promise<ActionType | null>;
   createFunction(def: OntologyFunction): Promise<void>;
+  // 告警规则（后台定时任务）
+  createAlertRule(def: AlertRule): Promise<void>;
+  listAlertRules(): Promise<AlertRule[]>;
 }
 
 // ---- 接口方法运行时引擎契约 ----
@@ -230,7 +254,21 @@ export interface MethodInvocationResult {
 }
 
 export interface FunctionSandbox {
+  register(fnApiName: string, fn: TsFn): void;
   execute(fnApiName: string, args: Record<string, unknown>): Promise<unknown>;
+}
+
+// 告警规则：后台定时任务。周期执行可配置 Function 评估条件，命中后由可配置 Action 生成告警对象。
+export interface AlertRule {
+  apiName: string;
+  displayName: string;
+  enabled: boolean;
+  intervalSeconds: number;
+  functionApiName: string;   // 可配置的条件评估函数
+  actionApiName: string;     // 可配置的落地动作
+  params?: Record<string, unknown>;
+  alertObjectType: string;   // 告警对象写入的目标类型
+  version: number;
 }
 
 export interface InterfaceMethodEngine {
@@ -248,6 +286,11 @@ export interface InterfaceMethodEngine {
 // GET    /api/s2/interfaces
 // POST   /api/s2/actions
 // POST   /api/s2/functions
+// GET    /api/s2/object-types/:apiName/derived/:propApiName?rid=
+// POST   /api/s2/functions/:fnApiName/invoke
+// GET    /api/s2/alert-rules
+// POST   /api/s2/alert-rules/run
+// GET    /api/s2/alerts
 ```
 
 ## 5. 对比 Palantir 的裁剪说明

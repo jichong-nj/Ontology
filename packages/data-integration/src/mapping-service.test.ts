@@ -1,9 +1,9 @@
-// S1 集成测试：真实 PostgreSQL（映射配置 + 质量门禁）
+// S1 集成测试：真实 PostgreSQL（数据源接入 + 映射内嵌质量门禁）
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { Pool } from 'pg';
 import { PostgresMetadataRepository } from '@ontology/ontology-core';
 import { PostgresMappingStore, MappingService } from './index';
-import type { SourceConnection, ObjectMapping } from './mapping-model';
+import type { SourceConnection, CreateObjectTypeWithMappingInput } from './index';
 
 const DATABASE_URL = process.env.DATABASE_URL ??
   'postgresql://ontology:ontology@localhost:5432/ontology';
@@ -41,37 +41,32 @@ describe('S1 MappingService', () => {
     await expect(svc.registerSourceConnection(bad)).rejects.toThrow(/readOnly/);
   });
 
-  it('映射质量门禁：对象不存在→failed；属性不全→warning；完整→passed', async () => {
+  it('映射内嵌质量门禁：属性不全→warning；完整→passed', async () => {
     await svc.registerSourceConnection({
       id: 'src1', displayName: 'HR DB', kind: 'database',
       readOnly: true, connectionMeta: {}, secretRef: 'vault://hr',
       status: 'connected', createdAt: '', updatedAt: '',
     });
 
-    // 对象类型未创建 → failed
-    const mMissing: ObjectMapping = {
-      id: 'm1', objectType: 'Person', sourceConnectionId: 'src1', sourceTable: 't_person',
-      fieldMappings: [{ property: 'name', sourceColumn: 'name' }],
-      incrementalMeta: { syncMode: 'full' }, qualityStatus: 'unknown',
-      createdAt: '', updatedAt: '',
+    // 创建对象（name 属性），映射缺属性 → warning（来源仍内嵌进对象类型）
+    const base: CreateObjectTypeWithMappingInput = {
+      objectType: {
+        apiName: 'Person', displayName: '人员', description: '',
+        properties: [{ apiName: 'name', displayName: '姓名', type: 'string', required: true }],
+        implementsInterfaces: [], version: 1, createdAt: '', updatedAt: '',
+      },
+      sourceConnectionId: 'src1', sourceTable: 't_person',
+      fieldMappings: [{ property: 'age', sourceColumn: 'age' }],
     };
-    const r1 = await svc.createObjectMapping(mMissing);
-    expect(r1.qualityStatus).toBe('failed');
-
-    // 创建对象（name 属性），映射缺属性 → warning
-    await metadata.createObjectType({
-      apiName: 'Person', displayName: '人员',
-      properties: [{ apiName: 'name', displayName: '姓名', type: 'string', required: true }],
-      implementsInterfaces: [], version: 1, createdAt: '', updatedAt: '',
-    });
-    const r2 = await svc.createObjectMapping({
-      ...mMissing, id: 'm2', fieldMappings: [{ property: 'age', sourceColumn: 'age' }],
-    });
+    const r2 = await svc.createObjectTypeWithMapping(base);
     expect(r2.qualityStatus).toBe('warning');
+    const ot2 = await metadata.getObjectType('Person');
+    expect(ot2?.sourceConnectionId).toBe('src1');
+    expect(ot2?.sourceTable).toBe('t_person');
 
     // 完整映射 → passed
-    const r3 = await svc.createObjectMapping({
-      ...mMissing, id: 'm3', fieldMappings: [{ property: 'name', sourceColumn: 'name' }],
+    const r3 = await svc.createObjectTypeWithMapping({
+      ...base, fieldMappings: [{ property: 'name', sourceColumn: 'name' }],
     });
     expect(r3.qualityStatus).toBe('passed');
   });

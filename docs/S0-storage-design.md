@@ -121,6 +121,19 @@ CREATE TABLE ontology_function (
   outputs JSONB NOT NULL,
   version INT NOT NULL
 );
+
+-- 告警规则（后台定时任务；条件命中后由 Action 生成告警对象）
+CREATE TABLE alert_rule (
+  api_name TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  interval_seconds INT NOT NULL DEFAULT 60,
+  function_api_name TEXT NOT NULL REFERENCES ontology_function(api_name),
+  action_api_name TEXT NOT NULL REFERENCES action_type(api_name),
+  params JSONB NOT NULL DEFAULT '{}'::jsonb,
+  alert_object_type TEXT NOT NULL,
+  version INT NOT NULL DEFAULT 1
+);
 ```
 
 ### 3.2 映射配置（S1，只读接入 + 对象↔源映射）

@@ -18,13 +18,17 @@ DROP TABLE IF EXISTS object_type CASCADE;
 -- ---------- S2 元数据（图拓扑） ----------
 
 CREATE TABLE object_type (
-  api_name      TEXT PRIMARY KEY,
-  display_name  TEXT NOT NULL,
-  description   TEXT,
-  properties    JSONB NOT NULL,          -- PropertyDef[]
-  version       INT  NOT NULL,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  api_name             TEXT PRIMARY KEY,
+  display_name         TEXT NOT NULL,
+  description          TEXT,
+  properties           JSONB NOT NULL,          -- PropertyDef[]
+  -- S1 映射内嵌：对象类型直接携带其来源（源连接 + 源表），不再依赖独立的映射管理层。
+  -- 字段级映射记录在 properties[].sourceMapping 上，源实例由 S1 下推（instanceSource='source'）。
+  source_connection_id TEXT REFERENCES source_connection(id),
+  source_table         TEXT,
+  version              INT  NOT NULL,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE link_type (
@@ -95,6 +99,19 @@ CREATE TABLE action_type (
   validation_rules JSONB NOT NULL,
   effect           JSONB NOT NULL,
   version          INT NOT NULL
+);
+
+-- ---------- 告警规则（后台定时任务；条件命中后由 Action 生成告警对象） ----------
+CREATE TABLE alert_rule (
+  api_name          TEXT PRIMARY KEY,
+  display_name      TEXT NOT NULL,
+  enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+  interval_seconds  INT NOT NULL DEFAULT 60,
+  function_api_name TEXT NOT NULL REFERENCES ontology_function(api_name),
+  action_api_name   TEXT NOT NULL REFERENCES action_type(api_name),
+  params            JSONB NOT NULL DEFAULT '{}'::jsonb,
+  alert_object_type TEXT NOT NULL,
+  version           INT NOT NULL DEFAULT 1
 );
 
 -- ---------- S1 映射配置（只读接入 + 对象↔源映射） ----------

@@ -2,3 +2,4 @@
 export * from './mapping-model';
 export { PostgresMappingStore } from './mapping-store.pg';
 export { MappingService } from './mapping-service';
+export type { CreateObjectTypeWithMappingInput, ProbeColumn } from './mapping-service';
