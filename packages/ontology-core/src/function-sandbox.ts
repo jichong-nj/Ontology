@@ -5,10 +5,36 @@ import type { FunctionSandbox, TsFn } from './types';
 
 export type { TsFn };
 
+// 函数执行上下文：注入本体访问能力，供存库可编辑的函数体消费。
+// 约定函数体形式： (args, ctx) => { ... } 或 (args, ctx) => { return ... }
+export interface FunctionContext {
+  repo: import('./types').MetadataRepository;
+  // 便捷读取：某对象类型全部实例属性
+  objects: (objectType: string) => Promise<Array<{ objectRid: string; properties: Record<string, unknown> }>>;
+  // 便捷读取：某关系类型的全部实例
+  links: (linkType: string) => Promise<Array<{ sourceRid: string; targetRid: string }>>;
+}
+
 export class TypeScriptFunctionSandbox implements FunctionSandbox {
   private registry = new Map<string, TsFn>();
+  private ctx: FunctionContext | null = null;
+
+  // 注入函数上下文（server 启动时注入 repo）
+  setContext(ctx: FunctionContext): void {
+    this.ctx = ctx;
+  }
 
   register(apiName: string, fn: TsFn): void {
+    this.registry.set(apiName, fn);
+  }
+
+  // 从存库的 TS 源码编译注册。约定 body 为：return (args, ctx) => { ...; return ... }
+  // 其中 ctx 为运行时注入的 FunctionContext（含 repo / objects / links）。
+  registerFromSource(apiName: string, body: string): void {
+    if (!this.ctx) throw new Error('沙箱未注入上下文，无法注册源码函数');
+    const outer = new Function(body) as (...a: unknown[]) => (args: unknown, ctx: FunctionContext) => unknown;
+    const fnWithCtx = outer();
+    const fn: TsFn = (args) => fnWithCtx(args, this.ctx as FunctionContext);
     this.registry.set(apiName, fn);
   }
 

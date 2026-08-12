@@ -3,6 +3,7 @@
 import express from 'express';
 import { Pool } from 'pg';
 import { PostgresMetadataRepository, TypeScriptFunctionSandbox } from '@ontology/ontology-core';
+import type { OntologyFunction, ActionType } from '@ontology/ontology-core';
 import { PostgresMappingStore, MappingService } from '@ontology/data-integration';
 import {
   functions,
@@ -13,6 +14,7 @@ import {
   seedBusinessObjectInstances,
   startScheduler,
   buildSandbox,
+  registerDbFunctions,
 } from '@ontology/enterprise-biz';
 import { AlertScheduler } from '@ontology/ontology-core';
 
@@ -29,8 +31,12 @@ const mappingSvc = new MappingService(store, repo);
 // 共享沙箱：首次使用时惰性构建（注册企业业务函数），供 HTTP 调用与后台调度器复用，
 // 不依赖 bootstrap 是否已执行，提升健壮性与可测试性。
 let sharedSandbox: TypeScriptFunctionSandbox | null = null;
-function getSandbox(): TypeScriptFunctionSandbox {
-  if (!sharedSandbox) sharedSandbox = buildSandbox(repo);
+async function getSandbox(): Promise<TypeScriptFunctionSandbox> {
+  if (!sharedSandbox) {
+    sharedSandbox = buildSandbox(repo);
+    // 预热时把元数据库中存库可编辑的函数体注册进来（含前端创建的函数）
+    await registerDbFunctions(repo, sharedSandbox);
+  }
   return sharedSandbox;
 }
 let alertScheduler: import('@ontology/ontology-core').AlertScheduler | null = null;
@@ -45,7 +51,7 @@ async function bootstrapEnterpriseBiz() {
     for (const fn of functions) {
       await repo.createFunction(fn);
     }
-    getSandbox(); // 预热共享沙箱（注册 evaluateDimissionRisk / createDimissionAlert）
+    await getSandbox(); // 预热共享沙箱（注册 evaluateDimissionRisk / createDimissionAlert）
     // 启动后台告警调度器（可配置 Function 评估 + 可配置 Action 落地告警对象）
     alertScheduler = startScheduler(repo, 10_000);
     console.log('[bootstrap] enterprise-biz 场景已注册（对象实例 + 函数 + 告警调度器）');
@@ -154,8 +160,127 @@ app.get('/api/s2/object-types/:apiName/derived/:propApiName', async (req, res) =
     const { apiName, propApiName } = req.params;
     const rid = req.query.rid as string | undefined;
     if (!rid) return res.status(400).json({ error: '缺少 rid 查询参数（对象实例标识）' });
-    const result = await repo.computeDerived(apiName, propApiName, rid);
+    const sandbox = await getSandbox();
+    await registerDbFunctions(repo, sandbox);
+    const result = await repo.computeDerived(apiName, propApiName, rid, sandbox);
     res.json(result);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---------- S2 函数管理（CRUD）----------
+app.get('/api/s2/functions', async (_req, res) => {
+  try {
+    const list = await repo.listFunctions();
+    res.json(list);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/s2/functions', async (req, res) => {
+  try {
+    const def = req.body;
+    if (!def?.apiName || !def?.displayName || !def?.language || !def?.entry) {
+      return res.status(400).json({ error: 'apiName/displayName/language/entry 必填' });
+    }
+    const fn: OntologyFunction = {
+      apiName: def.apiName,
+      displayName: def.displayName,
+      language: def.language,
+      entry: def.entry,
+      inputs: def.inputs ?? [],
+      outputs: def.outputs ?? [],
+      body: def.body ?? null,
+      version: def.version ?? 1,
+    };
+    await repo.createFunction(fn);
+    // 立即注册到共享沙箱（若已预热）
+    if (sharedSandbox && fn.body && fn.language === 'typescript') {
+      await registerDbFunctions(repo, sharedSandbox);
+    }
+    res.status(201).json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.put('/api/s2/functions/:apiName', async (req, res) => {
+  try {
+    const patch = req.body ?? {};
+    await repo.updateFunction(req.params.apiName, patch);
+    if (sharedSandbox && (patch.body !== undefined || patch.language !== undefined)) {
+      await registerDbFunctions(repo, sharedSandbox);
+    }
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/s2/functions/:apiName', async (req, res) => {
+  try {
+    await repo.deleteFunction(req.params.apiName);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------- S2 动作管理（CRUD + 触发）----------
+app.get('/api/s2/actions', async (_req, res) => {
+  try {
+    const list = await repo.listActions();
+    res.json(list);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/s2/actions', async (req, res) => {
+  try {
+    const def = req.body;
+    if (!def?.apiName || !def?.displayName || !def?.effect) {
+      return res.status(400).json({ error: 'apiName/displayName/effect 必填' });
+    }
+    await repo.createAction(def as ActionType);
+    res.status(201).json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.put('/api/s2/actions/:apiName', async (req, res) => {
+  try {
+    await repo.updateAction(req.params.apiName, req.body ?? {});
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/s2/actions/:apiName', async (req, res) => {
+  try {
+    await repo.deleteAction(req.params.apiName);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 触发动作：effect.kind='function' 时调用对应函数（轻量闭环，供前端手动执行）
+app.post('/api/s2/actions/:apiName/trigger', async (req, res) => {
+  try {
+    const action = await repo.getAction(req.params.apiName);
+    if (!action) return res.status(404).json({ error: '动作未注册' });
+    if (action.effect?.kind !== 'function') {
+      return res.status(400).json({ error: `仅支持 function 类型动作，当前为 ${action.effect?.kind}` });
+    }
+    const sandbox = await getSandbox();
+    await registerDbFunctions(repo, sandbox);
+    const result = await sandbox.execute(action.effect.ref, req.body ?? {});
+    res.json({ ok: true, action: action.apiName, result });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }
@@ -166,7 +291,10 @@ app.post('/api/s2/functions/:fnApiName/invoke', async (req, res) => {
   try {
     const fn = await repo.getFunction(req.params.fnApiName);
     if (!fn) return res.status(404).json({ error: '函数未注册' });
-    const result = await getSandbox().execute(req.params.fnApiName, req.body ?? {});
+    // 每次 invoke 前刷新 DB 函数体（让前端新建/修改的函数即时生效）
+    const sandbox = await getSandbox();
+    await registerDbFunctions(repo, sandbox);
+    const result = await sandbox.execute(req.params.fnApiName, req.body ?? {});
     res.json({ ok: true, function: fn.apiName, result });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
@@ -189,7 +317,8 @@ app.post('/api/s2/alert-rules/run', async (_req, res) => {
     // 优先复用后台调度器；若后台未启动（如仅测试/轻量部署），按需构建设置了函数的调度器。
     let scheduler = alertScheduler;
     if (!scheduler) {
-      scheduler = new AlertScheduler(repo, getSandbox(), { tickMs: 999_999_999 });
+      const sb = await getSandbox();
+      scheduler = new AlertScheduler(repo, sb, { tickMs: 999_999_999 });
     }
     const result = await scheduler.runAll();
     res.json({ ok: true, results: result });

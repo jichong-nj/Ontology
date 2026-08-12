@@ -81,6 +81,7 @@ export interface OntologyProperty {
   // 派生属性配置
   derived?: boolean;
   reducer?: string;            // DerivedSpec 的 JSON 序列化
+  reducerFn?: string;          // 引用已注册函数 apiName（与 reducer 二选一，优先级更高）
 }
 
 // 派生属性计算规格（与后端 ontology-core DerivedSpec 对应）
@@ -136,6 +137,42 @@ export interface CreateObjectTypeWithMapping {
   fieldMappings: FieldMapping[];
 }
 
+// ---------- 函数（Ontology Function）----------
+export type FunctionLanguage = 'typescript' | 'python';
+export interface FunctionInput {
+  name: string;
+  type: string;
+  required?: boolean;
+}
+export interface OntologyFunction {
+  apiName: string;
+  displayName: string;
+  language: FunctionLanguage;
+  entry: string;
+  inputs: FunctionInput[];
+  outputs: string[];
+  body?: string | null;     // 函数体源码（TS：运行时编译注册；空则沿用 seed 注入实现）
+  version: number;
+}
+export interface ActionParameter {
+  name: string;
+  type: string;
+  required?: boolean;
+}
+export interface ActionEffect {
+  kind: 'object' | 'function' | 'none' | 'write';
+  ref?: string;             // kind='function' 时指向函数 apiName
+}
+export interface ActionType {
+  apiName: string;
+  displayName: string;
+  kind?: string;
+  parameters?: ActionParameter[];
+  validationRules?: unknown;
+  effect: ActionEffect;
+  version: number;
+}
+
 export const s2 = {
   listObjectTypes: () => http.get<ObjectType[]>('/s2/object-types').then((r) => r.data),
   getObjectType: (apiName: string) => http.get<ObjectType>(`/s2/object-types/${apiName}`).then((r) => r.data),
@@ -162,6 +199,25 @@ export const s2 = {
     http.get<{ charts: string[] }>(`/s2/object-types/${apiName}/explore-config`).then((r) => r.data),
   saveExploreConfig: (apiName: string, charts: string[]) =>
     http.put(`/s2/object-types/${apiName}/explore-config`, { charts }).then((r) => r.data),
+};
+
+export const s2functions = {
+  list: () => http.get<OntologyFunction[]>('/s2/functions').then((r) => r.data),
+  get: (apiName: string) => http.get<OntologyFunction>(`/s2/functions/${apiName}`).then((r) => r.data),
+  create: (fn: OntologyFunction) => http.post('/s2/functions', fn).then((r) => r.data),
+  update: (apiName: string, patch: Partial<OntologyFunction>) => http.put(`/s2/functions/${apiName}`, patch).then((r) => r.data),
+  remove: (apiName: string) => http.delete(`/s2/functions/${apiName}`).then((r) => r.data),
+  invoke: (apiName: string, params: Record<string, unknown> = {}) =>
+    http.post<{ ok: boolean; result: unknown }>(`/s2/functions/${apiName}/invoke`, params).then((r) => r.data),
+};
+
+export const s2actions = {
+  list: () => http.get<ActionType[]>('/s2/actions').then((r) => r.data),
+  create: (a: ActionType) => http.post('/s2/actions', a).then((r) => r.data),
+  update: (apiName: string, patch: Partial<ActionType>) => http.put(`/s2/actions/${apiName}`, patch).then((r) => r.data),
+  remove: (apiName: string) => http.delete(`/s2/actions/${apiName}`).then((r) => r.data),
+  trigger: (apiName: string, params: Record<string, unknown> = {}) =>
+    http.post<{ ok: boolean; result: unknown }>(`/s2/actions/${apiName}/trigger`, params).then((r) => r.data),
 };
 
 export const s2link = {

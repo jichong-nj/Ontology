@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElCard, ElIcon } from 'element-plus';
-import { Connection, Coin, Share, DataLine } from '@element-plus/icons-vue';
+import { Connection, Coin, Share, DataLine, Cpu, Operation } from '@element-plus/icons-vue';
 import { s2, s2link, s1 } from '@/api';
 import { tryRequest } from '@/utils/error';
 
@@ -22,6 +22,8 @@ const cards = [
   { key: 'connections', title: '数据源', desc: '管理数据库连接与同步', icon: Connection, to: '/s1/connections' },
   { key: 'objects', title: '对象类型', desc: '定义本体中的实体类型', icon: Coin, to: '/s2/object-types' },
   { key: 'links', title: '关系类型', desc: '定义对象之间的关联', icon: Share, to: '/s2/link-types' },
+  { key: 'functions', title: '函数', desc: '可复用的业务逻辑（派生/告警/动作执行体）', icon: Cpu, to: '/s2/functions' },
+  { key: 'actions', title: '动作', desc: '对本体执行变更的操作', icon: Operation, to: '/s2/actions' },
 ] as const;
 
 onMounted(load);

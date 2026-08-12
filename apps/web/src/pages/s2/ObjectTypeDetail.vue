@@ -6,8 +6,8 @@ import {
   ElIcon, ElDialog, ElForm, ElFormItem, ElInput, ElSelect, ElOption,
 } from 'element-plus';
 import { Link, Coin, Edit, Connection, Cpu } from '@element-plus/icons-vue';
-import { s2, s1, s2link } from '@/api';
-import type { ObjectType, OntologyProperty, SourceConnection, ProbeTable, LinkType, DerivedSpec } from '@/api';
+import { s2, s1, s2link, s2functions } from '@/api';
+import type { ObjectType, OntologyProperty, SourceConnection, ProbeTable, LinkType, DerivedSpec, OntologyFunction } from '@/api';
 import { parseDerivedSpec } from '@/api';
 import { tryRequest } from '@/utils/error';
 
@@ -102,6 +102,24 @@ function onToggleDerived(p: OntologyProperty, val: boolean) {
     p.reducer = JSON.stringify({ op: 'countLinks', linkType: '', side: 'target' } as DerivedSpec);
   }
 }
+function derivedReducerFn(p: OntologyProperty): string {
+  return p.reducerFn ?? '';
+}
+// 引用函数：选中则写入 reducerFn 并清空结构化 reducer；清空则回到结构化模式
+function onReducerFnChange(p: OntologyProperty, fnApi: string) {
+  if (fnApi) {
+    p.reducerFn = fnApi;
+    p.reducer = '';
+  } else {
+    delete p.reducerFn;
+    if (!p.reducer) p.reducer = JSON.stringify({ op: 'countLinks', linkType: '', side: 'target' } as DerivedSpec);
+  }
+}
+
+const functions = ref<OntologyFunction[]>([]);
+async function loadFunctions() {
+  await tryRequest(async () => { functions.value = await s2functions.list(); });
+}
 
 async function load() {
   const apiName = targetApiName();
@@ -117,6 +135,7 @@ async function load() {
     connections.value = cs;
     linkTypes.value = lts;
   });
+  await loadFunctions();
   loading.value = false;
 }
 
@@ -340,7 +359,11 @@ watch(() => route.params.apiName, load);
               <ElOption label="收集列表(collectLinks)" value="collectLinks" />
               <ElOption label="表达式(expression)" value="expression" />
             </ElSelect>
-            <template v-if="derivedOp(p) !== 'expression'">
+            <span class="derived-cfg__label">或引用函数</span>
+            <ElSelect :model-value="derivedReducerFn(p)" placeholder="选择已注册函数（与上面算子二选一）" style="width: 240px" clearable @change="(v:string)=>onReducerFnChange(p,v)">
+              <ElOption v-for="fn in functions" :key="fn.apiName" :label="`${fn.displayName} (${fn.apiName})`" :value="fn.apiName" />
+            </ElSelect>
+            <template v-if="derivedOp(p) !== 'expression' && !derivedReducerFn(p)">
               <span class="derived-cfg__label">关系类型</span>
               <ElSelect :model-value="derivedLinkType(p)" placeholder="选择关系" style="width: 230px" @change="(v:string)=>setDerivedSpec(p,{linkType:v})">
                 <ElOption v-for="lt in linkTypes" :key="lt.apiName" :label="`${lt.displayName} (${lt.sourceType}→${lt.targetType})`" :value="lt.apiName" />

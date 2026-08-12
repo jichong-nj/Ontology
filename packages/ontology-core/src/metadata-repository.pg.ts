@@ -12,6 +12,7 @@ import {
   DerivedSpec,
   parseDerivedSpec,
   AlertRule,
+  FunctionSandbox,
 } from './types';
 import { Pool } from 'pg';
 
@@ -219,12 +220,23 @@ export class PostgresMetadataRepository implements MetadataRepository {
     apiName: string,
     propApiName: string,
     objectRid: string,
+    sandbox?: FunctionSandbox,
   ): Promise<{ value: unknown }> {
     const ot = await this.getObjectType(apiName);
     if (!ot) throw new Error(`对象类型不存在: ${apiName}`);
     const prop = ot.properties.find((p: PropertyDef) => p.apiName === propApiName);
     if (!prop) throw new Error(`属性不存在: ${propApiName}`);
     if (!prop.derived) throw new Error(`属性不是派生属性: ${propApiName}`);
+
+    // reducerFn 模式：调用已注册函数（运行时上下文注入 objectRid 与对象类型）
+    if (prop.reducerFn) {
+      if (!sandbox) throw new Error('派生属性引用函数，但缺少运行时沙箱上下文');
+      const fn = await this.getFunction(prop.reducerFn);
+      if (!fn) throw new Error(`引用的函数未注册: ${prop.reducerFn}`);
+      const result = await sandbox.execute(prop.reducerFn, { objectType: apiName, objectRid, property: propApiName });
+      return { value: result };
+    }
+
     const spec: DerivedSpec | null = parseDerivedSpec(prop.reducer);
     if (!spec) throw new Error(`派生属性缺少 reducer 配置: ${propApiName}`);
 
@@ -446,21 +458,100 @@ export class PostgresMetadataRepository implements MetadataRepository {
   }
 
   async createAction(def: ActionType): Promise<void> {
+    const validationRules = def.validationRules ?? [];
     await this.pool.query(
       `INSERT INTO action_type (api_name, display_name, parameters, validation_rules, effect, version)
        VALUES ($1,$2,$3,$4,$5,$6)
        ON CONFLICT (api_name) DO NOTHING`,
-      [def.apiName, def.displayName, JSON.stringify(def.parameters), JSON.stringify(def.validationRules), JSON.stringify(def.effect), def.version],
+      [def.apiName, def.displayName, JSON.stringify(def.parameters), JSON.stringify(validationRules), JSON.stringify(def.effect), def.version],
     );
+  }
+
+  async updateAction(apiName: string, patch: Partial<ActionType>): Promise<void> {
+    const sets: string[] = [];
+    const vals: any[] = [];
+    let i = 1;
+    const map: Record<string, string> = {
+      displayName: 'display_name', parameters: 'parameters', validationRules: 'validation_rules', effect: 'effect', version: 'version',
+    };
+    for (const [k, col] of Object.entries(map)) {
+      if (k in patch) {
+        sets.push(`${col} = $${i++}`);
+        const v = (patch as any)[k];
+        vals.push(k === 'parameters' || k === 'validationRules' || k === 'effect' ? JSON.stringify(v) : v);
+      }
+    }
+    if (sets.length === 0) return;
+    vals.push(apiName);
+    await this.pool.query(`UPDATE action_type SET ${sets.join(', ')} WHERE api_name = $${i}`, vals);
+  }
+
+  async deleteAction(apiName: string): Promise<void> {
+    await this.pool.query(`DELETE FROM action_type WHERE api_name = $1`, [apiName]);
+  }
+
+  async listActions(): Promise<ActionType[]> {
+    const { rows } = await this.pool.query(`SELECT * FROM action_type ORDER BY api_name`);
+    return rows.map((r) => ({
+      apiName: r.api_name,
+      displayName: r.display_name ?? r.api_name,
+      kind: r.kind,
+      parameters: r.parameters,
+      validationRules: r.validation_rules,
+      effect: r.effect,
+      version: r.version,
+    }));
   }
 
   async createFunction(def: OntologyFunction): Promise<void> {
     await this.pool.query(
-      `INSERT INTO ontology_function (api_name, display_name, language, entry, inputs, outputs, version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `INSERT INTO ontology_function (api_name, display_name, language, entry, inputs, outputs, body, version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (api_name) DO NOTHING`,
-      [def.apiName, def.displayName, def.language, def.entry, JSON.stringify(def.inputs), JSON.stringify(def.outputs), def.version],
+      [def.apiName, def.displayName, def.language, def.entry, JSON.stringify(def.inputs), JSON.stringify(def.outputs), def.body ?? null, def.version],
     );
+  }
+
+  async updateFunction(apiName: string, patch: Partial<OntologyFunction>): Promise<void> {
+    const sets: string[] = [];
+    const vals: any[] = [];
+    let i = 1;
+    const map: Record<string, string> = {
+      displayName: 'display_name', language: 'language', entry: 'entry',
+      inputs: 'inputs', outputs: 'outputs', body: 'body', version: 'version',
+    };
+    for (const [k, col] of Object.entries(map)) {
+      if (k in patch) {
+        sets.push(`${col} = $${i++}`);
+        let v = (patch as any)[k];
+        if (k === 'inputs' || k === 'outputs') v = JSON.stringify(v);
+        vals.push(v);
+      }
+    }
+    if (sets.length === 0) return;
+    vals.push(apiName);
+    await this.pool.query(
+      `UPDATE ontology_function SET ${sets.join(', ')} WHERE api_name = $${i}`,
+      vals,
+    );
+  }
+
+  async deleteFunction(apiName: string): Promise<void> {
+    await this.pool.query(`DELETE FROM ontology_function WHERE api_name = $1`, [apiName]);
+  }
+
+  async listFunctions(): Promise<OntologyFunction[]> {
+    const { rows } = await this.pool.query(`SELECT * FROM ontology_function ORDER BY api_name`);
+    return rows.map((r) => ({
+      apiName: r.api_name,
+      displayName: r.display_name ?? r.api_name,
+      language: r.language,
+      entry: r.entry,
+      inputs: r.inputs,
+      outputs: r.outputs,
+      body: r.body,
+      version: r.version,
+    }));
   }
 
   async getFunction(apiName: string): Promise<OntologyFunction | null> {
@@ -474,6 +565,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       entry: r.entry,
       inputs: r.inputs,
       outputs: r.outputs,
+      body: r.body,
       version: r.version,
     };
   }

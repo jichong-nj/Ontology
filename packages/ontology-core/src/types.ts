@@ -138,6 +138,8 @@ export interface OntologyFunction {
   entry: string;
   inputs: ActionParameter[];
   outputs: PropertyType[];
+  // 函数体源码（TS：运行时 new Function 编译注册；空则沿用 seed 注入的注册式实现）。python 暂不支持运行时执行。
+  body?: string | null;
   version: number;
 }
 
@@ -188,8 +190,14 @@ export interface MetadataRepository {
   // 动作 / 函数
   createAction(def: ActionType): Promise<void>;
   getAction(apiName: string): Promise<ActionType | null>;
+  listActions(): Promise<ActionType[]>;
+  updateAction(apiName: string, patch: Partial<ActionType>): Promise<void>;
+  deleteAction(apiName: string): Promise<void>;
   createFunction(def: OntologyFunction): Promise<void>;
   getFunction(apiName: string): Promise<OntologyFunction | null>;
+  listFunctions(): Promise<OntologyFunction[]>;
+  updateFunction(apiName: string, patch: Partial<OntologyFunction>): Promise<void>;
+  deleteFunction(apiName: string): Promise<void>;
   // 告警规则（后台定时任务；条件命中后由可配置的 Action 生成告警对象）
   createAlertRule(def: AlertRule): Promise<void>;
   listAlertRules(): Promise<AlertRule[]>;

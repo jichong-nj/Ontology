@@ -315,8 +315,37 @@ export async function seedBusinessObjectInstances(repo: PostgresMetadataReposito
 // 注册业务函数到沙箱（供运行时 invoke）
 export function buildSandbox(repo: PostgresMetadataRepository): TypeScriptFunctionSandbox {
   const sandbox = new TypeScriptFunctionSandbox();
+  sandbox.setContext({
+    repo,
+    objects: (t) => repo.listObjectProperties(t),
+    links: (t) => repo.listLinkInstances(t),
+  });
   registerDimissionRisk(sandbox, repo);
+  // 注册存库可编辑的函数体（有 body 的函数用源码编译，覆盖 seed 注入的同名实现）
+  for (const fn of functions) {
+    if (fn.body && fn.language === 'typescript') {
+      try {
+        sandbox.registerFromSource(fn.apiName, fn.body);
+      } catch (e: any) {
+        console.error(`[buildSandbox] 函数 ${fn.apiName} 源码编译失败:`, e.message);
+      }
+    }
+  }
   return sandbox;
+}
+
+// 运行时从元数据库加载所有存库可编辑函数体并注册到共享沙箱（供前端创建/修改后即时生效）
+export async function registerDbFunctions(repo: PostgresMetadataRepository, sandbox: TypeScriptFunctionSandbox): Promise<void> {
+  const fns = await repo.listFunctions();
+  for (const fn of fns) {
+    if (fn.body && fn.language === 'typescript') {
+      try {
+        sandbox.registerFromSource(fn.apiName, fn.body);
+      } catch (e: any) {
+        console.error(`[registerDbFunctions] 函数 ${fn.apiName} 源码编译失败:`, e.message);
+      }
+    }
+  }
 }
 
 // 启动后台告警调度器（按 alert_rule 周期执行可配置 Function 与 Action）

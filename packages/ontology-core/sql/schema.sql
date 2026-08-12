@@ -84,6 +84,8 @@ CREATE TABLE ontology_function (
   entry    TEXT NOT NULL,
   inputs   JSONB NOT NULL,
   outputs  JSONB NOT NULL,
+  -- 函数体源码（TS：运行时 new Function 编译注册；为空则沿用 seed 注入的注册式实现）。python 暂不支持运行时执行。
+  body     TEXT,
   version  INT NOT NULL
 );
 
