@@ -206,8 +206,14 @@ async function load() {
 
 onMounted(load);
 
-// objectType 切换时重新加载该类型独立的探索配置
+// objectType 切换时重新加载该类型独立的探索配置与类型定义
 watch(objectTypeApiName, (apiName) => {
+  // 同步更新当前对象类型定义（否则 getPropDef / 实例列仍用上一个类型的）
+  currentObjectType.value =
+    objectTypes.value.find((t) => t.apiName === apiName) || null;
+  selectedRid.value = null;
+  objectDetail.value = null;
+  objectLinks.value = [];
   if (apiName) {
     loadExploreConfig();
     loadInstances();

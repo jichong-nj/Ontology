@@ -40,7 +40,8 @@ async function load() {
 }
 
 onMounted(load);
-watch(() => props.property.apiName, load);
+// 对象类型或属性变化时都要重新拉取数据（同属性名跨类型复用时必须刷新）
+watch(() => [props.objectType, props.property.apiName], load);
 
 const option = computed(() => {
   if (isNumeric.value) {
