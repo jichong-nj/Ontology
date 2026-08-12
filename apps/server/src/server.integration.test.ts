@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import { createApp } from './index';
 import { PostgresMetadataRepository } from '@ontology/ontology-core';
-import { seedEnterpriseBiz, seedEmployeeInstances, SOURCE_ID } from '@ontology/enterprise-biz';
+import { seedEnterpriseBiz, seedDepartmentInstances, seedEmployeeInstances, seedBusinessObjectInstances, SOURCE_ID } from '@ontology/enterprise-biz';
 
 const META_URL =
   process.env.META_DATABASE_URL ||
@@ -43,7 +43,9 @@ async function request(
 beforeAll(async () => {
   // 业务引导：S1 数据源 + S2 定义 + S3 实例下推（不启动后台调度器，避免 tick 干扰断言）
   await seedEnterpriseBiz(pool);
+  await seedDepartmentInstances(repo);
   await seedEmployeeInstances(repo);
+  await seedBusinessObjectInstances(repo);
   // 测试隔离：清空上一次运行可能残留的 Alert 实例
   await repo.clearObjectWrites('Alert');
   await new Promise<void>((resolve) => {

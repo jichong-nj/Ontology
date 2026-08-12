@@ -8,7 +8,9 @@ import {
   functions,
   registerDimissionRisk,
   seedEnterpriseBiz,
+  seedDepartmentInstances,
   seedEmployeeInstances,
+  seedBusinessObjectInstances,
   startScheduler,
   buildSandbox,
 } from '@ontology/enterprise-biz';
@@ -36,7 +38,9 @@ async function bootstrapEnterpriseBiz() {
   try {
     // 1) 将企业治理数据写为对象实例（S1 源库在 manage 端；对象/关系/函数定义落在元数据库）
     await seedEnterpriseBiz(pool);
+    await seedDepartmentInstances(repo);
     await seedEmployeeInstances(repo);
+    await seedBusinessObjectInstances(repo);
     // 2) 注册函数定义 + TS 实现到沙箱
     for (const fn of functions) {
       await repo.createFunction(fn);

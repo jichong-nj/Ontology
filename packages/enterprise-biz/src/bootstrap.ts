@@ -121,6 +121,186 @@ export async function seedEmployeeInstances(repo: PostgresMetadataRepository): P
   console.log(`[S3] 已写入 ${rows.length} 条人员实例与 EmployeeDepartment 关系实例`);
 }
 
+// S3：把 enterprise_biz.department 全量镜像为本体可写侧 Department 实例，
+// 并写入 DepartmentHierarchy 自引用关系（parent_id），
+// 使 EmployeeDepartment 的 target 能与 Department 实例对齐（RID 统一用部门 id）。
+export async function seedDepartmentInstances(repo: PostgresMetadataRepository): Promise<void> {
+  await repo.clearLinkInstances('DepartmentHierarchy');
+  await repo.clearObjectWrites('Department');
+
+  const srcPool = new Pool({
+    connectionString:
+      process.env.ENTERPRISE_BIZ_URL ||
+      'postgresql://ontology:ontology@localhost:5432/enterprise_biz',
+  });
+  const { rows } = await srcPool.query(
+    `SELECT id, code, name, parent_id, manager_id, location FROM department ORDER BY id`,
+  );
+  await srcPool.end();
+
+  for (const r of rows) {
+    const rid = String(r.id);
+    await repo.writeObjectPatch(
+      'Department',
+      rid,
+      {
+        id: r.id,
+        code: r.code,
+        name: r.name,
+        parentId: r.parent_id != null ? Number(r.parent_id) : null,
+        managerId: r.manager_id != null ? Number(r.manager_id) : null,
+        location: r.location,
+      },
+      'bootstrap:seed',
+    );
+    if (r.parent_id != null) {
+      await repo.createLinkInstance('DepartmentHierarchy', rid, String(r.parent_id));
+    }
+  }
+  console.log(`[S3] 已写入 ${rows.length} 条部门实例与 DepartmentHierarchy 关系实例`);
+}
+
+// S3：把 enterprise_biz 的 product / project / device 全量镜像为本体可写侧实例，
+// 并写入其相关关系实例（RID 统一用源表 id）：
+//   - Product        -> ProductOwnerDept (owner_dept_id -> Department)
+//   - Device         -> DeviceProduct    (product_id -> Product)
+//                      + device_department 多对多 -> Department (DeviceDepartment)
+//   - Project        -> ProjectDepartment (dept_id -> Department)
+//                      + project_member   多对多 -> Employee (ProjectMember)
+//                      + project_product  多对多 -> Product  (ProjectProduct)
+export async function seedBusinessObjectInstances(repo: PostgresMetadataRepository): Promise<void> {
+  const linkTypes = [
+    'ProductOwnerDept',
+    'DeviceProduct',
+    'DeviceDepartment',
+    'ProjectDepartment',
+    'ProjectMember',
+    'ProjectProduct',
+  ];
+  for (const lt of linkTypes) {
+    await repo.clearLinkInstances(lt);
+  }
+  await repo.clearObjectWrites('Product');
+  await repo.clearObjectWrites('Project');
+  await repo.clearObjectWrites('Device');
+
+  const srcPool = new Pool({
+    connectionString:
+      process.env.ENTERPRISE_BIZ_URL ||
+      'postgresql://ontology:ontology@localhost:5432/enterprise_biz',
+  });
+
+  // ---- Product ----
+  {
+    const { rows } = await srcPool.query(
+      `SELECT id, sku, name, category, owner_dept_id, status, launch_date FROM product ORDER BY id`,
+    );
+    for (const r of rows) {
+      const rid = String(r.id);
+      await repo.writeObjectPatch(
+        'Product',
+        rid,
+        {
+          id: r.id,
+          sku: r.sku,
+          name: r.name,
+          category: r.category,
+          ownerDeptId: r.owner_dept_id != null ? Number(r.owner_dept_id) : null,
+          status: r.status,
+          launchDate: r.launch_date ? String(r.launch_date) : null,
+        },
+        'bootstrap:seed',
+      );
+      if (r.owner_dept_id != null) {
+        await repo.createLinkInstance('ProductOwnerDept', rid, String(r.owner_dept_id));
+      }
+    }
+    console.log(`[S3] 已写入 ${rows.length} 条产品实例`);
+  }
+
+  // ---- Device ----
+  {
+    const { rows } = await srcPool.query(
+      `SELECT id, asset_code, name, type, model, product_id, status, purchase_date FROM device ORDER BY id`,
+    );
+    for (const r of rows) {
+      const rid = String(r.id);
+      await repo.writeObjectPatch(
+        'Device',
+        rid,
+        {
+          id: r.id,
+          assetCode: r.asset_code,
+          name: r.name,
+          type: r.type,
+          model: r.model,
+          productId: r.product_id != null ? Number(r.product_id) : null,
+          status: r.status,
+          purchaseDate: r.purchase_date ? String(r.purchase_date) : null,
+        },
+        'bootstrap:seed',
+      );
+      if (r.product_id != null) {
+        await repo.createLinkInstance('DeviceProduct', rid, String(r.product_id));
+      }
+    }
+    // 设备 <-> 部门 多对多
+    const { rows: dd } = await srcPool.query(
+      `SELECT device_id, department_id FROM device_department`,
+    );
+    for (const r of dd) {
+      await repo.createLinkInstance('DeviceDepartment', String(r.device_id), String(r.department_id));
+    }
+    console.log(`[S3] 已写入 ${rows.length} 条设备实例与 ${dd.length} 条设备-部门关系`);
+  }
+
+  // ---- Project ----
+  {
+    const { rows } = await srcPool.query(
+      `SELECT id, code, name, dept_id, lead_emp_id, start_date, end_date, budget, status FROM project ORDER BY id`,
+    );
+    for (const r of rows) {
+      const rid = String(r.id);
+      await repo.writeObjectPatch(
+        'Project',
+        rid,
+        {
+          id: r.id,
+          code: r.code,
+          name: r.name,
+          deptId: r.dept_id != null ? Number(r.dept_id) : null,
+          leadEmpId: r.lead_emp_id != null ? Number(r.lead_emp_id) : null,
+          startDate: r.start_date ? String(r.start_date) : null,
+          endDate: r.end_date ? String(r.end_date) : null,
+          budget: r.budget != null ? Number(r.budget) : null,
+          status: r.status,
+        },
+        'bootstrap:seed',
+      );
+      if (r.dept_id != null) {
+        await repo.createLinkInstance('ProjectDepartment', rid, String(r.dept_id));
+      }
+    }
+    // 项目成员 多对多
+    const { rows: pm } = await srcPool.query(
+      `SELECT project_id, employee_id FROM project_member`,
+    );
+    for (const r of pm) {
+      await repo.createLinkInstance('ProjectMember', String(r.project_id), String(r.employee_id));
+    }
+    // 项目交付产品 多对多
+    const { rows: pp } = await srcPool.query(
+      `SELECT project_id, product_id FROM project_product`,
+    );
+    for (const r of pp) {
+      await repo.createLinkInstance('ProjectProduct', String(r.project_id), String(r.product_id));
+    }
+    console.log(`[S3] 已写入 ${rows.length} 条项目实例与 ${pm.length} 条成员 / ${pp.length} 条交付产品关系`);
+  }
+
+  await srcPool.end();
+}
+
 // 注册业务函数到沙箱（供运行时 invoke）
 export function buildSandbox(repo: PostgresMetadataRepository): TypeScriptFunctionSandbox {
   const sandbox = new TypeScriptFunctionSandbox();
@@ -139,8 +319,10 @@ export function startScheduler(repo: PostgresMetadataRepository, tickMs = 10_000
 // CLI 入口
 async function main() {
   const pool = new Pool({ connectionString: META_URL });
-  const repo = await seedEnterpriseBiz(pool);
+  const repo =   await seedEnterpriseBiz(pool);
+  await seedDepartmentInstances(repo);
   await seedEmployeeInstances(repo);
+  await seedBusinessObjectInstances(repo);
   buildSandbox(repo);
   const ots = await repo.listObjectTypes();
   const lts = await repo.listLinkTypes();

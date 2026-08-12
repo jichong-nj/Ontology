@@ -252,7 +252,7 @@ watch(() => route.params.apiName, load);
     <div v-else-if="!loading" class="detail-empty">未找到该对象类型。</div>
 
     <!-- 编辑弹窗 -->
-    <ElDialog v-model="editVisible" title="编辑对象类型" width="680px" destroy-on-close>
+    <ElDialog v-model="editVisible" title="编辑对象类型" width="900px" top="5vh" destroy-on-close class="edit-obj-dialog">
       <ElForm label-position="top">
         <ElFormItem label="显示名称"><ElInput v-model="editForm.displayName" /></ElFormItem>
         <ElFormItem label="描述"><ElInput v-model="editForm.description" type="textarea" :rows="2" /></ElFormItem>
@@ -430,9 +430,9 @@ watch(() => route.params.apiName, load);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--space-1) var(--space-2);
   padding: var(--space-2) var(--space-3);
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-1);
   background: var(--accent-soft);
   border-radius: var(--radius);
 }
@@ -448,4 +448,15 @@ watch(() => route.params.apiName, load);
 }
 .derived-val { font-weight: 600; color: var(--accent); font-size: 13px; }
 .derived-err { color: var(--el-color-danger, #f56c6c); font-size: 12px; }
+
+/* 编辑对象类型弹窗：加宽 + body 可滚动 */
+.edit-obj-dialog :deep(.el-dialog) {
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+}
+.edit-obj-dialog :deep(.el-dialog__body) {
+  overflow-y: auto;
+  padding-right: var(--space-3);
+}
 </style>

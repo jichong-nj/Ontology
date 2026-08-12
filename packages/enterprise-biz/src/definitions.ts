@@ -192,6 +192,15 @@ export const linkTypes: LinkType[] = [
     version: V,
   },
   {
+    apiName: 'DeviceDepartment',
+    displayName: '设备使用部门',
+    sourceType: 'Device',
+    targetType: 'Department',
+    cardinality: 'many-to-many',
+    instanceSource: 'source',   // 来自 device_department 关系表
+    version: V,
+  },
+  {
     apiName: 'ProjectDepartment',
     displayName: '项目牵头部门',
     sourceType: 'Project',

@@ -156,9 +156,9 @@ function getInstanceTitle(inst: any): string {
 }
 
 /** 获取实例属性列表 */
-function instanceColumns(): string[] {
+function instanceColumns(): { apiName: string; displayName: string }[] {
   if (!currentObjectType.value?.properties.length) return [];
-  return currentObjectType.value.properties.map((p) => p.apiName);
+  return currentObjectType.value.properties.map((p) => ({ apiName: p.apiName, displayName: p.displayName || p.apiName }));
 }
 
 // ========== 单对象详情视图 ==========
@@ -473,14 +473,14 @@ const graphEdges = computed(() => {
               </ElTableColumn>
               <ElTableColumn
                 v-for="col in instanceColumns()"
-                :key="col"
-                :prop="'properties.' + col"
-                :label="col"
+                :key="col.apiName"
+                :prop="'properties.' + col.apiName"
+                :label="col.displayName"
                 min-width="140"
                 show-overflow-tooltip
               >
                 <template #default="{ row }">
-                  {{ row.properties?.[col] ?? '—' }}
+                  {{ row.properties?.[col.apiName] ?? '—' }}
                 </template>
               </ElTableColumn>
               <ElTable-column width="80" label="操作" fixed="right">
