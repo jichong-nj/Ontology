@@ -26,7 +26,8 @@ CREATE TABLE object_type (
   -- 字段级映射记录在 properties[].sourceMapping 上，源实例由 S1 下推（instanceSource='source'）。
   source_connection_id TEXT REFERENCES source_connection(id),
   source_table         TEXT,
-  version              INT  NOT NULL,
+  explore_config       JSONB NOT NULL DEFAULT '{}'::jsonb,  -- 探索页配置: { charts: string[] } 每对象类型一套独立图表
+  version              INT NOT NULL,
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );

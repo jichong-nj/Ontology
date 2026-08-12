@@ -5,6 +5,7 @@ import { use } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { BarChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent, TitleComponent } from 'echarts/components';
+import { Close } from '@element-plus/icons-vue';
 import { s2explore } from '@/api';
 
 use([CanvasRenderer, BarChart, GridComponent, TooltipComponent, TitleComponent]);
@@ -13,6 +14,8 @@ const props = defineProps<{
   objectType: string;
   property: { apiName: string; displayName?: string; type?: string };
 }>();
+
+const emit = defineEmits<{ (e: 'remove'): void }>();
 
 // 根据类型决定图表种类：数值 -> 直方图，其它 -> 条形图
 const isNumeric = computed(() =>
@@ -93,7 +96,12 @@ const option = computed(() => {
   <div class="prop-chart-card">
     <div class="prop-chart-card__head">
       <span class="prop-chart-card__title">{{ property.displayName || property.apiName }}</span>
-      <span class="prop-chart-card__type">{{ isNumeric ? '数值分布' : '分类计数' }}</span>
+      <div class="prop-chart-card__head-right">
+        <span class="prop-chart-card__type">{{ isNumeric ? '数值分布' : '分类计数' }}</span>
+        <button class="prop-chart-card__remove" title="移除图表" @click="emit('remove')">
+          <el-icon><Close /></el-icon>
+        </button>
+      </div>
     </div>
     <div v-loading="loading" class="prop-chart-card__body">
       <VChart v-if="!loading && (barData.length || histData.length)" :option="option" autoresize class="chart" />
@@ -116,12 +124,33 @@ const option = computed(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border, #e4e7ed);
   flex-shrink: 0;
 }
-.prop-chart-card__title { font-weight: 600; font-size: 13px; color: var(--text-primary, #303133); }
-.prop-chart-card__type { font-size: 11px; color: var(--text-muted, #909399); }
+.prop-chart-card__title { font-weight: 600; font-size: 13px; color: var(--text-primary, #303133); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prop-chart-card__head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.prop-chart-card__type { font-size: 11px; color: var(--text-muted, #909399); white-space: nowrap; }
+.prop-chart-card__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted, #909399);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.prop-chart-card__remove:hover { background: #fef0f0; color: #f56c6c; }
 .prop-chart-card__body { flex: 1; position: relative; padding: 4px; }
 .chart { width: 100%; height: 100%; }
 .chart-empty {

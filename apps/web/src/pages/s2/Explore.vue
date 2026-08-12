@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ElMessage, ElButton, ElInput, ElTable, ElTableColumn, ElTag, ElCard, ElEmpty, ElBreadcrumb, ElBreadcrumbItem, ElTooltip, ElIcon, ElDescriptions, ElDescriptionsItem, ElDivider, ElSelect, ElOption, ElLoadingDirective as vLoading } from 'element-plus';
-import { ArrowLeft, Search, Link, InfoFilled, Close } from '@element-plus/icons-vue';
+import { ElMessage, ElMessageBox, ElButton, ElInput, ElTable, ElTableColumn, ElTag, ElCard, ElEmpty, ElBreadcrumb, ElBreadcrumbItem, ElTooltip, ElIcon, ElDescriptions, ElDescriptionsItem, ElDivider, ElSelect, ElOption, ElLoadingDirective as vLoading } from 'element-plus';
+import { ArrowLeft, Search, Link, InfoFilled } from '@element-plus/icons-vue';
 import { s2, s2link, s2explore, type ObjectLink } from '@/api';
 import type { ObjectType, LinkType, PropertyDef } from '@/api';
 import { tryRequest } from '@/utils/error';
@@ -18,21 +18,75 @@ const linkTypes = ref<LinkType[]>([]);
 const currentObjectType = ref<ObjectType | null>(null);
 const loading = ref(false);
 
-// ========== 属性图表画布（探索仪表盘）==========
-const addedProps = ref<string[]>([]); // 已添加到画布的属性 apiName 列表
+// ========== 属性图表画布（探索仪表盘，每个 objectType 一套独立配置）==========
+// charts: 当前对象类型已添加的图表属性（有序，持久化到后端 explore_config）
+const charts = ref<string[]>([]);
 const propToAdd = ref(''); // 搜索框当前选中的待添加属性
+const savingConfig = ref(false);
+
+// 拖动排序状态
+const dragIndex = ref<number | null>(null);
+
+async function loadExploreConfig() {
+  if (!objectTypeApiName.value) {
+    charts.value = [];
+    return;
+  }
+  const cfg = await s2.getExploreConfig(objectTypeApiName.value);
+  charts.value = cfg.charts || [];
+}
+
+async function saveConfig() {
+  if (!objectTypeApiName.value) return;
+  savingConfig.value = true;
+  await tryRequest(async () => {
+    await s2.saveExploreConfig(objectTypeApiName.value, charts.value);
+  });
+  savingConfig.value = false;
+}
 
 function addProp(apiName: string) {
   if (!apiName) return;
-  if (!addedProps.value.includes(apiName)) addedProps.value.push(apiName);
-}
-
-function removeProp(apiName: string) {
-  addedProps.value = addedProps.value.filter((p) => p !== apiName);
+  if (!charts.value.includes(apiName)) {
+    charts.value.push(apiName);
+    saveConfig();
+  }
 }
 
 function getPropDef(apiName: string): PropertyDef | undefined {
   return currentObjectType.value?.properties.find((p) => p.apiName === apiName);
+}
+
+async function confirmRemove(apiName: string) {
+  const def = getPropDef(apiName);
+  try {
+    await ElMessageBox.confirm(
+      `确认从「${currentObjectType.value?.displayName || objectTypeApiName.value}」的探索看板移除图表「${def?.displayName || apiName}」？`,
+      '移除图表',
+      { confirmButtonText: '移除', cancelButtonText: '取消', type: 'warning' },
+    );
+    charts.value = charts.value.filter((p) => p !== apiName);
+    saveConfig();
+  } catch {
+    // 用户取消，不操作
+  }
+}
+
+// 拖动排序
+function onDragStart(idx: number) {
+  dragIndex.value = idx;
+}
+function onDragOver(idx: number, e: DragEvent) {
+  e.preventDefault();
+}
+function onDrop(idx: number) {
+  if (dragIndex.value === null || dragIndex.value === idx) return;
+  const arr = [...charts.value];
+  const [moved] = arr.splice(dragIndex.value, 1);
+  arr.splice(idx, 0, moved);
+  charts.value = arr;
+  dragIndex.value = null;
+  saveConfig();
 }
 
 // ========== Overview: 对象类型卡片网格 + 左侧分组筛选 ==========
@@ -143,11 +197,24 @@ async function load() {
       objectTypes.value.find((t) => t.apiName === objectTypeApiName.value) || null;
   });
   loading.value = false;
-  // 自动加载实例
-  if (objectTypeApiName.value) loadInstances();
+  // 自动加载实例与探索配置
+  if (objectTypeApiName.value) {
+    loadInstances();
+    loadExploreConfig();
+  }
 }
 
 onMounted(load);
+
+// objectType 切换时重新加载该类型独立的探索配置
+watch(objectTypeApiName, (apiName) => {
+  if (apiName) {
+    loadExploreConfig();
+    loadInstances();
+  } else {
+    charts.value = [];
+  }
+});
 
 /** 获取 link type 的显示名 */
 function ltDisplayName(apiName: string): string {
@@ -345,21 +412,27 @@ const graphEdges = computed(() => {
                   :key="p.apiName"
                   :label="`${p.displayName || p.apiName} (${p.apiName})`"
                   :value="p.apiName"
-                  :disabled="addedProps.includes(p.apiName)"
+                  :disabled="charts.includes(p.apiName)"
                 />
               </ElSelect>
               <span class="chart-canvas-hint">添加属性后，下方展示该属性的分布图表（数值→直方图，其它→计数条形图）</span>
             </div>
-            <div v-if="addedProps.length" class="chart-grid">
-              <div v-for="pa in addedProps" :key="pa" class="chart-grid__cell">
-                <ElButton
-                  size="small" text type="danger" class="chart-grid__close"
-                  :icon="Close" @click="removeProp(pa)"
-                >移除</ElButton>
+            <div v-if="charts.length" class="chart-grid">
+              <div
+                v-for="(pa, idx) in charts"
+                :key="pa"
+                class="chart-grid__cell"
+                draggable="true"
+                :class="{ 'chart-grid__cell--drag': dragIndex === idx }"
+                @dragstart="onDragStart(idx)"
+                @dragover="onDragOver(idx, $event)"
+                @drop="onDrop(idx)"
+              >
                 <PropertyChartCard
                   v-if="getPropDef(pa)"
                   :object-type="objectTypeApiName"
                   :property="getPropDef(pa)!"
+                  @remove="confirmRemove(pa)"
                 />
               </div>
             </div>
@@ -537,13 +610,10 @@ const graphEdges = computed(() => {
 }
 .chart-grid__cell {
   position: relative;
+  cursor: grab;
 }
-.chart-grid__close {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  z-index: 2;
-}
+.chart-grid__cell:active { cursor: grabbing; }
+.chart-grid__cell--drag { opacity: 0.4; }
 
 /* ====== Overview 布局 ====== */
 .overview-layout {

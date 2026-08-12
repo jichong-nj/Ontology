@@ -106,6 +106,23 @@ export class PostgresMetadataRepository implements MetadataRepository {
     await this.pool.query(`DELETE FROM object_type WHERE api_name=$1`, [apiName]);
   }
 
+  async getExploreConfig(apiName: string): Promise<string[]> {
+    const { rows } = await this.pool.query(
+      `SELECT COALESCE(explore_config->'charts', '[]'::jsonb) AS charts FROM object_type WHERE api_name=$1`,
+      [apiName],
+    );
+    if (rows.length === 0) return [];
+    const charts = rows[0].charts;
+    return Array.isArray(charts) ? charts.map((c: any) => String(c)) : [];
+  }
+
+  async saveExploreConfig(apiName: string, charts: string[]): Promise<void> {
+    await this.pool.query(
+      `UPDATE object_type SET explore_config = jsonb_build_object('charts', $2::text[]), updated_at = now() WHERE api_name=$1`,
+      [apiName, charts],
+    );
+  }
+
   async listLinkTypes(): Promise<LinkType[]> {
     const { rows } = await this.pool.query(`SELECT * FROM link_type ORDER BY api_name`);
     return rows.map((r: any) => ({

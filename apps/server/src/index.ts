@@ -220,6 +220,26 @@ app.get('/api/s2/object-types/:apiName', async (req, res) => {
   res.json(ot);
 });
 
+// 探索页图表配置：每对象类型一套独立的图表（属性 apiName 有序列表）
+app.get('/api/s2/object-types/:apiName/explore-config', async (req, res) => {
+  try {
+    const charts = await repo.getExploreConfig(req.params.apiName);
+    res.json({ charts });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/s2/object-types/:apiName/explore-config', async (req, res) => {
+  try {
+    const charts = Array.isArray(req.body?.charts) ? req.body.charts.map(String) : [];
+    await repo.saveExploreConfig(req.params.apiName, charts);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 组合创建：对象类型 + 关联数据源表与字段映射（核心诉求）
 app.post('/api/s2/object-types/with-mapping', async (req, res) => {
   try {

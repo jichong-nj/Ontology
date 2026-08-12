@@ -153,6 +153,11 @@ export const s2 = {
   runAlertRules: () => http.post<{ ok: boolean; results: unknown[] }>('/s2/alert-rules/run').then((r) => r.data),
   // 告警对象列表
   listAlerts: () => http.get<any[]>('/s2/alerts').then((r) => r.data),
+  // 探索页图表配置：每对象类型一套独立的图表（属性 apiName 有序列表）
+  getExploreConfig: (apiName: string) =>
+    http.get<{ charts: string[] }>(`/s2/object-types/${apiName}/explore-config`).then((r) => r.data),
+  saveExploreConfig: (apiName: string, charts: string[]) =>
+    http.put(`/s2/object-types/${apiName}/explore-config`, { charts }).then((r) => r.data),
 };
 
 export const s2link = {

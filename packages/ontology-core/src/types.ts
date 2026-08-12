@@ -140,6 +140,9 @@ export interface MetadataRepository {
   createObjectType(def: ObjectType): Promise<void>;
   updateObjectType(apiName: string, def: ObjectType): Promise<void>;
   deleteObjectType(apiName: string): Promise<void>;
+  // 探索页配置：每对象类型一套独立的图表（属性 apiName 有序列表）
+  getExploreConfig(apiName: string): Promise<string[]>;
+  saveExploreConfig(apiName: string, charts: string[]): Promise<void>;
   // 关系类型
   listLinkTypes(): Promise<LinkType[]>;
   getLinkType(apiName: string): Promise<LinkType | null>;
