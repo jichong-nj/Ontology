@@ -6,7 +6,19 @@ const http = axios.create({ baseURL: '/api' });
 // ---------- S1 ----------
 // 映射已内嵌到对象类型（S2），S1 仅提供数据源连接与表结构探测能力。
 export type SourceKind = 'database' | 'warehouse' | 'api' | 'file';
+export type DbType = 'postgres' | 'mysql';
 export type ConnStatus = 'connected' | 'error' | 'pending';
+
+// S1 源连接参数：含账号/密码与数据库类型（演示用明文；生产走 secretRef）
+export interface ConnectionMeta {
+  dbType?: DbType;
+  host?: string;
+  port?: string | number;
+  database?: string;
+  user?: string;
+  password?: string;
+  [key: string]: unknown;
+}
 
 // S1 源连接：只读接入已治理数据，仅做映射（参照核心契约）
 export interface SourceConnection {
@@ -14,9 +26,10 @@ export interface SourceConnection {
   displayName: string;
   kind: SourceKind;
   readOnly: true;                 // 强制只读，禁止写回源端
-  connectionMeta: Record<string, unknown>;
+  connectionMeta: ConnectionMeta;
   secretRef: string;              // 指向 S6 托管的凭据引用（非明文）
   status: ConnStatus;
+  icon?: string;                  // 数据源卡片图标（emoji）
 }
 export interface FieldMapping {
   property: string;
@@ -32,13 +45,30 @@ export interface ProbeTable {
   table: string;
   columns: ProbeColumn[];
 }
+export interface TestResult {
+  reachable: boolean;
+  error?: string;
+  dbType?: DbType;
+  tables: ProbeTable[];
+}
 
 export const s1 = {
   listConnections: () => http.get<SourceConnection[]>('/s1/connections').then((r) => r.data),
   getConnection: (id: string) => http.get<SourceConnection>(`/s1/connections/${id}`).then((r) => r.data),
   createConnection: (c: SourceConnection) => http.post('/s1/connections', c).then((r) => r.data),
+  updateConnection: (id: string, c: SourceConnection) =>
+    http.put(`/s1/connections/${id}`, c).then((r) => r.data),
+  deleteConnection: (id: string) => http.delete(`/s1/connections/${id}`).then((r) => r.data),
   // 探测只读源库的表与字段（创建对象类型时选表/映射字段用）
-  probe: (connId: string) => http.get<ProbeTable[]>(`/s1/connections/${connId}/probe`).then((r) => r.data),
+  probe: (connId: string) => http.get<TestResult>(`/s1/connections/${connId}/probe`).then((r) => r.data),
+  // 仅测试连接连通性（不列举表）
+  testConnection: (connId: string) => http.post<TestResult>(`/s1/connections/${connId}/test`).then((r) => r.data),
+  // 参数化测试（用表单当前值，未保存也可用）
+  testByParams: (meta: ConnectionMeta) =>
+    http.post<TestResult>('/s1/connections/test', { connectionMeta: meta }).then((r) => r.data),
+  // 列出现有数据库（测试通过后选择库/schema 用）
+  listDatabases: (meta: ConnectionMeta) =>
+    http.post<{ databases: string[] }>('/s1/connections/databases', { connectionMeta: meta }).then((r) => r.data),
 };
 
 // ---------- S2 ----------
@@ -55,9 +85,10 @@ export interface OntologyProperty {
 
 // 派生属性计算规格（与后端 ontology-core DerivedSpec 对应）
 export interface DerivedSpec {
-  op: 'countLinks' | 'countObject' | 'sumObject' | 'expression';
+  op: 'countLinks' | 'countObject' | 'sumObject' | 'avgLinks' | 'expression';
   linkType?: string;
   side?: 'source' | 'target';
+  prop?: string;
   expr?: string;
 }
 
@@ -79,13 +110,19 @@ export interface ObjectType {
   implementsInterfaces?: string[];
   sourceConnectionId?: string;
   sourceTable?: string;
+  titleProperty?: string;       // 展示实例时优先显示的属性（如姓名/工号）
 }
 export interface LinkType {
   apiName: string;
   displayName: string;
   sourceType: string;
   targetType: string;
-  cardinality: string;
+  sourceCardinality?: 'one' | 'many';
+  targetCardinality?: 'one' | 'many';
+  primaryKey?: string;
+  foreignKey?: string;
+  pluralName?: string;
+  visibility?: string;
   instanceSource: 'source' | 'managed';
 }
 export interface CreateObjectTypeWithMapping {
@@ -120,7 +157,9 @@ export const s2 = {
 
 export const s2link = {
   listLinkTypes: () => http.get<LinkType[]>('/s2/link-types').then((r) => r.data),
+  getLinkType: (apiName: string) => http.get<LinkType>(`/s2/link-types/${apiName}`).then((r) => r.data),
   createLinkType: (lt: LinkType) => http.post('/s2/link-types', lt).then((r) => r.data),
+  updateLinkType: (apiName: string, patch: Partial<LinkType>) => http.put(`/s2/link-types/${apiName}`, patch).then((r) => r.data),
   deleteLinkType: (apiName: string) => http.delete(`/s2/link-types/${apiName}`).then((r) => r.data),
 };
 

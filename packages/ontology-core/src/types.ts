@@ -56,6 +56,8 @@ export interface ObjectType {
   // 字段级映射记录在 properties[].sourceMapping；源实例由 S1 下推（instanceSource='source'）。
   sourceConnectionId?: string;
   sourceTable?: string;
+  // 用于实例展示的"显示名"属性（如人员选 姓名/工号），展示该对象时优先显示此属性值。
+  titleProperty?: string;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -64,9 +66,14 @@ export interface ObjectType {
 export interface LinkType {
   apiName: string;
   displayName: string;
-  sourceType: string;
-  targetType: string;
-  cardinality: 'one-to-one' | 'one-to-many' | 'many-to-many';
+  sourceType: string;          // 源端对象类型 apiName
+  targetType: string;          // 目标端对象类型 apiName
+  sourceCardinality: 'one' | 'many';   // 源端基数（One / Many）
+  targetCardinality: 'one' | 'many';   // 目标端基数（One / Many）
+  primaryKey?: string;         // 源端主键属性（对应源对象类型的某个属性）
+  foreignKey?: string;         // 目标端外键属性（对应目标对象类型的某个属性）
+  pluralName?: string;         // 复数显示名
+  visibility?: string;         // 可见性：Normal / Internal 等
   // 关系实例来源：
   // - 'source': 实例来自数据中台源表（需在 S1 额外配置 link 映射，见 S0 link_instance 表）；
   // - 'managed': 实例由本平台在 link_instance 表中维护（如用户标注的关联）。
@@ -137,6 +144,7 @@ export interface MetadataRepository {
   listLinkTypes(): Promise<LinkType[]>;
   getLinkType(apiName: string): Promise<LinkType | null>;
   createLinkType(def: LinkType): Promise<void>;
+  updateLinkType(apiName: string, patch: Partial<LinkType>): Promise<void>;
   deleteLinkType(apiName: string): Promise<void>;
   // 关系实例（本体侧维护，供 S3 图谱探索）
   createLinkInstance(linkType: string, sourceRid: string, targetRid: string): Promise<void>;

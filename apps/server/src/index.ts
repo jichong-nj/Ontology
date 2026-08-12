@@ -82,14 +82,65 @@ app.get('/api/s1/connections/:id', async (req, res) => {
   res.json(c);
 });
 
+// 更新已存在的连接（编辑）
+app.put('/api/s1/connections/:id', async (req, res) => {
+  try {
+    const body = { ...req.body, id: req.params.id };
+    await mappingSvc.updateConnection(body);
+    res.json({ ok: true, id: req.params.id });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 删除连接
+app.delete('/api/s1/connections/:id', async (req, res) => {
+  try {
+    await mappingSvc.deleteConnection(req.params.id);
+    res.json({ ok: true, id: req.params.id });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // 探测只读源库的表与字段（映射内嵌在对象类型中，无需独立的映射管理层）
 app.get('/api/s1/connections/:id/probe', async (req, res) => {
   try {
-    const tables = await mappingSvc.probeSourceTables(req.params.id);
-    res.json({ reachable: true, tables });
+    const result = await mappingSvc.probeSourceTables(req.params.id);
+    res.json(result);
   } catch (e: any) {
-    // 源端不可达（如源库未部署）是常态，不应作为服务端 500；返回结构化探测结果。
+    // 源端不可达（如源库未部署）或连接不存在，返回结构化结果而非裸 500。
     res.json({ reachable: false, error: e.message, tables: [] });
+  }
+});
+
+// 仅测试连接连通性（建立连接 + SELECT 1），不列举表。
+app.post('/api/s1/connections/:id/test', async (req, res) => {
+  try {
+    const result = await mappingSvc.testConnection(req.params.id);
+    res.json(result);
+  } catch (e: any) {
+    res.json({ reachable: false, error: e.message, tables: [] });
+  }
+});
+
+// 参数化测试连接（新建/编辑对话框内，用表单当前值，不依赖已保存连接）
+app.post('/api/s1/connections/test', async (req, res) => {
+  try {
+    const result = await mappingSvc.testSourceConnection(req.body?.connectionMeta || req.body || {});
+    res.json(result);
+  } catch (e: any) {
+    res.json({ reachable: false, error: e.message, tables: [] });
+  }
+});
+
+// 列出源库（连接测试通过后调用，供选择库/schema）
+app.post('/api/s1/connections/databases', async (req, res) => {
+  try {
+    const dbs = await mappingSvc.listSourceDatabases(req.body?.connectionMeta || req.body || {});
+    res.json({ databases: dbs });
+  } catch (e: any) {
+    res.json({ databases: [], error: e.message });
   }
 });
 
@@ -222,6 +273,25 @@ app.post('/api/s2/link-types', async (req, res) => {
   try {
     await repo.createLinkType(req.body);
     res.status(201).json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/s2/link-types/:apiName', async (req, res) => {
+  try {
+    const lt = await repo.getLinkType(req.params.apiName);
+    if (!lt) return res.status(404).json({ error: 'not found' });
+    res.json(lt);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/s2/link-types/:apiName', async (req, res) => {
+  try {
+    await repo.updateLinkType(req.params.apiName, req.body);
+    res.json({ ok: true });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }

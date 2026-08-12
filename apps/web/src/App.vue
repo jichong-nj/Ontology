@@ -136,8 +136,6 @@ function navigateTo(item: { to: string }) {
             <input type="text" placeholder="Search..." class="search-input" />
             <span class="search-icon">🔍</span>
           </div>
-          <button class="top-btn primary">Save</button>
-          <button class="top-btn">New</button>
           <div class="user-avatar">
             <span>U</span>
           </div>

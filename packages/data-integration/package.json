@@ -6,7 +6,8 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "dependencies": {
-    "@ontology/ontology-core": "*"
+    "@ontology/ontology-core": "*",
+    "mysql2": "^3.11.0"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

@@ -50,11 +50,17 @@ function connName(id?: string) {
 }
 
 // 派生属性 reducer 解析 / 配置辅助
+function derivedOp(p: OntologyProperty): string {
+  return parseDerivedSpec(p.reducer)?.op ?? 'countLinks';
+}
 function derivedLinkType(p: OntologyProperty): string {
   return parseDerivedSpec(p.reducer)?.linkType ?? '';
 }
 function derivedSide(p: OntologyProperty): 'source' | 'target' {
   return parseDerivedSpec(p.reducer)?.side ?? 'target';
+}
+function derivedProp(p: OntologyProperty): string {
+  return parseDerivedSpec(p.reducer)?.prop ?? '';
 }
 function setDerivedSpec(p: OntologyProperty, patch: Partial<DerivedSpec>) {
   const spec: DerivedSpec = { op: 'countLinks', ...(parseDerivedSpec(p.reducer) ?? {}), ...patch };
@@ -98,9 +104,9 @@ async function onDelete() {
 const editVisible = ref(false);
 const saving = ref(false);
 const editForm = reactive<{
-  displayName: string; description: string; sourceConnectionId: string; sourceTable: string;
+  displayName: string; description: string; sourceConnectionId: string; sourceTable: string; titleProperty: string;
   properties: OntologyProperty[];
-}>({ displayName: '', description: '', sourceConnectionId: '', sourceTable: '', properties: [] });
+}>({ displayName: '', description: '', sourceConnectionId: '', sourceTable: '', titleProperty: '', properties: [] });
 
 async function onEditConnectionChange(connId: string) {
   editForm.sourceTable = '';
@@ -119,6 +125,7 @@ function openEdit() {
   editForm.description = obj.value.description ?? '';
   editForm.sourceConnectionId = obj.value.sourceConnectionId ?? '';
   editForm.sourceTable = obj.value.sourceTable ?? '';
+  editForm.titleProperty = obj.value.titleProperty ?? '';
   editForm.properties = obj.value.properties.map((p) => ({ ...p }));
   editVisible.value = true;
   tables.value = [];
@@ -146,6 +153,7 @@ async function saveEdit() {
       description: editForm.description,
       sourceConnectionId: editForm.sourceConnectionId || undefined,
       sourceTable: editForm.sourceTable || undefined,
+      titleProperty: editForm.titleProperty || undefined,
       properties: editForm.properties.map((p) => ({
         apiName: p.apiName, displayName: p.displayName, type: p.type,
         required: !!p.required,
@@ -185,6 +193,10 @@ watch(() => route.params.apiName, load);
           <ElDescriptions :column="1" border size="small">
             <ElDescriptionsItem label="显示名称">{{ obj.displayName }}</ElDescriptionsItem>
             <ElDescriptionsItem label="API 名称">{{ obj.apiName }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="显示名属性">
+              <span v-if="obj.titleProperty" class="mono">{{ obj.titleProperty }}</span>
+              <span v-else class="ds-empty">未设置</span>
+            </ElDescriptionsItem>
             <ElDescriptionsItem label="数据源">
               <ElTag v-if="obj.sourceConnectionId" type="primary" effect="light">
                 {{ connName(obj.sourceConnectionId) }}
@@ -263,6 +275,11 @@ watch(() => route.params.apiName, load);
               <ElOption v-for="t in tables" :key="t.table" :label="t.table" :value="t.table" />
             </ElSelect>
           </ElFormItem>
+          <ElFormItem label="显示名属性">
+            <ElSelect v-model="editForm.titleProperty" placeholder="选择展示用的属性（可选）" filterable clearable style="width: 100%">
+              <ElOption v-for="p in editForm.properties.filter((x:any)=>!x.derived)" :key="p.apiName" :label="`${p.displayName} (${p.apiName})`" :value="p.apiName" />
+            </ElSelect>
+          </ElFormItem>
         </div>
 
         <div class="wizard-props__head">
@@ -283,6 +300,14 @@ watch(() => route.params.apiName, load);
         <template v-for="(p, i) in editForm.properties" :key="'der-' + i">
           <div v-if="p.derived" class="derived-cfg">
             <ElTag size="small" type="warning">派生属性 #{{ i + 1 }}</ElTag>
+            <span class="derived-cfg__label">算子</span>
+            <ElSelect :model-value="derivedOp(p)" style="width: 150px" @change="(v:string)=>setDerivedSpec(p,{op:v})">
+              <ElOption label="关联数量(countLinks)" value="countLinks" />
+              <ElOption label="对端均值(avgLinks)" value="avgLinks" />
+              <ElOption label="关联计数(countObject)" value="countObject" />
+              <ElOption label="关联求和(sumObject)" value="sumObject" />
+              <ElOption label="表达式(expression)" value="expression" />
+            </ElSelect>
             <span class="derived-cfg__label">关系类型</span>
             <ElSelect :model-value="derivedLinkType(p)" placeholder="选择关系" style="width: 220px" @change="(v:string)=>setDerivedSpec(p,{linkType:v})">
               <ElOption v-for="lt in linkTypes" :key="lt.apiName" :label="`${lt.displayName} (${lt.sourceType}→${lt.targetType})`" :value="lt.apiName" />
@@ -292,7 +317,10 @@ watch(() => route.params.apiName, load);
               <ElOption label="source（起点）" value="source" />
               <ElOption label="target（终点）" value="target" />
             </ElSelect>
-            <span class="derived-cfg__hint">算子：count（统计关系实例数）</span>
+            <template v-if="derivedOp(p) === 'avgLinks' || derivedOp(p) === 'expression'">
+              <span class="derived-cfg__label">{{ derivedOp(p) === 'avgLinks' ? '对端属性' : '表达式' }}</span>
+              <ElInput :model-value="derivedProp(p)" size="small" style="width: 150px" :placeholder="derivedOp(p) === 'avgLinks' ? '如：workHours' : '占位'" @update:model-value="(v:string)=>setDerivedSpec(p,{prop:v})" />
+            </template>
           </div>
           <ElCheckbox v-model="p.derived" class="derived-chk" @change="(v:any)=>onToggleDerived(p, !!v)">
             属性「{{ p.apiName || '未命名' }}」设为派生（计算值）

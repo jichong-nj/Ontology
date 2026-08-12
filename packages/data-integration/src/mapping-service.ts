@@ -4,8 +4,10 @@
 // 本服务保留的能力：源连接注册、表结构探测、以及“创建对象类型时关联数据源并映射字段”的组合动作。
 import type { MetadataRepository } from '@ontology/ontology-core';
 import type { PostgresMappingStore } from './mapping-store.pg';
-import type { ObjectMapping, SourceConnection } from './mapping-model';
+import type { ObjectMapping, SourceConnection, TestResult } from './mapping-model';
 import type { ObjectType } from '@ontology/ontology-core';
+
+export type { TestResult } from './mapping-model';
 
 export interface ProbeColumn {
   name: string;
@@ -42,10 +44,37 @@ export class MappingService {
   }
 
   // 探测只读源库中的表与字段
-  async probeSourceTables(connId: string): Promise<{ table: string; columns: ProbeColumn[] }[]> {
+  async probeSourceTables(connId: string): Promise<TestResult> {
     const conn = await this.store.getSourceConnection(connId);
     if (!conn) throw new Error(`数据源不存在: ${connId}`);
     return this.store.probeSourceTables(conn);
+  }
+
+  // 仅做连通性测试（不列举表）
+  async testConnection(connId: string): Promise<TestResult> {
+    const conn = await this.store.getSourceConnection(connId);
+    if (!conn) throw new Error(`数据源不存在: ${connId}`);
+    return this.store.testConnection(conn);
+  }
+
+  // 更新已存在的连接（编辑）
+  async updateConnection(c: SourceConnection): Promise<void> {
+    await this.store.updateSourceConnection(c);
+  }
+
+  // 删除连接
+  async deleteConnection(id: string): Promise<void> {
+    await this.store.deleteSourceConnection(id);
+  }
+
+  // 参数化测试（新建/编辑对话框内，未持久化也可用表单当前值）
+  async testSourceConnection(meta: ConnectionMeta): Promise<TestResult> {
+    return this.store.testSourceConnection(meta);
+  }
+
+  // 列出现有数据库（连接测试通过后调用，供选择库/schema）
+  async listSourceDatabases(meta: ConnectionMeta): Promise<string[]> {
+    return this.store.listSourceDatabases(meta);
   }
 
   // 组合动作：创建对象类型并把映射内嵌进对象类型（同时保留 object_mapping 底层记录）

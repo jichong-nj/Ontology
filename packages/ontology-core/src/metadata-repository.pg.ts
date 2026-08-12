@@ -20,7 +20,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
 
   async listObjectTypes(): Promise<ObjectType[]> {
     const { rows } = await this.pool.query(
-      `SELECT api_name, display_name, description, properties, source_connection_id, source_table,
+      `SELECT api_name, display_name, description, properties, source_connection_id, source_table, title_property,
               version, created_at, updated_at,
               COALESCE((SELECT array_agg(interface_api_name)
                         FROM object_interface WHERE object_api_name = o.api_name), ARRAY[]::text[]) AS implements_interfaces
@@ -34,6 +34,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       implementsInterfaces: r.implements_interfaces,
       sourceConnectionId: r.source_connection_id ?? undefined,
       sourceTable: r.source_table ?? undefined,
+      titleProperty: r.title_property ?? undefined,
       version: r.version,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
@@ -42,7 +43,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
 
   async getObjectType(apiName: string): Promise<ObjectType | null> {
     const { rows } = await this.pool.query(
-      `SELECT api_name, display_name, description, properties, source_connection_id, source_table,
+      `SELECT api_name, display_name, description, properties, source_connection_id, source_table, title_property,
               version, created_at, updated_at,
               COALESCE((SELECT array_agg(interface_api_name)
                         FROM object_interface WHERE object_api_name = $1), ARRAY[]::text[]) AS implements_interfaces
@@ -59,6 +60,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       implementsInterfaces: r.implements_interfaces,
       sourceConnectionId: r.source_connection_id ?? undefined,
       sourceTable: r.source_table ?? undefined,
+      titleProperty: r.title_property ?? undefined,
       version: r.version,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
@@ -69,18 +71,19 @@ export class PostgresMetadataRepository implements MetadataRepository {
     // version 是 NOT NULL 字段，调用方（前端/API）可能未传，缺省为 1
     const version = def.version ?? 1;
     await this.pool.query(
-      `INSERT INTO object_type (api_name, display_name, description, properties, source_connection_id, source_table, version, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,now(),now())
+      `INSERT INTO object_type (api_name, display_name, description, properties, source_connection_id, source_table, title_property, version, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now(),now())
        ON CONFLICT (api_name) DO UPDATE SET
          display_name = EXCLUDED.display_name,
          description = EXCLUDED.description,
          properties = EXCLUDED.properties,
          source_connection_id = EXCLUDED.source_connection_id,
          source_table = EXCLUDED.source_table,
+         title_property = EXCLUDED.title_property,
          version = EXCLUDED.version,
          updated_at = now()`,
       [def.apiName, def.displayName, def.description ?? null, JSON.stringify(def.properties),
-       def.sourceConnectionId ?? null, def.sourceTable ?? null, version],
+       def.sourceConnectionId ?? null, def.sourceTable ?? null, def.titleProperty ?? null, version],
     );
   }
 
@@ -89,10 +92,10 @@ export class PostgresMetadataRepository implements MetadataRepository {
     const version = def.version ?? 1;
     await this.pool.query(
       `UPDATE object_type
-         SET display_name=$2, description=$3, properties=$4, source_connection_id=$5, source_table=$6, version=$7, updated_at=now()
+         SET display_name=$2, description=$3, properties=$4, source_connection_id=$5, source_table=$6, title_property=$7, version=$8, updated_at=now()
        WHERE api_name=$1`,
       [apiName, def.displayName, def.description ?? null, JSON.stringify(def.properties),
-       def.sourceConnectionId ?? null, def.sourceTable ?? null, version],
+       def.sourceConnectionId ?? null, def.sourceTable ?? null, def.titleProperty ?? null, version],
     );
   }
 
@@ -111,12 +114,20 @@ export class PostgresMetadataRepository implements MetadataRepository {
       sourceType: r.source_type,
       targetType: r.target_type,
       cardinality: r.cardinality,
+      sourceCardinality: r.source_cardinality || 'one',
+      targetCardinality: r.target_cardinality || 'many',
+      primaryKey: r.primary_key || undefined,
+      foreignKey: r.foreign_key || undefined,
+      pluralName: r.plural_name || undefined,
+      visibility: r.visibility || 'Normal',
       instanceSource: r.instance_source,
       version: r.version,
     }));
   }
 
   async deleteLinkType(apiName: string): Promise<void> {
+    // 级联清理：先删除该关系类型下的所有关系实例，再删除类型本身
+    await this.pool.query(`DELETE FROM link_instance WHERE link_type=$1`, [apiName]);
     await this.pool.query(`DELETE FROM link_type WHERE api_name=$1`, [apiName]);
   }
 
@@ -130,6 +141,12 @@ export class PostgresMetadataRepository implements MetadataRepository {
       sourceType: r.source_type,
       targetType: r.target_type,
       cardinality: r.cardinality,
+      sourceCardinality: r.source_cardinality || 'one',
+      targetCardinality: r.target_cardinality || 'many',
+      primaryKey: r.primary_key || undefined,
+      foreignKey: r.foreign_key || undefined,
+      pluralName: r.plural_name || undefined,
+      visibility: r.visibility || 'Normal',
       instanceSource: r.instance_source,
       version: r.version,
     };
@@ -142,6 +159,25 @@ export class PostgresMetadataRepository implements MetadataRepository {
        ON CONFLICT (api_name) DO NOTHING`,
       [def.apiName, def.displayName, def.sourceType, def.targetType, def.cardinality, def.instanceSource, def.version],
     );
+  }
+
+  async updateLinkType(apiName: string, patch: Partial<LinkType>): Promise<void> {
+    const sets: string[] = [];
+    const values: any[] = [];
+    let i = 1;
+    if (patch.displayName !== undefined) { sets.push(`display_name=$${i++}`); values.push(patch.displayName); }
+    if (patch.sourceType !== undefined) { sets.push(`source_type=$${i++}`); values.push(patch.sourceType); }
+    if (patch.targetType !== undefined) { sets.push(`target_type=$${i++}`); values.push(patch.targetType); }
+    if (patch.sourceCardinality !== undefined) { sets.push(`source_cardinality=$${i++}`); values.push(patch.sourceCardinality); }
+    if (patch.targetCardinality !== undefined) { sets.push(`target_cardinality=$${i++}`); values.push(patch.targetCardinality); }
+    if (patch.primaryKey !== undefined) { sets.push(`primary_key=$${i++}`); values.push(patch.primaryKey); }
+    if (patch.foreignKey !== undefined) { sets.push(`foreign_key=$${i++}`); values.push(patch.foreignKey); }
+    if (patch.pluralName !== undefined) { sets.push(`plural_name=$${i++}`); values.push(patch.pluralName); }
+    if (patch.visibility !== undefined) { sets.push(`visibility=$${i++}`); values.push(patch.visibility); }
+    if (patch.instanceSource !== undefined) { sets.push(`instance_source=$${i++}`); values.push(patch.instanceSource); }
+    if (sets.length === 0) return;
+    values.push(apiName);
+    await this.pool.query(`UPDATE link_type SET ${sets.join(',')} WHERE api_name=$${i}`, values);
   }
 
   async createLinkInstance(linkType: string, sourceRid: string, targetRid: string): Promise<void> {
