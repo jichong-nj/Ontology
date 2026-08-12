@@ -32,6 +32,7 @@ const panelSections = computed<MenuSection[]>(() => {
         { key: 'obj-types', label: 'Object types', to: '/s2/object-types', icon: '📦' },
         { key: 'link-types', label: 'Link types', to: '/s2/link-types', icon: '🔗' },
         { key: 'alerts', label: 'Alerts', to: '/s2/alerts', icon: '🔔' },
+        { key: 'explore', label: 'Object Explore', to: '/s2/explore', icon: '🧭' },
       ]},
     ];
   }

@@ -5,6 +5,7 @@ import S2ObjectTypes from '@/pages/s2/ObjectTypes.vue';
 import S2ObjectTypeDetail from '@/pages/s2/ObjectTypeDetail.vue';
 import S2LinkTypes from '@/pages/s2/LinkTypes.vue';
 import S2Alerts from '@/pages/s2/Alerts.vue';
+import S2Explore from '@/pages/s2/Explore.vue';
 
 const routes = [
   { path: '/', component: Overview, meta: { title: 'Ontology Manager' } },
@@ -33,6 +34,7 @@ const routes = [
       },
       { path: 'link-types', component: S2LinkTypes, meta: { title: 'Link Types' } },
       { path: 'alerts', component: S2Alerts, meta: { title: 'Alerts' } },
+      { path: 'explore/:objectType?', component: S2Explore, meta: { title: '探索' } },
     ],
   },
 ];

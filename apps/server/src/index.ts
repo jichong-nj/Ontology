@@ -306,6 +306,65 @@ app.delete('/api/s2/link-types/:apiName', async (req, res) => {
   }
 });
 
+// ---------- S2 Explore（探索：实例列表 + 对象关联关系） ----------
+// 获取某对象类型的所有实例（含属性）
+app.get('/api/s2/explore/instances/:objectType', async (req, res) => {
+  try {
+    const instances = await repo.listObjectProperties(req.params.objectType);
+    res.json(instances);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 获取某个具体对象的所有关联关系（按 link_type 分组，含对端对象属性）
+app.get('/api/s2/explore/object/:objectType/:objectRid/links', async (req, res) => {
+  try {
+    const { objectType, objectRid } = req.params;
+    // 查询所有以该对象为 source 或 target 的 link_instance，JOIN link_type 获取元信息
+    const { rows } = await pool.query(
+      `SELECT li.link_type, lt.display_name AS link_display_name,
+              lt.source_type, lt.target_type,
+              CASE WHEN li.source_rid = $2 THEN 'target' ELSE 'source' END AS direction,
+              CASE WHEN li.source_rid = $2 THEN li.target_rid ELSE li.source_rid END AS other_rid
+         FROM link_instance li
+         JOIN link_type lt ON lt.api_name = li.link_type
+        WHERE (li.source_rid = $2 OR li.target_rid = $2)
+          AND (lt.source_type = $1 OR lt.target_type = $1)
+        ORDER BY li.link_type, li.created_at DESC`,
+      [objectType, objectRid],
+    );
+    // 按 link_type 分组
+    const groups: Record<string, { linkType: string; linkDisplayName: string; direction: string; otherRid: string }[]> = {};
+    for (const r of rows) {
+      if (!groups[r.link_type]) groups[r.link_type] = [];
+      groups[r.link_type].push({
+        linkType: r.link_type,
+        linkDisplayName: r.link_display_name,
+        direction: r.direction,
+        otherRid: r.other_rid,
+      });
+    }
+    // 批量获取对端对象的显示名
+    const result = await Promise.all(Object.entries(groups).map(async ([lt, items]) => {
+      // 取第一个 item 判断对端类型
+      const firstItem = items[0];
+      const otherType = firstItem.direction === 'target'
+        ? rows.find((r: any) => r.link_type === lt)?.target_type
+        : rows.find((r: any) => r.link_type === lt)?.source_type;
+      return {
+        linkType: lt,
+        linkDisplayName: items[0].linkDisplayName,
+        otherObjectType: otherType || '',
+        links: items.map((item) => ({ direction: item.direction, otherRid: item.otherRid })),
+      };
+    }));
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 健康检查
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 

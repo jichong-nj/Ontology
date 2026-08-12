@@ -6,7 +6,7 @@ import {
   ElInput, ElSelect, ElOption, ElSteps, ElStep, ElCheckbox, ElRadio, ElDescriptions, ElDescriptionsItem, ElMessageBox,
   ElIcon, ElTooltip,
 } from 'element-plus';
-import { ArrowLeft, ArrowRight, Check, Plus, Delete } from '@element-plus/icons-vue';
+import { ArrowLeft, ArrowRight, Check, Plus, Delete, Compass } from '@element-plus/icons-vue';
 import { s2, s2link, s1 } from '@/api';
 import type { ObjectType, SourceConnection, ProbeTable, ProbeColumn, OntologyProperty } from '@/api';
 import { tryRequest } from '@/utils/error';
@@ -288,6 +288,9 @@ async function load() {
 function openDetail(apiName: string) {
   router.push(`/s2/object-types/${apiName}`);
 }
+function exploreType(t: ObjectType) {
+  router.push(`/s2/explore/${t.apiName}`);
+}
 function isActive(apiName: string) {
   return route.params.apiName === apiName;
 }
@@ -348,6 +351,7 @@ onMounted(load);
             </ElTooltip>
           </div>
           <div class="type-card__actions" @click.stop>
+            <ElButton size="small" text type="primary" :icon="Compass" title="探索该类型实例与关系" @click="exploreType(t)" />
             <ElButton size="small" text type="danger" @click="onDelete(t)">删除</ElButton>
           </div>
         </ElCard>

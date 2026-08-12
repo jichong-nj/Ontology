@@ -163,4 +163,21 @@ export const s2link = {
   deleteLinkType: (apiName: string) => http.delete(`/s2/link-types/${apiName}`).then((r) => r.data),
 };
 
+// ---------- S2 Explore（探索）----------
+export interface ObjectLink {
+  linkType: string;
+  linkDisplayName: string;
+  otherObjectType: string;
+  links: { direction: 'source' | 'target'; otherRid: string }[];
+}
+
+export const s2explore = {
+  // 获取某对象类型的所有实例
+  listInstances: (objectType: string) =>
+    http.get<any[]>(`/s2/explore/instances/${objectType}`).then((r) => r.data),
+  // 获取某个具体对象的所有关联关系（按 link_type 分组）
+  getObjectLinks: (objectType: string, objectRid: string) =>
+    http.get<ObjectLink[]>(`/s2/explore/object/${objectType}/${objectRid}/links`).then((r) => r.data),
+};
+
 export default http;
