@@ -21,15 +21,25 @@ export interface PropertyDef {
 }
 
 // 派生属性计算规格（序列化为 PropertyDef.reducer 的 JSON 字符串）。
-// 当前支持算子：
-// - countLinks: 统计某关系类型中以本对象为 source/target 的实例数量（如"部门人数"）。
-// - avgLinks:   通过某关系聚合对端对象的某一数值属性求平均值（如"部门平均上班时间"），需 prop 指定属性。
+// 支持算子（对齐 Palantir Derived Properties 的聚合能力）：
+// - countLinks : 统计某关系类型中以本对象为 source/target 的实例数量（如"部门人数"）。
+// - avgLinks   : 通过某关系聚合对端对象的某一数值属性求平均值（如"部门平均工时"）。
+// - sumLinks   : 对端数值属性求和（如"部门总预算"）。
+// - minLinks   : 对端数值属性取最小值。
+// - maxLinks   : 对端数值属性取最大值。
+// - collectLinks: 收集对端某属性为数组（Collect list/set，如"部门成员姓名列表"）。
+// - expression : 轻量占位表达式（第一期不执行）。
 export interface DerivedSpec {
-  op: 'countLinks' | 'countObject' | 'sumObject' | 'avgLinks' | 'expression';
-  // countLinks / avgLinks 专用
+  op: 'countLinks' | 'avgLinks' | 'sumLinks' | 'minLinks' | 'maxLinks' | 'collectLinks' | 'expression';
+  // 关系相关算子(count/avg/sum/min/max/collect) 专用
   linkType?: string;        // 关系类型 apiName
   side?: 'source' | 'target'; // 本对象在关系中的角色（部门人数：target）
-  prop?: string;            // avgLinks 专用：对端对象上用于求平均的数值属性 apiName
+  prop?: string;            // avg/sum/min/max/collect 专用：对端对象上聚合/收集的属性 apiName
+  distinct?: boolean;       // countLinks 专用：是否按对端对象去重计数（Exact cardinality）
+  // collectLinks 专用
+  limit?: number;           // 收集最多 N 个值
+  asSet?: boolean;          // 收集为集合（去重）而非列表
+  single?: boolean;         // single: 单链接取标量（如 Project 的 Lead engineer name），仅当关系为 1:1/1:N 唯一端时返回一个值而非数组
   // expression 专用（轻量、仅占位，第一期不执行）
   expr?: string;
 }

@@ -87,11 +87,15 @@ export async function seedEmployeeInstances(repo: PostgresMetadataRepository): P
       'postgresql://ontology:ontology@localhost:5432/enterprise_biz',
   });
   const { rows } = await srcPool.query(
-    `SELECT emp_code, name, gender, email, phone, title,
+    `SELECT id, emp_code, name, gender, email, phone, title,
             department_id, manager_id, hire_date, work_hours, status
        FROM employee ORDER BY id`,
   );
   await srcPool.end();
+
+  // 建立 源id -> emp_code 映射，供 manager 关系对齐（Employee RID 统一用 emp_code）
+  const idToCode: Record<number, string> = {};
+  for (const r of rows) idToCode[r.id] = r.emp_code;
 
   for (const r of rows) {
     const rid = r.emp_code;
@@ -116,6 +120,9 @@ export async function seedEmployeeInstances(repo: PostgresMetadataRepository): P
     );
     if (r.department_id != null) {
       await repo.createLinkInstance('EmployeeDepartment', rid, String(r.department_id));
+    }
+    if (r.manager_id != null && idToCode[r.manager_id]) {
+      await repo.createLinkInstance('EmployeeManager', rid, idToCode[r.manager_id]);
     }
   }
   console.log(`[S3] 已写入 ${rows.length} 条人员实例与 EmployeeDepartment 关系实例`);
@@ -281,12 +288,16 @@ export async function seedBusinessObjectInstances(repo: PostgresMetadataReposito
         await repo.createLinkInstance('ProjectDepartment', rid, String(r.dept_id));
       }
     }
-    // 项目成员 多对多
+    // 项目成员 多对多（Employee 端统一用 emp_code 作为 RID）
+    const { rows: empRows } = await srcPool.query(`SELECT id, emp_code FROM employee`);
+    const empIdToCode: Record<number, string> = {};
+    for (const e of empRows) empIdToCode[e.id] = e.emp_code;
     const { rows: pm } = await srcPool.query(
       `SELECT project_id, employee_id FROM project_member`,
     );
     for (const r of pm) {
-      await repo.createLinkInstance('ProjectMember', String(r.project_id), String(r.employee_id));
+      const empRid = empIdToCode[r.employee_id];
+      if (empRid) await repo.createLinkInstance('ProjectMember', String(r.project_id), empRid);
     }
     // 项目交付产品 多对多
     const { rows: pp } = await srcPool.query(

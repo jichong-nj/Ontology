@@ -85,10 +85,14 @@ export interface OntologyProperty {
 
 // 派生属性计算规格（与后端 ontology-core DerivedSpec 对应）
 export interface DerivedSpec {
-  op: 'countLinks' | 'countObject' | 'sumObject' | 'avgLinks' | 'expression';
+  op: 'countLinks' | 'avgLinks' | 'sumLinks' | 'minLinks' | 'maxLinks' | 'collectLinks' | 'expression';
   linkType?: string;
   side?: 'source' | 'target';
   prop?: string;
+  distinct?: boolean;
+  limit?: number;
+  asSet?: boolean;
+  single?: boolean;
   expr?: string;
 }
 

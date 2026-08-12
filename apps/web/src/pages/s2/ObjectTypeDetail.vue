@@ -50,6 +50,7 @@ function connName(id?: string) {
 }
 
 // 派生属性 reducer 解析 / 配置辅助
+const AGG_OPS = ['avgLinks', 'sumLinks', 'minLinks', 'maxLinks', 'collectLinks'];
 function derivedOp(p: OntologyProperty): string {
   return parseDerivedSpec(p.reducer)?.op ?? 'countLinks';
 }
@@ -61,6 +62,35 @@ function derivedSide(p: OntologyProperty): 'source' | 'target' {
 }
 function derivedProp(p: OntologyProperty): string {
   return parseDerivedSpec(p.reducer)?.prop ?? '';
+}
+function derivedDistinct(p: OntologyProperty): boolean {
+  return parseDerivedSpec(p.reducer)?.distinct ?? false;
+}
+function derivedAsSet(p: OntologyProperty): boolean {
+  return parseDerivedSpec(p.reducer)?.asSet ?? false;
+}
+function derivedSingle(p: OntologyProperty): boolean {
+  return parseDerivedSpec(p.reducer)?.single ?? false;
+}
+function derivedLimit(p: OntologyProperty): number | undefined {
+  return parseDerivedSpec(p.reducer)?.limit;
+}
+// 切换算子时清理与新算子无关的字段，避免脏配置
+function onDerivedOpChange(p: OntologyProperty, op: string) {
+  const base: Partial<DerivedSpec> = { op: op as DerivedSpec['op'] };
+  if (op === 'countLinks') base.side = derivedSide(p);
+  if (op === 'expression') base.expr = parseDerivedSpec(p.reducer)?.expr ?? '';
+  if (AGG_OPS.includes(op)) {
+    base.linkType = derivedLinkType(p);
+    base.side = derivedSide(p);
+    base.prop = derivedProp(p);
+  }
+  if (op === 'collectLinks') {
+    base.limit = derivedLimit(p);
+    base.asSet = derivedAsSet(p);
+    base.single = derivedSingle(p);
+  }
+  setDerivedSpec(p, base);
 }
 function setDerivedSpec(p: OntologyProperty, patch: Partial<DerivedSpec>) {
   const spec: DerivedSpec = { op: 'countLinks', ...(parseDerivedSpec(p.reducer) ?? {}), ...patch };
@@ -299,27 +329,44 @@ watch(() => route.params.apiName, load);
         <!-- 派生属性配置 -->
         <template v-for="(p, i) in editForm.properties" :key="'der-' + i">
           <div v-if="p.derived" class="derived-cfg">
-            <ElTag size="small" type="warning">派生属性 #{{ i + 1 }}</ElTag>
+            <ElTag size="small" type="warning">派生 #{{ i + 1 }}</ElTag>
             <span class="derived-cfg__label">算子</span>
-            <ElSelect :model-value="derivedOp(p)" style="width: 150px" @change="(v:string)=>setDerivedSpec(p,{op:v})">
-              <ElOption label="关联数量(countLinks)" value="countLinks" />
+            <ElSelect :model-value="derivedOp(p)" style="width: 170px" @change="(v:string)=>onDerivedOpChange(p,v)">
+              <ElOption label="关联计数(countLinks)" value="countLinks" />
               <ElOption label="对端均值(avgLinks)" value="avgLinks" />
-              <ElOption label="关联计数(countObject)" value="countObject" />
-              <ElOption label="关联求和(sumObject)" value="sumObject" />
+              <ElOption label="对端求和(sumLinks)" value="sumLinks" />
+              <ElOption label="对端最小(minLinks)" value="minLinks" />
+              <ElOption label="对端最大(maxLinks)" value="maxLinks" />
+              <ElOption label="收集列表(collectLinks)" value="collectLinks" />
               <ElOption label="表达式(expression)" value="expression" />
             </ElSelect>
-            <span class="derived-cfg__label">关系类型</span>
-            <ElSelect :model-value="derivedLinkType(p)" placeholder="选择关系" style="width: 220px" @change="(v:string)=>setDerivedSpec(p,{linkType:v})">
-              <ElOption v-for="lt in linkTypes" :key="lt.apiName" :label="`${lt.displayName} (${lt.sourceType}→${lt.targetType})`" :value="lt.apiName" />
-            </ElSelect>
-            <span class="derived-cfg__label">本对象角色</span>
-            <ElSelect :model-value="derivedSide(p)" style="width: 130px" @change="(v:'source'|'target')=>setDerivedSpec(p,{side:v})">
-              <ElOption label="source（起点）" value="source" />
-              <ElOption label="target（终点）" value="target" />
-            </ElSelect>
-            <template v-if="derivedOp(p) === 'avgLinks' || derivedOp(p) === 'expression'">
-              <span class="derived-cfg__label">{{ derivedOp(p) === 'avgLinks' ? '对端属性' : '表达式' }}</span>
-              <ElInput :model-value="derivedProp(p)" size="small" style="width: 150px" :placeholder="derivedOp(p) === 'avgLinks' ? '如：workHours' : '占位'" @update:model-value="(v:string)=>setDerivedSpec(p,{prop:v})" />
+            <template v-if="derivedOp(p) !== 'expression'">
+              <span class="derived-cfg__label">关系类型</span>
+              <ElSelect :model-value="derivedLinkType(p)" placeholder="选择关系" style="width: 230px" @change="(v:string)=>setDerivedSpec(p,{linkType:v})">
+                <ElOption v-for="lt in linkTypes" :key="lt.apiName" :label="`${lt.displayName} (${lt.sourceType}→${lt.targetType})`" :value="lt.apiName" />
+              </ElSelect>
+              <span class="derived-cfg__label">本对象角色</span>
+              <ElSelect :model-value="derivedSide(p)" style="width: 130px" @change="(v:'source'|'target')=>setDerivedSpec(p,{side:v})">
+                <ElOption label="source（起点）" value="source" />
+                <ElOption label="target（终点）" value="target" />
+              </ElSelect>
+            </template>
+            <template v-if="derivedOp(p) === 'countLinks'">
+              <ElCheckbox :model-value="derivedDistinct(p)" @change="(v:any)=>setDerivedSpec(p,{distinct:!!v})">按对端去重</ElCheckbox>
+            </template>
+            <template v-if="AGG_OPS.includes(derivedOp(p))">
+              <span class="derived-cfg__label">{{ derivedOp(p) === 'collectLinks' ? '收集属性' : '对端属性' }}</span>
+              <ElInput :model-value="derivedProp(p)" size="small" style="width: 150px" :placeholder="derivedOp(p)==='collectLinks' ? '如：name' : '如：workHours'" @update:model-value="(v:string)=>setDerivedSpec(p,{prop:v})" />
+            </template>
+            <template v-if="derivedOp(p) === 'collectLinks'">
+              <ElCheckbox :model-value="derivedAsSet(p)" @change="(v:any)=>setDerivedSpec(p,{asSet:!!v})">去重集合</ElCheckbox>
+              <ElCheckbox :model-value="derivedSingle(p)" @change="(v:any)=>setDerivedSpec(p,{single:!!v})" title="关系唯一端只取一个对端属性（如 Project 的 Lead engineer name）">单链接取标量</ElCheckbox>
+              <span class="derived-cfg__label">上限</span>
+              <ElInput :model-value="derivedLimit(p)" size="small" style="width: 88px" placeholder="全部" @update:model-value="(v:string)=>setDerivedSpec(p,{limit:v?Number(v):undefined})" />
+            </template>
+            <template v-if="derivedOp(p) === 'expression'">
+              <span class="derived-cfg__label">表达式</span>
+              <ElInput :model-value="derivedProp(p)" size="small" style="width: 200px" placeholder="占位（第一期不执行）" @update:model-value="(v:string)=>setDerivedSpec(p,{expr:v})" />
             </template>
           </div>
           <ElCheckbox v-model="p.derived" class="derived-chk" @change="(v:any)=>onToggleDerived(p, !!v)">
@@ -449,14 +496,29 @@ watch(() => route.params.apiName, load);
 .derived-val { font-weight: 600; color: var(--accent); font-size: 13px; }
 .derived-err { color: var(--el-color-danger, #f56c6c); font-size: 12px; }
 
-/* 编辑对象类型弹窗：加宽 + body 可滚动 */
+/* 编辑对象类型弹窗：固定大小 + body 内部滚动 */
+.edit-obj-dialog :deep(.el-overlay) {
+  overflow: hidden !important;
+}
 .edit-obj-dialog :deep(.el-dialog) {
-  max-height: 86vh;
-  display: flex;
-  flex-direction: column;
+  margin-top: 5vh !important;
+  height: 82vh !important;
+  max-height: 86vh !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+.edit-obj-dialog :deep(.el-dialog__header) {
+  flex-shrink: 0 !important;
 }
 .edit-obj-dialog :deep(.el-dialog__body) {
-  overflow-y: auto;
-  padding-right: var(--space-3);
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  padding-right: var(--space-3) !important;
+}
+.edit-obj-dialog :deep(.el-dialog__footer) {
+  flex-shrink: 0 !important;
 }
 </style>

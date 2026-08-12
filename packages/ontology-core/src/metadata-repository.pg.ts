@@ -230,34 +230,66 @@ export class PostgresMetadataRepository implements MetadataRepository {
 
     if (spec.op === 'countLinks') {
       if (!spec.linkType) throw new Error('countLinks 缺少 linkType');
-      const col = spec.side === 'source' ? 'source_rid' : 'target_rid';
-      const { rows } = await this.pool.query(
-        `SELECT count(*)::int AS n FROM link_instance WHERE link_type=$1 AND ${col}=$2`,
-        [spec.linkType, objectRid],
-      );
+      const mySide = spec.side ?? 'target';
+      const col = mySide === 'source' ? 'source_rid' : 'target_rid';
+      // distinct: 按对端对象去重计数（Exact cardinality）
+      const sql = spec.distinct
+        ? `SELECT COUNT(DISTINCT ${mySide === 'source' ? 'target_rid' : 'source_rid'})::int AS n FROM link_instance WHERE link_type=$1 AND ${col}=$2`
+        : `SELECT count(*)::int AS n FROM link_instance WHERE link_type=$1 AND ${col}=$2`;
+      const { rows } = await this.pool.query(sql, [spec.linkType, objectRid]);
       return { value: rows[0].n };
     }
     if (spec.op === 'expression') {
       // 第一期不执行表达式，返回配置本身以供展示
       return { value: spec.expr ?? null };
     }
-    if (spec.op === 'avgLinks') {
-      if (!spec.linkType) throw new Error('avgLinks 缺少 linkType');
-      if (!spec.prop) throw new Error('avgLinks 缺少 prop（对端对象上求平均的属性 apiName）');
+    // avg / sum / min / max / collect 共用「对端属性聚合」逻辑
+    if (['avgLinks', 'sumLinks', 'minLinks', 'maxLinks', 'collectLinks'].includes(spec.op)) {
+      if (!spec.linkType) throw new Error(`${spec.op} 缺少 linkType`);
+      if (!spec.prop) throw new Error(`${spec.op} 缺少 prop（对端对象上聚合的属性 apiName）`);
       const lt = await this.getLinkType(spec.linkType);
       if (!lt) throw new Error(`关系类型不存在: ${spec.linkType}`);
-      // side 指定「本对象」在关系中的角色；对端为另一端的对象类型
       const mySide = spec.side ?? 'source';
       const col = mySide === 'source' ? 'source_rid' : 'target_rid';
       const otherType = mySide === 'source' ? lt.targetType : lt.sourceType;
+      const otherCol = mySide === 'source' ? 'target_rid' : 'source_rid'; // 对端 rid 列
+
+      if (spec.op === 'collectLinks') {
+        // 收集对端属性为数组（列表或去重集合）；single: 仅取第一个非空的标量（单链接取标量）
+        let sql = `SELECT o.patch->>$2 AS v
+                     FROM link_instance li
+                     JOIN object_write o
+                       ON o.object_type = $4
+                      AND o.object_rid = li.${otherCol}
+                    WHERE li.link_type=$1 AND ${col}=$3`;
+        if (spec.single) {
+          // single 模式：取唯一/首个对端对象（按 rid 排序保证可复现），返回其属性标量
+          sql += ` ORDER BY li.${otherCol} LIMIT 1`;
+        } else {
+          if (spec.asSet) sql += ' GROUP BY o.patch->>$2';
+          if (spec.limit && spec.limit > 0) sql += ` LIMIT ${Number(spec.limit)}`;
+        }
+        const { rows } = await this.pool.query(sql, [spec.linkType, spec.prop, objectRid, otherType]);
+        if (spec.single) {
+          const v = rows.length ? rows[0].v : null;
+          return { value: v === '' ? null : v };
+        }
+        const vals = rows.map((r) => r.v).filter((v) => v !== null && v !== undefined && v !== '');
+        return { value: spec.asSet ? Array.from(new Set(vals)) : vals };
+      }
+
+      const agg = spec.op === 'avgLinks' ? 'AVG'
+        : spec.op === 'sumLinks' ? 'SUM'
+        : spec.op === 'minLinks' ? 'MIN'
+        : 'MAX';
       const { rows } = await this.pool.query(
-        `SELECT COALESCE(AVG(CAST(o.patch->>$2 AS numeric)), 0)::float AS v
+        `SELECT COALESCE(${agg}(CAST(o.patch->>$2 AS numeric)), 0)::float AS v
            FROM link_instance li
            JOIN object_write o
-             ON o.object_type = $5
-            AND o.object_rid = CASE WHEN $3='source' THEN li.target_rid ELSE li.source_rid END
-          WHERE li.link_type=$1 AND ${col}=$4`,
-        [spec.linkType, spec.prop, spec.side ?? 'source', objectRid, otherType],
+             ON o.object_type = $4
+            AND o.object_rid = li.${otherCol}
+          WHERE li.link_type=$1 AND ${col}=$3`,
+        [spec.linkType, spec.prop, objectRid, otherType],
       );
       return { value: rows[0].v ?? 0 };
     }
