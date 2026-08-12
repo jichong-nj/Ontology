@@ -279,6 +279,71 @@ export class PostgresMetadataRepository implements MetadataRepository {
     return rows.map((r: any) => ({ objectRid: r.object_rid, properties: r.patch ?? {} }));
   }
 
+  /**
+   * 按属性分组计数（用于分类属性的条形图）。
+   * 取每个实例最新 patch 中的属性值，GROUP BY 计数。
+   */
+  async aggregateByProperty(
+    objectType: string,
+    property: string,
+    topN = 20,
+  ): Promise<{ key: string; count: number }[]> {
+    const col = property.replace(/[^A-Za-z0-9_]/g, '');
+    const { rows } = await this.pool.query(
+      `SELECT (patch->>$1) AS k, count(*)::int AS n
+         FROM (SELECT DISTINCT ON (object_rid) patch
+                 FROM object_write WHERE object_type = $2
+                ORDER BY object_rid, id DESC) t
+        WHERE patch->>$1 IS NOT NULL
+        GROUP BY k
+        ORDER BY n DESC
+        LIMIT $3`,
+      [col, objectType, topN],
+    );
+    return rows.map((r: any) => ({ key: r.k ?? '(空)', count: r.n }));
+  }
+
+  /**
+   * 数值属性的直方图分桶（用于数值属性的分布图）。
+   * 自动计算 min/max，按 bucketCount 等分。
+   */
+  async histogramByProperty(
+    objectType: string,
+    property: string,
+    bucketCount = 20,
+  ): Promise<{ bucket: number; min: number; max: number; count: number }[]> {
+    const col = property.replace(/[^A-Za-z0-9_]/g, '');
+    const { rows: ext } = await this.pool.query(
+      `SELECT min((patch->>$1)::numeric) AS mn, max((patch->>$1)::numeric) AS mx
+         FROM (SELECT DISTINCT ON (object_rid) patch
+                 FROM object_write WHERE object_type = $2
+                ORDER BY object_rid, id DESC) t
+        WHERE patch->>$1 IS NOT NULL`,
+      [col, objectType],
+    );
+    const mn = parseFloat(ext[0]?.mn ?? '0');
+    const mx = parseFloat(ext[0]?.mx ?? '0');
+    if (!isFinite(mn) || !isFinite(mx) || mn === mx) {
+      return [{ bucket: 0, min: mn, max: mx, count: ext[0]?.mn != null ? 1 : 0 }];
+    }
+    const width = (mx - mn) / bucketCount;
+    const buckets: { bucket: number; min: number; max: number; count: number }[] = [];
+    for (let i = 0; i < bucketCount; i++) {
+      const bMin = mn + i * width;
+      const bMax = mn + (i + 1) * width;
+      const { rows: b } = await this.pool.query(
+        `SELECT count(*)::int AS n
+           FROM (SELECT DISTINCT ON (object_rid) patch
+                   FROM object_write WHERE object_type = $2
+                  ORDER BY object_rid, id DESC) t
+          WHERE (patch->>$1)::numeric >= $3 AND (patch->>$1)::numeric < $4`,
+        [col, objectType, bMin, i === bucketCount - 1 ? mx + 1 : bMax],
+      );
+      buckets.push({ bucket: i, min: bMin, max: bMax, count: b[0]?.n ?? 0 });
+    }
+    return buckets;
+  }
+
   async listInterfaces(): Promise<InterfaceDef[]> {
     const { rows } = await this.pool.query(`SELECT * FROM interface_def ORDER BY api_name`);
     return rows.map((r: any) => ({

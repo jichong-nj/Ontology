@@ -16,23 +16,6 @@ import { TypeScriptFunctionSandbox, AlertScheduler } from '@ontology/ontology-co
 const META_URL = process.env.META_DATABASE_URL ||
   'postgresql://ontology:ontology@localhost:5432/ontology';
 
-// 演示用人员实例数据（与 packages/enterprise-biz/sql/seed.sql 的 employee 一致）
-// rid 约定：员工用 emp_code，部门用 id（与源表一致，便于核对）。
-const EMPLOYEE_DEMO: Array<{ rid: string; name: string; dept: number; workHours: number; title: string }> = [
-  { rid: 'E0001', name: '张伟', dept: 1, workHours: 9.0, title: 'CEO' },
-  { rid: 'E0002', name: '李娜', dept: 2, workHours: 8.5, title: '研发总监' },
-  { rid: 'E0003', name: '王强', dept: 3, workHours: 7.5, title: '制造总监' },
-  { rid: 'E0004', name: '刘洋', dept: 4, workHours: 8.8, title: '市场总监' },
-  { rid: 'E0005', name: '陈静', dept: 5, workHours: 5.0, title: '软件组长' },
-  { rid: 'E0006', name: '杨帆', dept: 5, workHours: 7.2, title: '软件工程师' },
-  { rid: 'E0007', name: '赵磊', dept: 5, workHours: 7.8, title: '软件工程师' },
-  { rid: 'E0008', name: '周敏', dept: 6, workHours: 4.5, title: '硬件组长' },
-  { rid: 'E0009', name: '吴昊', dept: 6, workHours: 7.0, title: '硬件工程师' },
-  { rid: 'E0010', name: '孙丽', dept: 3, workHours: 8.2, title: '生产主管' },
-  { rid: 'E0011', name: '马涛', dept: 3, workHours: 8.6, title: '产线工人' },
-  { rid: 'E0012', name: '朱琳', dept: 4, workHours: 8.0, title: '市场经理' },
-];
-
 // S1+S2：注册只读数据源、对象类型（内嵌映射）、关系类型、函数。
 // 幂等：已存在则跳过/覆盖，可重复执行。
 export async function seedEnterpriseBiz(pool: Pool): Promise<PostgresMetadataRepository> {
@@ -91,22 +74,51 @@ export async function seedEnterpriseBiz(pool: Pool): Promise<PostgresMetadataRep
   return repo;
 }
 
-// S3：把 enterprise_biz.employee 的 work_hours/department_id 镜像为本体可写侧实例，
+// S3：把 enterprise_biz.employee 全量镜像为本体可写侧实例，
 // 并写入 EmployeeDepartment 关系实例，供离职预警函数读取与触发。
+// 直接从只读源 enterprise_biz 读取，保证与业务库数据一致（含全部员工属性）。
 export async function seedEmployeeInstances(repo: PostgresMetadataRepository): Promise<void> {
   await repo.clearLinkInstances('EmployeeDepartment');
   await repo.clearObjectWrites('Employee');
 
-  for (const e of EMPLOYEE_DEMO) {
+  const srcPool = new Pool({
+    connectionString:
+      process.env.ENTERPRISE_BIZ_URL ||
+      'postgresql://ontology:ontology@localhost:5432/enterprise_biz',
+  });
+  const { rows } = await srcPool.query(
+    `SELECT emp_code, name, gender, email, phone, title,
+            department_id, manager_id, hire_date, work_hours, status
+       FROM employee ORDER BY id`,
+  );
+  await srcPool.end();
+
+  for (const r of rows) {
+    const rid = r.emp_code;
     await repo.writeObjectPatch(
       'Employee',
-      e.rid,
-      { empCode: e.rid, name: e.name, title: e.title, departmentId: e.dept, workHours: e.workHours, dimissionRisk: false },
+      rid,
+      {
+        empCode: r.emp_code,
+        name: r.name,
+        gender: r.gender,
+        email: r.email,
+        phone: r.phone,
+        title: r.title,
+        departmentId: r.department_id,
+        managerId: r.manager_id,
+        hireDate: r.hire_date ? String(r.hire_date) : null,
+        workHours: r.work_hours != null ? Number(r.work_hours) : null,
+        status: r.status,
+        dimissionRisk: false,
+      },
       'bootstrap:seed',
     );
-    await repo.createLinkInstance('EmployeeDepartment', e.rid, String(e.dept));
+    if (r.department_id != null) {
+      await repo.createLinkInstance('EmployeeDepartment', rid, String(r.department_id));
+    }
   }
-  console.log(`[S3] 已写入 ${EMPLOYEE_DEMO.length} 条人员实例与 EmployeeDepartment 关系实例`);
+  console.log(`[S3] 已写入 ${rows.length} 条人员实例与 EmployeeDepartment 关系实例`);
 }
 
 // 注册业务函数到沙箱（供运行时 invoke）

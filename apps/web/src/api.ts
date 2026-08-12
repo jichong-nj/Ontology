@@ -178,6 +178,12 @@ export const s2explore = {
   // 获取某个具体对象的所有关联关系（按 link_type 分组）
   getObjectLinks: (objectType: string, objectRid: string) =>
     http.get<ObjectLink[]>(`/s2/explore/object/${objectType}/${objectRid}/links`).then((r) => r.data),
+  // 分类属性分组计数（条形图）
+  aggregate: (objectType: string, property: string, topN = 20) =>
+    http.get<{ key: string; count: number }[]>(`/s2/explore/${objectType}/aggregate`, { params: { property, topN } }).then((r) => r.data),
+  // 数值属性直方图分桶（分布图）
+  histogram: (objectType: string, property: string, buckets = 20) =>
+    http.get<{ bucket: number; min: number; max: number; count: number }[]>(`/s2/explore/${objectType}/histogram`, { params: { property, buckets } }).then((r) => r.data),
 };
 
 export default http;

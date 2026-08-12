@@ -159,6 +159,10 @@ export interface MetadataRepository {
   computeDerived(objectType: string, propApiName: string, objectRid: string): Promise<{ value: unknown }>;
   // 读取某对象类型下所有实例的（最新一次 patch 合并后的）属性，供函数/动作读取实例数据
   listObjectProperties(objectType: string): Promise<{ objectRid: string; properties: Record<string, unknown> }[]>;
+  // 按属性分组计数（分类属性的分布条形图）
+  aggregateByProperty(objectType: string, property: string, topN?: number): Promise<{ key: string; count: number }[]>;
+  // 数值属性的直方图分桶（分布图）
+  histogramByProperty(objectType: string, property: string, bucketCount?: number): Promise<{ bucket: number; min: number; max: number; count: number }[]>;
   // 接口与实现
   listInterfaces(): Promise<InterfaceDef[]>;
   setObjectInterface(objectApi: string, interfaceApi: string): Promise<void>;

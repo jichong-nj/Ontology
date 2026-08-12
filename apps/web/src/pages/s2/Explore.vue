@@ -2,10 +2,11 @@
 import { ref, onMounted, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElButton, ElInput, ElTable, ElTableColumn, ElTag, ElCard, ElEmpty, ElBreadcrumb, ElBreadcrumbItem, ElTooltip, ElIcon, ElDescriptions, ElDescriptionsItem, ElDivider, ElSelect, ElOption, ElLoadingDirective as vLoading } from 'element-plus';
-import { ArrowLeft, Search, Link, InfoFilled } from '@element-plus/icons-vue';
+import { ArrowLeft, Search, Link, InfoFilled, Close } from '@element-plus/icons-vue';
 import { s2, s2link, s2explore, type ObjectLink } from '@/api';
-import type { ObjectType, LinkType } from '@/api';
+import type { ObjectType, LinkType, PropertyDef } from '@/api';
 import { tryRequest } from '@/utils/error';
+import PropertyChartCard from './PropertyChartCard.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -16,6 +17,23 @@ const objectTypes = ref<ObjectType[]>([]);
 const linkTypes = ref<LinkType[]>([]);
 const currentObjectType = ref<ObjectType | null>(null);
 const loading = ref(false);
+
+// ========== 属性图表画布（探索仪表盘）==========
+const addedProps = ref<string[]>([]); // 已添加到画布的属性 apiName 列表
+const propToAdd = ref(''); // 搜索框当前选中的待添加属性
+
+function addProp(apiName: string) {
+  if (!apiName) return;
+  if (!addedProps.value.includes(apiName)) addedProps.value.push(apiName);
+}
+
+function removeProp(apiName: string) {
+  addedProps.value = addedProps.value.filter((p) => p !== apiName);
+}
+
+function getPropDef(apiName: string): PropertyDef | undefined {
+  return currentObjectType.value?.properties.find((p) => p.apiName === apiName);
+}
 
 // ========== Overview: 对象类型卡片网格 + 左侧分组筛选 ==========
 const searchQuery = ref('');
@@ -308,9 +326,48 @@ const graphEdges = computed(() => {
         </div>
       </template>
 
-      <!-- ====== 类型探索：实例列表 ====== -->
+      <!-- ====== 类型探索：实例列表 + 属性图表画布 ====== -->
       <template v-else-if="!selectedRid">
         <div class="objects-view">
+          <!-- 属性图表画布 -->
+          <section class="chart-canvas-section">
+            <div class="chart-canvas-bar">
+              <ElSelect
+                v-model="propToAdd"
+                filterable
+                placeholder="搜索属性以添加图表..."
+                size="small"
+                style="width: 320px"
+                @change="(v: string) => { addProp(v); propToAdd = ''; }"
+              >
+                <ElOption
+                  v-for="p in currentObjectType?.properties"
+                  :key="p.apiName"
+                  :label="`${p.displayName || p.apiName} (${p.apiName})`"
+                  :value="p.apiName"
+                  :disabled="addedProps.includes(p.apiName)"
+                />
+              </ElSelect>
+              <span class="chart-canvas-hint">添加属性后，下方展示该属性的分布图表（数值→直方图，其它→计数条形图）</span>
+            </div>
+            <div v-if="addedProps.length" class="chart-grid">
+              <div v-for="pa in addedProps" :key="pa" class="chart-grid__cell">
+                <ElButton
+                  size="small" text type="danger" class="chart-grid__close"
+                  :icon="Close" @click="removeProp(pa)"
+                >移除</ElButton>
+                <PropertyChartCard
+                  v-if="getPropDef(pa)"
+                  :object-type="objectTypeApiName"
+                  :property="getPropDef(pa)!"
+                />
+              </div>
+            </div>
+            <ElEmpty v-else description="从上方选择属性，添加探索图表" />
+          </section>
+
+          <ElDivider />
+
           <div class="objects-toolbar">
             <ElInput
               v-model="instanceSearch"
@@ -459,6 +516,33 @@ const graphEdges = computed(() => {
 .explore-tabs :deep(.el-tabs__content) {
   height: calc(100% - 40px);
   overflow-y: auto;
+}
+
+/* ====== 属性图表画布 ====== */
+.chart-canvas-section {
+  margin-bottom: var(--space-3);
+}
+.chart-canvas-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  flex-wrap: wrap;
+}
+.chart-canvas-hint { font-size: 12px; color: var(--text-muted); }
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-3);
+}
+.chart-grid__cell {
+  position: relative;
+}
+.chart-grid__close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
 }
 
 /* ====== Overview 布局 ====== */

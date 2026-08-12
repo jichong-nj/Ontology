@@ -365,6 +365,36 @@ app.get('/api/s2/explore/object/:objectType/:objectRid/links', async (req, res) 
   }
 });
 
+// 属性聚合：分类属性分组计数（用于条形图）
+app.get('/api/s2/explore/:objectType/aggregate', async (req, res) => {
+  try {
+    const topN = req.query.topN ? parseInt(req.query.topN as string, 10) : 20;
+    const data = await repo.aggregateByProperty(
+      req.params.objectType,
+      req.query.property as string,
+      topN,
+    );
+    res.json(data);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 数值直方图：数值属性分桶分布（用于直方图）
+app.get('/api/s2/explore/:objectType/histogram', async (req, res) => {
+  try {
+    const buckets = req.query.buckets ? parseInt(req.query.buckets as string, 10) : 20;
+    const data = await repo.histogramByProperty(
+      req.params.objectType,
+      req.query.property as string,
+      buckets,
+    );
+    res.json(data);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 健康检查
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
