@@ -59,6 +59,15 @@ export const objectTypes: ObjectType[] = [
       { apiName: 'workHours', displayName: '日均上班时长(小时)', type: 'float', required: false, sourceMapping: 'work_hours' },
       // 离职风险预警：可写属性，由 evaluateDimissionRisk 函数计算后修改（非派生）
       { apiName: 'dimissionRisk', displayName: '离职风险预警', type: 'boolean', required: false, derived: false },
+      // 年请假天数（派生）：聚合 EmployeeLeave 关系中本人员为 source 的请假记录 durationDays 之和
+      {
+        apiName: 'annualLeaveDays',
+        displayName: '年请假天数',
+        type: 'integer',
+        required: false,
+        derived: true,
+        reducer: JSON.stringify({ op: 'sumLinks', linkType: 'EmployeeLeave', side: 'source', prop: 'durationDays' }),
+      },
     ],
     implementsInterfaces: [],
     version: V,
@@ -135,6 +144,23 @@ export const objectTypes: ObjectType[] = [
       { apiName: 'endDate', displayName: '结束日期', type: 'date', required: false, sourceMapping: 'end_date' },
       { apiName: 'budget', displayName: '预算', type: 'float', required: false, sourceMapping: 'budget' },
       { apiName: 'status', displayName: '状态', type: 'string', required: true, sourceMapping: 'status' },
+    ],
+    implementsInterfaces: [],
+    version: V,
+    createdAt: '',
+    updatedAt: '',
+  },
+  {
+    apiName: 'LeaveRecord',
+    displayName: '请假记录',
+    description: '员工请假业务记录（来源：enterprise_biz.leave_record）',
+    properties: [
+      { apiName: 'id', displayName: 'ID', type: 'integer', required: true, sourceMapping: 'id' },
+      { apiName: 'empCode', displayName: '工号', type: 'string', required: true, sourceMapping: 'emp_code' },
+      { apiName: 'leaveType', displayName: '请假类型', type: 'string', required: true, sourceMapping: 'leave_type' },
+      { apiName: 'startDate', displayName: '开始日期', type: 'date', required: true, sourceMapping: 'start_date' },
+      { apiName: 'durationDays', displayName: '请假天数', type: 'integer', required: true, sourceMapping: 'duration_days' },
+      { apiName: 'reason', displayName: '事由', type: 'string', required: false, sourceMapping: 'reason' },
     ],
     implementsInterfaces: [],
     version: V,
@@ -225,6 +251,15 @@ export const linkTypes: LinkType[] = [
     targetType: 'Product',
     cardinality: 'many-to-many',
     instanceSource: 'source',   // 来自 project_product 关系表
+    version: V,
+  },
+  {
+    apiName: 'EmployeeLeave',
+    displayName: '人员请假记录',
+    sourceType: 'Employee',
+    targetType: 'LeaveRecord',
+    cardinality: 'one-to-many',
+    instanceSource: 'source',   // 来自 leave_record.emp_code（经 employee.emp_code 关联）
     version: V,
   },
 ];

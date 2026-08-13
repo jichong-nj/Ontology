@@ -169,6 +169,48 @@ export async function seedEmployeeInstances(repo: PostgresMetadataRepository): P
   console.log(`[S3] 已写入 ${rows.length} 条人员实例与 EmployeeDepartment 关系实例`);
 }
 
+// S3：把 enterprise_biz.leave_record 全量镜像为本体可写侧 LeaveRecord 实例，
+// 并写入 EmployeeLeave 关系实例（Employee.emp_code -> LeaveRecord），
+// 供 Employee 派生属性「年请假天数」(sumLinks) 实时聚合。
+export async function seedLeaveRecordInstances(repo: PostgresMetadataRepository): Promise<void> {
+  await repo.clearLinkInstances('EmployeeLeave');
+  await repo.clearObjectWrites('LeaveRecord');
+
+  const srcPool = new Pool({
+    connectionString:
+      process.env.ENTERPRISE_BIZ_URL ||
+      'postgresql://ontology:ontology@localhost:5432/enterprise_biz',
+  });
+  // 仅取 emp_code 即可对齐 Employee RID（Employee RID 统一为 emp_code）
+  const { rows } = await srcPool.query(
+    `SELECT id, emp_code, leave_type, start_date, duration_days, reason
+       FROM leave_record ORDER BY id`,
+  );
+  await srcPool.end();
+
+  for (const r of rows) {
+    const rid = `lr_${r.id}`;
+    await repo.writeObjectPatch(
+      'LeaveRecord',
+      rid,
+      {
+        id: r.id,
+        empCode: r.emp_code,
+        leaveType: r.leave_type,
+        startDate: r.start_date ? String(r.start_date) : null,
+        durationDays: r.duration_days != null ? Number(r.duration_days) : null,
+        reason: r.reason,
+      },
+      'bootstrap:seed',
+    );
+    if (r.emp_code) {
+      // EmployeeLeave: source=Employee(emp_code) -> target=LeaveRecord(lr_<id>)
+      await repo.createLinkInstance('EmployeeLeave', r.emp_code, rid);
+    }
+  }
+  console.log(`[S3] 已写入 ${rows.length} 条请假记录实例与 EmployeeLeave 关系实例`);
+}
+
 // S3：把 enterprise_biz.department 全量镜像为本体可写侧 Department 实例，
 // 并写入 DepartmentHierarchy 自引用关系（parent_id），
 // 使 EmployeeDepartment 的 target 能与 Department 实例对齐（RID 统一用部门 id）。
@@ -403,6 +445,7 @@ async function main() {
   const repo =   await seedEnterpriseBiz(pool);
   await seedDepartmentInstances(repo);
   await seedEmployeeInstances(repo);
+  await seedLeaveRecordInstances(repo);
   await seedBusinessObjectInstances(repo);
   buildSandbox(repo);
   const ots = await repo.listObjectTypes();

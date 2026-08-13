@@ -110,4 +110,17 @@ export const objectTypeMappings: CreateObjectTypeWithMappingInput[] = [
       fm('status', 'status'),
     ],
   },
+  {
+    objectType: { apiName: 'LeaveRecord', displayName: '请假记录', description: '员工请假业务记录（来源：enterprise_biz.leave_record）', properties: [], implementsInterfaces: [], version: 1, createdAt: '', updatedAt: '' },
+    sourceConnectionId: SOURCE_ID,
+    sourceTable: 'leave_record',
+    fieldMappings: [
+      fm('id', 'id'),
+      fm('empCode', 'emp_code'),
+      fm('leaveType', 'leave_type'),
+      fm('startDate', 'start_date'),
+      fm('durationDays', 'duration_days'),
+      fm('reason', 'reason'),
+    ],
+  },
 ];
