@@ -12,6 +12,7 @@
     "@ontology/ontology-core": "*",
     "@ontology/data-integration": "*",
     "@ontology/enterprise-biz": "*",
+    "@ontology/ai-orchestration": "*",
     "express": "^4.19.2",
     "pg": "^8.12.0"
   },

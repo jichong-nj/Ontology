@@ -273,4 +273,40 @@ export const s2explore = {
     http.get<{ bucket: number; min: number; max: number; count: number }[]>(`/s2/explore/${objectType}/histogram`, { params: { property, buckets } }).then((r) => r.data),
 };
 
+// ---------- AIP 配置平台（单一多能力 Agent）----------
+export interface AIPAgentConfigDTO {
+  id: string;
+  displayName: string;
+  systemPrompt: string;
+  model: string;
+  baseUrl: string;
+  apiKey: string;
+  temperature: number;
+  enabledTools: string[]; // 'functions' | 'actions' | 'rules' | 'explore' | 'alerts'
+  maxSteps: number;
+  version?: number;
+}
+
+export interface AgentStep {
+  tool: string;
+  args: unknown;
+  result: unknown;
+}
+
+export interface AgentRunResult {
+  ok: boolean;
+  reply: string;
+  steps: AgentStep[];
+  error?: string;
+}
+
+export const aip = {
+  getConfig: (id: string) =>
+    http.get<AIPAgentConfigDTO>(`/aip/config/${id}`).then((r) => r.data).catch(() => null),
+  saveConfig: (id: string, cfg: Partial<AIPAgentConfigDTO>) =>
+    http.put<AIPAgentConfigDTO>(`/aip/config/${id}`, cfg).then((r) => r.data),
+  run: (id: string, message: string, history: unknown[] = []) =>
+    http.post<AgentRunResult>(`/aip/agent/${id}/run`, { message, history }).then((r) => r.data),
+};
+
 export default http;

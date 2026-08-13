@@ -13,6 +13,7 @@ import {
   DerivedSpec,
   parseDerivedSpec,
   AutomationRule,
+  AIPAgentConfig,
   FunctionSandbox,
 } from './types';
 import { Pool } from 'pg';
@@ -839,6 +840,49 @@ export class PostgresMetadataRepository implements MetadataRepository {
   async deleteRule(apiName: string): Promise<void> {
     await this.pool.query(`DELETE FROM rule WHERE api_name = $1`, [apiName]);
   }
+
+  // ---------- AIP Agent 配置 ----------
+  async upsertAIPAgentConfig(cfg: AIPAgentConfig): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO aip_agent_config
+        (id, display_name, system_prompt, model, base_url, api_key, temperature, enabled_tools, max_steps, version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (id) DO UPDATE SET
+         display_name = EXCLUDED.display_name,
+         system_prompt = EXCLUDED.system_prompt,
+         model = EXCLUDED.model,
+         base_url = EXCLUDED.base_url,
+         api_key = EXCLUDED.api_key,
+         temperature = EXCLUDED.temperature,
+         enabled_tools = EXCLUDED.enabled_tools,
+         max_steps = EXCLUDED.max_steps,
+         version = aip_agent_config.version + 1,
+         updated_at = now()`,
+      [cfg.id, cfg.displayName, cfg.systemPrompt, cfg.model, cfg.baseUrl, cfg.apiKey,
+        cfg.temperature, JSON.stringify(cfg.enabledTools ?? []), cfg.maxSteps, (cfg.version ?? 1)],
+    );
+  }
+
+  async getAIPAgentConfig(id: string): Promise<AIPAgentConfig | null> {
+    const { rows } = await this.pool.query(`SELECT * FROM aip_agent_config WHERE id = $1`, [id]);
+    if (rows.length === 0) return null;
+    return rowToAIPAgentConfig(rows[0]);
+  }
+}
+
+function rowToAIPAgentConfig(r: any): AIPAgentConfig {
+  return {
+    id: r.id,
+    displayName: r.display_name,
+    systemPrompt: r.system_prompt,
+    model: r.model,
+    baseUrl: r.base_url,
+    apiKey: r.api_key,
+    temperature: r.temperature,
+    enabledTools: r.enabled_tools ?? [],
+    maxSteps: r.max_steps,
+    version: r.version,
+  };
 }
 
 function rowToRule(r: any): AutomationRule {

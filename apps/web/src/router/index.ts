@@ -10,10 +10,12 @@ import S2Functions from '@/pages/s2/Functions.vue';
 import S2Actions from '@/pages/s2/Actions.vue';
 import S2SharedProperties from '@/pages/s2/SharedProperties.vue';
 import AlertsPage from '@/pages/AlertsPage.vue';
+import AIPPage from '@/pages/AIPPage.vue';
 
 const routes = [
   { path: '/', component: Overview, meta: { title: 'Ontology Manager' } },
   { path: '/alerts', component: AlertsPage, meta: { title: 'Alerts' } },
+  { path: '/aip', component: AIPPage, meta: { title: 'AIP' } },
   {
     path: '/s1',
     redirect: '/s1/connections',

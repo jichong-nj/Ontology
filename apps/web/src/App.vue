@@ -12,6 +12,7 @@ const iconNav = [
   { icon: '🔌', key: 's1', label: 'Data Sources', to: '/s1/connections' },
   { icon: '📦', key: 's2', label: 'Ontology', to: '/s2/object-types' },
   { icon: '🔔', key: 'alerts', label: 'Alerts', to: '/alerts', badge: true },
+  { icon: '🤖', key: 'aip', label: 'AIP', to: '/aip' },
 ];
 
 // 顶部告警图标徽标（实时未读/总数）
@@ -76,6 +77,7 @@ onMounted(loadAlertCount);
 // 当前激活的图标
 const activeIcon = computed(() => {
   if (route.path.startsWith('/alerts')) return 'alerts';
+  if (route.path.startsWith('/aip')) return 'aip';
   if (route.path.startsWith('/s2')) return 's2';
   if (route.path.startsWith('/s1')) return 's1';
   return 'home';

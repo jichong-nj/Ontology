@@ -133,6 +133,23 @@ CREATE TABLE alert_rule (
   version           INT NOT NULL DEFAULT 1
 );
 
+-- ---------- AIP 配置平台（单一多能力 Agent 配置） ----------
+CREATE TABLE aip_agent_config (
+  id              TEXT PRIMARY KEY,            -- 配置标识（如 'default'）
+  display_name    TEXT NOT NULL,
+  system_prompt   TEXT NOT NULL,               -- 系统提示词：定义 Agent 角色与可用能力边界
+  model           TEXT NOT NULL DEFAULT 'local-model',
+  base_url        TEXT NOT NULL DEFAULT 'http://localhost:1234/v1',
+  api_key         TEXT NOT NULL DEFAULT '',    -- 本地模型通常留空
+  temperature     DOUBLE PRECISION NOT NULL DEFAULT 0.2,
+  -- 启用能力集合：从本体工具清单中勾选（functions / actions / rules / explore / alerts）
+  enabled_tools   JSONB NOT NULL DEFAULT '["functions","actions","rules","explore","alerts"]'::jsonb,
+  max_steps       INT NOT NULL DEFAULT 6,      -- Agent 单轮最多工具调用步数（防循环）
+  version         INT NOT NULL DEFAULT 1,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ---------- S1 映射配置（只读接入 + 对象↔源映射） ----------
 
 CREATE TABLE source_connection (

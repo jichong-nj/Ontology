@@ -18,6 +18,9 @@ import {
   registerDbFunctions,
 } from '@ontology/enterprise-biz';
 import { RuleScheduler } from '@ontology/ontology-core';
+import { AIPAgent } from '@ontology/ai-orchestration';
+import type { AgentRuntime } from '@ontology/ai-orchestration';
+import type { AIPAgentConfig } from '@ontology/ontology-core';
 
 const META_URL =
   process.env.META_DATABASE_URL ||
@@ -684,10 +687,120 @@ app.get('/api/s2/explore/:objectType/histogram', async (req, res) => {
   }
 });
 
+// ---------- AIP 配置平台：单一多能力 Agent ----------
+// 进程内运行时：把本体能力（函数/动作/规则/探索/告警）桥接给 Agent 工具调用。
+const agentRuntime: AgentRuntime = {
+  listFunctions: () => repo.listFunctions(),
+  listActions: () => repo.listActions(),
+  listRules: () => repo.listRules(),
+  listObjectTypes: () => repo.listObjectTypes(),
+  invokeFunction: async (name, args) => {
+    const sb = await getSandbox();
+    await registerDbFunctions(repo, sb);
+    return sb.execute(name, args);
+  },
+  triggerAction: async (name, args) => {
+    const action = await repo.getAction(name);
+    if (!action) throw new Error(`动作未注册: ${name}`);
+    if (action.effect?.kind !== 'function') throw new Error(`仅支持 function 类型动作，当前为 ${action.effect?.kind}`);
+    const sb = await getSandbox();
+    await registerDbFunctions(repo, sb);
+    return sb.execute(action.effect.ref, args);
+  },
+  runRules: async () => {
+    let scheduler = ruleScheduler;
+    if (!scheduler) {
+      const sb = await getSandbox();
+      scheduler = new RuleScheduler(repo, sb, { tickMs: 999_999_999 });
+    }
+    return scheduler.runAll();
+  },
+  listAlerts: () => repo.listObjectProperties('Alert'),
+  getInstances: (objectType) => repo.listObjectProperties(objectType),
+  getObjectLinks: async (objectType, objectRid) => {
+    const { rows } = await pool.query(
+      `SELECT li.link_type, lt.display_name AS link_display_name,
+              lt.source_type, lt.target_type,
+              CASE WHEN li.source_rid = $2 THEN 'target' ELSE 'source' END AS direction,
+              CASE WHEN li.source_rid = $2 THEN li.target_rid ELSE li.source_rid END AS other_rid
+         FROM link_instance li
+         JOIN link_type lt ON lt.api_name = li.link_type
+        WHERE (li.source_rid = $2 OR li.target_rid = $2)
+          AND (lt.source_type = $1 OR lt.target_type = $1)
+        ORDER BY li.link_type, li.created_at DESC`,
+      [objectType, objectRid],
+    );
+    return rows;
+  },
+  aggregate: (objectType, property, topN) => repo.aggregateByProperty(objectType, property, topN ?? 20),
+  histogram: (objectType, property, buckets) => repo.histogramByProperty(objectType, property, buckets ?? 20),
+};
+
+// Agent 配置 CRUD
+app.get('/api/aip/config/:id', async (req, res) => {
+  try {
+    const cfg = await repo.getAIPAgentConfig(req.params.id);
+    if (!cfg) return res.status(404).json({ error: '配置不存在' });
+    res.json(cfg);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/aip/config/:id', async (req, res) => {
+  try {
+    const body = req.body as Partial<AIPAgentConfig>;
+    const existing = await repo.getAIPAgentConfig(req.params.id);
+    const cfg: AIPAgentConfig = {
+      id: req.params.id,
+      displayName: body.displayName ?? existing?.displayName ?? 'Ontology Agent',
+      systemPrompt: body.systemPrompt ?? existing?.systemPrompt ?? DEFAULT_AGENT_PROMPT,
+      model: body.model ?? existing?.model ?? 'local-model',
+      baseUrl: body.baseUrl ?? existing?.baseUrl ?? 'http://localhost:1234/v1',
+      apiKey: body.apiKey ?? existing?.apiKey ?? '',
+      temperature: body.temperature ?? existing?.temperature ?? 0.2,
+      enabledTools: body.enabledTools ?? existing?.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts'],
+      maxSteps: body.maxSteps ?? existing?.maxSteps ?? 6,
+      version: existing?.version,
+    };
+    await repo.upsertAIPAgentConfig(cfg);
+    res.json({ ok: true, config: cfg });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Agent 对话入口：一个 Agent 承载本体全部能力
+app.post('/api/aip/agent/:id/run', async (req, res) => {
+  try {
+    const cfg = await repo.getAIPAgentConfig(req.params.id);
+    if (!cfg) return res.status(404).json({ error: 'Agent 配置不存在，请先保存配置' });
+    const message = req.body?.message;
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ error: 'message 必填' });
+    }
+    const history = Array.isArray(req.body?.history) ? req.body.history : [];
+    const agent = new AIPAgent(cfg, agentRuntime);
+    const result = await agent.run(message, history);
+    res.json({ ok: true, ...result });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 健康检查
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 const PORT = Number(process.env.PORT || 4000);
+
+// AIP Agent 默认系统提示词（可在配置平台覆盖）
+const DEFAULT_AGENT_PROMPT = `你是 Ontology 平台的智能助理（AIP Agent）。你可以通过工具访问本体的全部能力：
+- 查询对象实例与关系图谱（员工/部门/产品/设备/项目/请假记录）
+- 执行 Ontology 函数（如离职风险评估）
+- 触发动作、运行自动化规则
+- 聚合统计与直方图分析
+- 查看告警
+请根据用户自然语言意图，自主选择合适的工具并多步串联完成复杂任务，最后用简洁中文总结结果。`;
 // 仅当作为入口直接运行时才监听端口；被测试 import 时不自动启动，避免 EADDRINUSE。
 if (import.meta.url === `file://${process.argv[1]}`) {
   app.listen(PORT, () => {

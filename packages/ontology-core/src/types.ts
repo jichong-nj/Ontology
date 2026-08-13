@@ -280,6 +280,21 @@ export interface AutomationRule {
   version: number;
 }
 
+// ---------- AIP 配置平台：单一多能力 Agent 配置 ----------
+export interface AIPAgentConfig {
+  id: string;
+  displayName: string;
+  systemPrompt: string;
+  model: string;
+  baseUrl: string;
+  apiKey: string;
+  temperature: number;
+  // 启用能力集合（对应本体工具分组）
+  enabledTools: string[]; // 可选值: 'functions' | 'actions' | 'rules' | 'explore' | 'alerts'
+  maxSteps: number;
+  version?: number;
+}
+
 // ---- 接口方法运行时引擎契约 ----
 // 执行上下文：调用某个对象实例的接口方法
 export interface MethodInvocationContext {
