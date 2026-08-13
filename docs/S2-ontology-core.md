@@ -196,7 +196,10 @@ export interface ActionType {
   kind?: 'standard' | 'llm';
   parameters: ActionParameter[];
   validationRules: string[];
-  effect: { kind: 'function' | 'write'; ref: string };  // write: 落本体可写侧 object_write，不写回只读源端
+  // 内嵌校验规则（对标 Palantir Action 自带 rules）：动作落地前逐条校验命中对象，
+  // 不满足者跳过（计入调度结果的 skippedByPrecondition）。详见 RULE-ENGINE-DESIGN.md Step 3。
+  preconditions?: ActionPrecondition[];
+  effect: { kind: 'function' | 'write' | 'notify' | 'approval'; ref: string };  // write: 落本体可写侧 object_write，不写回只读源端
   version: number;
 }
 

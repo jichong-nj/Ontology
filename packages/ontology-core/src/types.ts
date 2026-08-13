@@ -144,7 +144,20 @@ export interface ActionType {
   // - approval: 发起审批流（Step 2 新增，对接审批系统）。
   // 注：源端为只读（见 S1），动作不得写回映射源；需要落库的写操作统一走本体可写侧。
   effect: { kind: 'function' | 'write' | 'notify' | 'approval'; ref: string };
+  // 内嵌校验规则（对标 Palantir Action 自带的前置校验/rules）：动作执行前逐条校验命中对象，
+  // 不满足的记录被跳过并在结果中标注 skippedByPrecondition。例如「flagged 对象必须含 riskScore」「riskScore 必须 > 0」。
+  // 这把"动作能否落地"的约束声明化，FDE 可自助配置，无需改代码。
+  preconditions?: ActionPrecondition[];
   version: number;
+}
+
+// Action 前置校验：作用于每个被动作处理的对象（如 rule 的 flagged 项）
+export interface ActionPrecondition {
+  // requiredProperty: 属性必须存在且非空；minValue/maxValue: 数值比较；notEmpty: 数组/字符串非空
+  kind: 'requiredProperty' | 'minValue' | 'maxValue' | 'notEmpty';
+  property: string;
+  value?: number; // minValue / maxValue 时使用
+  message: string; // 不满足时返回的说明
 }
 
 export interface OntologyFunction {

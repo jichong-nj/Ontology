@@ -83,8 +83,15 @@ interface AutomationRule {
 - ✅ 前端规则中心支持选择 trigger 类型（schedule 周期 / event 监听对象类型）与查看/编辑；保留删除确认。
 - ⏳ 后续：通知/审批系统的实际对接（effect=notify/approval 的落地实现）、event 触发器与 object_write 写入链路的实际挂载。
 
+### Step 3（体验与治理增强）—— 已完成（2026-08-13）
+- ✅ **Action 内嵌校验规则（preconditions）**：`ActionType` 新增 `preconditions`（对标 Palantir Action 自带 rules）。每条声明式校验（`requiredProperty`/`minValue`/`maxValue`/`notEmpty`）作用于被动作处理的命中对象；调度器 `RuleScheduler.evaluateRule` 在调用 Action 前逐条校验，不满足者跳过并计入 `skippedByPrecondition`。`action_type` 表新增 `preconditions` JSONB 列（迁移脚本 `migrate-action-preconditions.sql`）。
+- ✅ **可视化 Rule logic（降低 FDE 门槛）**：规则中心编辑抽屉的条件参数由裸 JSON 改为**按所选函数 inputs 自动生成的结构化表单**（数字/文本控件），并支持「预览命中对象」（调用函数 invoke 展示将命中的对象 rid），保留「高级 JSON」双向编辑入口。前端还透明展示所选 Action 的内嵌校验规则。
+- 端到端验证：precondition 正常路径 `flagged=17, skipped=0, actionsInvoked=17`；属性缺失场景 `skipped=17, actionsInvoked=0`。
+
 ---
 
 ## 5. 风险与回退
 - Step 1 不触达数据库 schema，可通过回退代码立即还原，无数据风险。
 - Step 2 涉及 schema 变更，已提供手动 psql 迁移脚本（`packages/ontology-core/sql/migrate-alert-rule-to-rule.sql`，项目约定：DB 迁移手动应用增量），脚本保留旧表数据等价迁移（interval_seconds → trigger.schedule.intervalSeconds）。
+- Step 3 仅新增 `action_type.preconditions` 列（ADD COLUMN，无删除）与前端可视化；回退只需撤销列与代码，无数据丢失风险。
+

@@ -659,11 +659,12 @@ export class PostgresMetadataRepository implements MetadataRepository {
 
   async createAction(def: ActionType): Promise<void> {
     const validationRules = def.validationRules ?? [];
+    const preconditions = def.preconditions ?? [];
     await this.pool.query(
-      `INSERT INTO action_type (api_name, display_name, parameters, validation_rules, effect, version)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO action_type (api_name, display_name, parameters, validation_rules, preconditions, effect, version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (api_name) DO NOTHING`,
-      [def.apiName, def.displayName, JSON.stringify(def.parameters), JSON.stringify(validationRules), JSON.stringify(def.effect), def.version],
+      [def.apiName, def.displayName, JSON.stringify(def.parameters), JSON.stringify(validationRules), JSON.stringify(preconditions), JSON.stringify(def.effect), def.version],
     );
   }
 
@@ -672,7 +673,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
     const vals: any[] = [];
     let i = 1;
     const map: Record<string, string> = {
-      displayName: 'display_name', parameters: 'parameters', validationRules: 'validation_rules', effect: 'effect', version: 'version',
+      displayName: 'display_name', parameters: 'parameters', validationRules: 'validation_rules', preconditions: 'preconditions', effect: 'effect', version: 'version',
     };
     for (const [k, col] of Object.entries(map)) {
       if (k in patch) {
@@ -698,6 +699,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       kind: r.kind,
       parameters: r.parameters,
       validationRules: r.validation_rules,
+      preconditions: r.preconditions ?? [],
       effect: r.effect,
       version: r.version,
     }));
@@ -782,6 +784,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       kind: r.kind,
       parameters: r.parameters,
       validationRules: r.validation_rules,
+      preconditions: r.preconditions ?? [],
       effect: r.effect,
       version: r.version,
     };

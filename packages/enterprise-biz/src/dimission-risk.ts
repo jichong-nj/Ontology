@@ -106,11 +106,17 @@ return async (args, ctx) => {
     const level = levelOf(score);
     const name = typeof e.properties.name === 'string' ? e.properties.name : undefined;
 
-    await repo.writeObjectPatch('Employee', e.objectRid, { riskScore: score, riskLevel: level }, actor);
+    // 命中判定：风险等级非空，或「工时低于部门均值*阈值」，或「请假超起扣天数」。
+    // 注：工时低于部门均值是离职风险的核心信号，即便扣分后 score 仍偏高也应标记，
+    // 否则会出现「明显偏低工时却因扣分力度不足而判为无风险」的逻辑漏洞。
+    const belowAvg = Number.isFinite(wh) && avg > 0 && wh < avg * threshold;
+    const overLeave = leave > leaveBase;
+    const isRisk = level !== 'none' || belowAvg || overLeave;
 
-    // 仅当风险等级命中（<=80）才进入告警候选
-    if (level !== 'none') {
-      flagged.push({ rid: e.objectRid, name, workHours: wh, deptAvg: avg, annualLeaveDays: leave, score, level });
+    await repo.writeObjectPatch('Employee', e.objectRid, { riskScore: score, riskLevel: level, dimissionRisk: isRisk }, actor);
+
+    if (isRisk) {
+      flagged.push({ rid: e.objectRid, name, workHours: wh, deptAvg: avg, annualLeaveDays: leave, score, level, dimissionRisk: isRisk });
     }
   }
 
@@ -128,7 +134,11 @@ return async (args, ctx) => {
 // 内置兜底实现：当元数据库中 evaluateDimissionRisk 无 body 时使用（保证冷启动可运行）
 export function makeEvaluateDimissionRisk(repo: MetadataRepository): TsFn {
   return async (args: Record<string, unknown>) => {
-    const threshold = typeof args.threshold === 'number' ? args.threshold : 0.8;
+    const num = (v: unknown, d: number) => (typeof v === 'number' ? v : (v === undefined || v === null ? d : Number(v)));
+    const threshold = num(args.threshold, 0.8);
+    const leaveDeduct = num(args.leaveDeduct, 10);
+    const workDeduct = num(args.workDeduct, 10);
+    const leaveBase = num(args.leaveBase, 1);
     const onlyDept = typeof args.departmentId === 'number' ? args.departmentId : null;
 
     // 1) 读取人员实例（含 workHours、annualLeaveDays）与人员-部门关系实例
@@ -182,24 +192,28 @@ export function makeEvaluateDimissionRisk(repo: MetadataRepository): TsFn {
       const wh = Number(e.properties.workHours);
       const avg = deptAvg.get(dept) ?? 0;
 
-      // 规则1：请假 > 1 天，每多 1 天扣 10
-      if (leave > 1) score -= (leave - 1) * 10;
+      // 规则1：请假 > leaveBase 天，每多 1 天扣 leaveDeduct
+      if (leave > leaveBase) score -= (leave - leaveBase) * leaveDeduct;
 
-      // 规则2：工作时长 < 部门平均*阈值 的，每低于 5% 扣 10
+      // 规则2：工作时长 < 部门平均*阈值 的，每低于 5% 扣 workDeduct
       if (Number.isFinite(wh) && avg > 0 && wh < avg * threshold) {
         const belowPct = (avg * threshold - wh) / (avg * 0.05); // 低于百分点的个数（每 5% 一个）
-        score -= belowPct * 10;
+        score -= belowPct * workDeduct;
       }
 
       score = Math.max(0, Math.round(score));
       const level = levelOf(score);
       const name = typeof e.properties.name === 'string' ? e.properties.name : undefined;
 
-      await repo.writeObjectPatch('Employee', e.objectRid, { riskScore: score, riskLevel: level }, actor);
+      // 命中判定：风险等级非空，或「工时低于部门均值*阈值」，或「请假超起扣天数」。
+      const belowAvg = Number.isFinite(wh) && avg > 0 && wh < avg * threshold;
+      const overLeave = leave > leaveBase;
+      const isRisk = level !== 'none' || belowAvg || overLeave;
 
-      // 仅当风险等级命中（<=80）才进入告警候选
-      if (level !== 'none') {
-        flagged.push({ rid: e.objectRid, name, workHours: wh, deptAvg: avg, annualLeaveDays: leave, score, level });
+      await repo.writeObjectPatch('Employee', e.objectRid, { riskScore: score, riskLevel: level, dimissionRisk: isRisk }, actor);
+
+      if (isRisk) {
+        flagged.push({ rid: e.objectRid, name, workHours: wh, deptAvg: avg, annualLeaveDays: leave, score, level, dimissionRisk: isRisk });
       }
     }
 

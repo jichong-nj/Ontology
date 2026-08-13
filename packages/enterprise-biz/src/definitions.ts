@@ -321,6 +321,11 @@ export const actions: ActionType[] = [
       { name: 'flagged', type: 'string', required: true },
     ],
     validationRules: [],
+    // 内嵌校验规则（Action 自带 rules，对标 Palantir）：动作落地前逐条校验命中对象。
+    // 此处要求命中对象已带 riskScore（由条件函数写入），缺者跳过，避免生成不完整告警。
+    preconditions: [
+      { kind: 'requiredProperty', property: 'level', message: '命中对象缺少风险等级(level)，跳过生成告警' },
+    ],
     effect: { kind: 'function', ref: 'createDimissionAlert' },
     version: V,
   },

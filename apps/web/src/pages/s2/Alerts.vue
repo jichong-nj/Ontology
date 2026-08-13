@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, reactive } from 'vue';
+import { onMounted, ref, reactive, computed } from 'vue';
 import { ElCard, ElButton, ElIcon, ElTag, ElMessage, ElDialog, ElForm, ElFormItem, ElInput, ElSwitch, ElSelect, ElOption, ElMessageBox } from 'element-plus';
 import { Warning, Refresh, Bell, Plus, Edit, Delete, Switch as SwitchIcon } from '@element-plus/icons-vue';
 import { s2, s2functions, s2actions } from '@/api';
@@ -17,15 +17,37 @@ interface RuleItem {
   targetObjectType: string;
   version: number;
 }
+interface FnInput { name: string; type: string; required: boolean }
 
 // 规则中心：通用自动化规则（满足条件→执行动作），当前动作产物之一为告警对象
 const alerts = ref<AlertItem[]>([]);
 const rules = ref<RuleItem[]>([]);
-const functions = ref<{ apiName: string; displayName: string }[]>([]);
-const actions = ref<{ apiName: string; displayName: string }[]>([]);
+const functions = ref<{ apiName: string; displayName: string; inputs?: FnInput[]; description?: string }[]>([]);
+const actions = ref<{ apiName: string; displayName: string; preconditions?: { kind: string; property: string; message: string }[] }[]>([]);
 const objectTypes = ref<{ apiName: string; displayName: string }[]>([]);
 const loading = ref(false);
 const running = ref(false);
+
+// 条件函数参数「可视化表单」：根据所选函数的 inputs 元数据自动生成控件，降低 FDE 门槛
+const selectedFnInputs = computed<FnInput[]>(() => {
+  const fn = functions.value.find((f) => f.apiName === form.conditionFunction);
+  return fn?.inputs ?? [];
+});
+
+// 所选 Action 的内嵌校验规则（Action 自带 rules，透明展示给 FDE）
+const selectedActionPreconditions = computed<any[]>(() => {
+  const a = actions.value.find((x) => x.apiName === form.actionApiName);
+  return a?.preconditions ?? [];
+});
+function preconditionText(pc: any): string {
+  const map: Record<string, string> = {
+    requiredProperty: `必须含属性 ${pc.property}`,
+    notEmpty: `${pc.property} 不可为空`,
+    minValue: `${pc.property} ≥ ${pc.value}`,
+    maxValue: `${pc.property} ≤ ${pc.value}`,
+  };
+  return `${map[pc.kind] ?? pc.kind}（${pc.message}）`;
+}
 
 // 新建/编辑抽屉
 const dialogVisible = ref(false);
@@ -41,9 +63,34 @@ const form = reactive({
   conditionFunction: '',
   actionApiName: '',
   targetObjectType: 'Alert',
+  // 参数有两种编辑视图：结构化表单(paramsForm) 与 高级 JSON(paramsText)，双向同步
   paramsText: '{\n  "threshold": 0.8,\n  "leaveDeduct": 10,\n  "workDeduct": 10,\n  "leaveBase": 1\n}',
 });
+const paramsForm = reactive<Record<string, string>>({}); // 表单视图：键=input.name, 值=字符串
+const showJson = ref(false); // 是否展开高级 JSON 编辑
 const paramsError = ref('');
+const previewResult = ref<{ count: number; rids: string[] } | null>(null);
+const previewing = ref(false);
+
+// 将结构化表单值写入 paramsText（数字类型按类型转换，其余保持字符串/原样）
+function syncParamsFromForm() {
+  const obj: Record<string, unknown> = {};
+  for (const inp of selectedFnInputs.value) {
+    const raw = paramsForm[inp.name];
+    if (raw === undefined || raw === '') continue;
+    obj[inp.name] = inp.type === 'integer' || inp.type === 'float' ? Number(raw) : raw;
+  }
+  form.paramsText = JSON.stringify(obj, null, 2);
+}
+// 将 paramsText 解析回填结构化表单（打开编辑或切换函数时调用）
+function syncFormFromParams() {
+  for (const k of Object.keys(paramsForm)) delete paramsForm[k];
+  let parsed: Record<string, unknown> = {};
+  try { parsed = JSON.parse(form.paramsText || '{}'); } catch { parsed = {}; }
+  for (const inp of selectedFnInputs.value) {
+    paramsForm[inp.name] = parsed[inp.name] !== undefined ? String(parsed[inp.name]) : '';
+  }
+}
 
 async function load() {
   await tryRequest(async () => {
@@ -56,8 +103,13 @@ async function load() {
     ]);
     alerts.value = a;
     rules.value = r;
-    functions.value = f.map((x: any) => ({ apiName: x.apiName, displayName: x.displayName ?? x.apiName }));
-    actions.value = ac.map((x: any) => ({ apiName: x.apiName, displayName: x.displayName ?? x.apiName }));
+    functions.value = f.map((x: any) => ({
+      apiName: x.apiName,
+      displayName: x.displayName ?? x.apiName,
+      inputs: Array.isArray(x.inputs) ? x.inputs : [],
+      description: x.description ?? '',
+    }));
+    actions.value = ac.map((x: any) => ({ apiName: x.apiName, displayName: x.displayName ?? x.apiName, preconditions: x.preconditions ?? [] }));
     objectTypes.value = ot.map((x: any) => ({ apiName: x.apiName, displayName: x.displayName ?? x.apiName }));
   });
 }
@@ -95,6 +147,7 @@ function openCreate() {
   });
   paramsError.value = '';
   dialogVisible.value = true;
+  syncFormFromParams(); // 用所选函数(inputs)与默认 params 初始化结构化表单
 }
 
 async function openEdit(rule: RuleItem) {
@@ -113,10 +166,12 @@ async function openEdit(rule: RuleItem) {
   });
   paramsError.value = '';
   dialogVisible.value = true;
+  syncFormFromParams(); // 用规则已存 params 回填结构化表单
 }
 
 async function save() {
-  // 校验 params 必须是合法 JSON 对象
+  // 校验 params 必须是合法 JSON 对象（结构化表单视图下，先同步回 paramsText）
+  if (!showJson.value) syncParamsFromForm();
   let params: Record<string, unknown> = {};
   paramsError.value = '';
   try {
@@ -167,6 +222,23 @@ async function save() {
     await load();
   });
   saving.value = false;
+}
+
+// 预览条件函数命中：调用 function invoke 并展示将命中的对象（对标 Palantir 的 preview rule results）
+async function previewRule() {
+  if (!form.conditionFunction) { ElMessage.warning('请先选择条件函数'); return; }
+  if (!showJson.value) syncParamsFromForm();
+  let params: Record<string, unknown> = {};
+  try { params = JSON.parse(form.paramsText || '{}'); } catch { ElMessage.warning('params 不是合法 JSON'); return; }
+  previewing.value = true;
+  previewResult.value = null;
+  await tryRequest(async () => {
+    const res = await s2functions.invoke(form.conditionFunction, params);
+    const result = (res as any).result ?? res;
+    const flagged = Array.isArray(result?.flagged) ? result.flagged : [];
+    previewResult.value = { count: flagged.length, rids: flagged.slice(0, 50).map((f: any) => f.rid ?? f.objectRid ?? JSON.stringify(f)) };
+  });
+  previewing.value = false;
 }
 
 async function toggleEnabled(rule: RuleItem) {
@@ -279,21 +351,58 @@ onMounted(load);
           <div class="hint">当该对象类型发生写入(object_write)时，触发规则条件评估。</div>
         </ElFormItem>
         <ElFormItem label="条件函数" required>
-          <ElSelect v-model="form.conditionFunction" placeholder="选择评估函数" style="width:100%">
+          <ElSelect v-model="form.conditionFunction" placeholder="选择评估函数" style="width:100%" @change="syncFormFromParams">
             <ElOption v-for="f in functions" :key="f.apiName" :label="`${f.displayName} (${f.apiName})`" :value="f.apiName" />
           </ElSelect>
+          <div class="hint" v-if="functions.find(f=>f.apiName===form.conditionFunction)?.description">
+            {{ functions.find(f=>f.apiName===form.conditionFunction)?.description }}
+          </div>
         </ElFormItem>
         <ElFormItem label="落地动作" required>
           <ElSelect v-model="form.actionApiName" placeholder="选择生成告警的动作" style="width:100%">
             <ElOption v-for="a in actions" :key="a.apiName" :label="`${a.displayName} (${a.apiName})`" :value="a.apiName" />
           </ElSelect>
+          <!-- 动作内嵌校验规则透明展示（对标 Palantir Action 自带 rules）：FDE 可直观看到该动作的前置约束 -->
+          <div v-if="selectedActionPreconditions.length" class="hint">
+            前置校验：
+            <span v-for="(pc, i) in selectedActionPreconditions" :key="i" class="pc-tag">
+              {{ preconditionText(pc) }}
+            </span>
+          </div>
         </ElFormItem>
         <ElFormItem label="落点对象类型">
           <ElInput v-model="form.targetObjectType" placeholder="如 Alert（仅写类动作需要）" />
         </ElFormItem>
-        <ElFormItem label="参数(params)">
-          <ElInput v-model="form.paramsText" type="textarea" :rows="6" placeholder='JSON 对象，如 {"threshold":0.8}' />
-          <div class="hint">传给条件函数的参数（JSON 对象）。修改此处即可调整算分阈值/扣分量等，无需改函数体。</div>
+
+        <!-- 条件参数：可视化结构化表单（按所选函数的 inputs 自动生成控件），降低 FDE 门槛 -->
+        <ElFormItem label="条件参数">
+          <div class="params-wrap">
+            <div v-if="selectedFnInputs.length === 0" class="hint">该函数无需参数。</div>
+            <div v-for="inp in selectedFnInputs" :key="inp.name" class="param-row">
+              <label class="param-label">{{ inp.name }}<span v-if="inp.required" class="req">*</span></label>
+              <ElInput
+                v-model="paramsForm[inp.name]"
+                :type="inp.type === 'integer' || inp.type === 'float' ? 'number' : 'text'"
+                :placeholder="inp.type"
+                size="small"
+                @input="syncParamsFromForm"
+              />
+            </div>
+            <div class="param-actions">
+              <ElButton size="small" :loading="previewing" @click="previewRule">预览命中对象</ElButton>
+              <ElButton size="small" link type="primary" @click="showJson = !showJson">
+                {{ showJson ? '收起高级' : '高级(JSON)' }}
+              </ElButton>
+            </div>
+            <div v-if="showJson">
+              <ElInput v-model="form.paramsText" type="textarea" :rows="6" placeholder='JSON 对象，如 {"threshold":0.8}' @input="syncFormFromParams" />
+              <div class="hint">高级：直接编辑参数 JSON。与上方表单双向同步。</div>
+            </div>
+            <div v-if="previewResult" class="preview">
+              预计命中 <b>{{ previewResult.count }}</b> 个对象：
+              <span class="rids">{{ previewResult.rids.join(', ') || '无' }}</span>
+            </div>
+          </div>
         </ElFormItem>
         <div v-if="paramsError" class="params-error">{{ paramsError }}</div>
       </ElForm>

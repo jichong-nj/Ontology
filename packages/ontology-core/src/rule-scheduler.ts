@@ -12,7 +12,7 @@
 // - Action 可配置：命中后由 actionApiName 决定「生成什么对象、写到哪个类型 / 通知谁」，与告警解耦。
 // - Trigger 可配置：schedule（周期轮询）/ event（对象写入事件触发）。
 // - 源端只读，动作结果只写本体可写侧（object_write），不回写数据源。
-import type { MetadataRepository, FunctionSandbox, AutomationRule } from './types';
+import type { MetadataRepository, FunctionSandbox, AutomationRule, ActionPrecondition } from './types';
 
 export interface RuleSchedulerOptions {
   // 轮询间隔（毫秒）；schedule 触发器各自的 intervalSeconds 决定各自执行频率
@@ -27,6 +27,7 @@ export interface RuleEvaluationResult {
   error?: string;
   flaggedCount: number;
   actionsInvoked: number;
+  skippedByPrecondition: number; // 因 Action 前置校验不通过而跳过的命中对象数
 }
 
 // 一个被调度器识别的「条件命中项」的标准形状（Function 返回里提取）
@@ -43,6 +44,30 @@ function extractFlagged(output: unknown): FlaggedItem[] {
     if (Array.isArray(o[key])) return o[key] as FlaggedItem[];
   }
   return [];
+}
+
+// 校验单个命中对象是否满足 Action 的前置校验规则（对标 Palantir Action 自带 rules）。
+// 不满足时返回对应 message；全部满足返回 null。
+function checkPreconditions(item: FlaggedItem, preconditions?: ActionPrecondition[]): string | null {
+  if (!preconditions || preconditions.length === 0) return null;
+  for (const pc of preconditions) {
+    const v = item[pc.property];
+    switch (pc.kind) {
+      case 'requiredProperty':
+        if (v === undefined || v === null || v === '') return pc.message;
+        break;
+      case 'notEmpty':
+        if (Array.isArray(v) ? v.length === 0 : !v) return pc.message;
+        break;
+      case 'minValue':
+        if (typeof v !== 'number' || v < (pc.value ?? 0)) return pc.message;
+        break;
+      case 'maxValue':
+        if (typeof v !== 'number' || v > (pc.value ?? 0)) return pc.message;
+        break;
+    }
+  }
+  return null;
 }
 
 export class RuleScheduler {
@@ -82,7 +107,7 @@ export class RuleScheduler {
   // 单次规则评估（可被 API 手动触发，或 event 触发器调用）
   async evaluateRule(rule: AutomationRule, now = Date.now()): Promise<RuleEvaluationResult> {
     const base: RuleEvaluationResult = {
-      rule: rule.apiName, trigger: rule.trigger.kind, ran: false, flaggedCount: 0, actionsInvoked: 0,
+      rule: rule.apiName, trigger: rule.trigger.kind, ran: false, flaggedCount: 0, actionsInvoked: 0, skippedByPrecondition: 0,
     };
     if (!rule.enabled) return base;
     // schedule 类节流：未到周期则跳过（now 用于测试可注入）；event 类不节流。
@@ -108,14 +133,26 @@ export class RuleScheduler {
         base.error = `规则引用的 Action 未注册: ${rule.actionApiName}`;
         return base;
       }
+      // 2.1) Action 前置校验（内嵌规则）：逐条校验命中对象，不满足的跳过并计数
+      const passed: FlaggedItem[] = [];
+      for (const item of flagged) {
+        const reason = checkPreconditions(item, action.preconditions);
+        if (reason) {
+          base.skippedByPrecondition += 1;
+        } else {
+          passed.push(item);
+        }
+      }
+      if (passed.length === 0) return base;
+
       const res = await this.sandbox.execute(rule.actionApiName, {
         rule: rule.apiName,
         targetObjectType: rule.targetObjectType, // 动作落点对象类型（如 Alert），仅写类动作使用
         // 兼容旧动作函数体（读取 args.alertObjectType）；新函数体应优先读 targetObjectType。
         alertObjectType: rule.targetObjectType,
-        flagged,
+        flagged: passed,
       });
-      const created = Array.isArray((res as any)?.created) ? (res as any).created.length : flagged.length;
+      const created = Array.isArray((res as any)?.created) ? (res as any).created.length : passed.length;
       base.actionsInvoked = created;
       return base;
     } catch (e: any) {
