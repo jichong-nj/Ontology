@@ -9,9 +9,11 @@ import S2Explore from '@/pages/s2/Explore.vue';
 import S2Functions from '@/pages/s2/Functions.vue';
 import S2Actions from '@/pages/s2/Actions.vue';
 import S2SharedProperties from '@/pages/s2/SharedProperties.vue';
+import AlertsPage from '@/pages/AlertsPage.vue';
 
 const routes = [
   { path: '/', component: Overview, meta: { title: 'Ontology Manager' } },
+  { path: '/alerts', component: AlertsPage, meta: { title: 'Alerts' } },
   {
     path: '/s1',
     redirect: '/s1/connections',

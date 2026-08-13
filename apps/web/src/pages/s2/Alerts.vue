@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref, reactive, computed } from 'vue';
 import { ElCard, ElButton, ElIcon, ElTag, ElMessage, ElDialog, ElForm, ElFormItem, ElInput, ElSwitch, ElSelect, ElOption, ElMessageBox } from 'element-plus';
-import { Warning, Refresh, Bell, Plus, Edit, Delete, Switch as SwitchIcon } from '@element-plus/icons-vue';
+import { Refresh, Bell, Plus, Edit, Delete, Switch as SwitchIcon } from '@element-plus/icons-vue';
 import { s2, s2functions, s2actions } from '@/api';
 import { tryRequest } from '@/utils/error';
 
-interface AlertItem { objectRid: string; properties: Record<string, unknown>; }
 interface RuleItem {
   apiName: string;
   displayName: string;
@@ -20,7 +19,6 @@ interface RuleItem {
 interface FnInput { name: string; type: string; required: boolean }
 
 // 规则中心：通用自动化规则（满足条件→执行动作），当前动作产物之一为告警对象
-const alerts = ref<AlertItem[]>([]);
 const rules = ref<RuleItem[]>([]);
 const functions = ref<{ apiName: string; displayName: string; inputs?: FnInput[]; description?: string }[]>([]);
 const actions = ref<{ apiName: string; displayName: string; preconditions?: { kind: string; property: string; message: string }[] }[]>([]);
@@ -94,14 +92,12 @@ function syncFormFromParams() {
 
 async function load() {
   await tryRequest(async () => {
-    const [a, r, f, ac, ot] = await Promise.all([
-      s2.listAlerts(),
+    const [r, f, ac, ot] = await Promise.all([
       s2.listRules(),
       s2functions.list(),
       s2actions.list(),
       s2.listObjectTypes(),
     ]);
-    alerts.value = a;
     rules.value = r;
     functions.value = f.map((x: any) => ({
       apiName: x.apiName,
@@ -305,24 +301,6 @@ onMounted(load);
             </td>
           </tr>
           <tr v-if="rules.length === 0"><td colspan="7" class="empty">暂无规则，点击右上角「新建规则」</td></tr>
-        </tbody>
-      </table>
-    </ElCard>
-
-    <ElCard class="alerts__list" shadow="never">
-      <template #header>
-        <span class="card-title"><ElIcon><Warning /></ElIcon> 告警对象 ({{ alerts.length }})</span>
-      </template>
-      <table class="alert-table">
-        <thead><tr><th>级别</th><th>主体</th><th>说明</th><th>生成时间</th></tr></thead>
-        <tbody>
-          <tr v-for="a in alerts" :key="a.objectRid">
-            <td><ElTag type="danger" size="small">{{ a.properties.level }}</ElTag></td>
-            <td>{{ a.properties.subjectName }} <span class="mono">({{ a.properties.subjectRid }})</span></td>
-            <td>{{ a.properties.message }}</td>
-            <td class="mono">{{ a.properties.createdAt }}</td>
-          </tr>
-          <tr v-if="alerts.length === 0"><td colspan="4" class="empty">暂无告警</td></tr>
         </tbody>
       </table>
     </ElCard>

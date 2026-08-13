@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { s2shared } from '@/api';
+import { s2shared, s2 } from '@/api';
 
 const router = useRouter();
 const route = useRoute();
@@ -11,7 +11,14 @@ const iconNav = [
   { icon: '🏠', key: 'home', label: 'Home', to: '/' },
   { icon: '🔌', key: 's1', label: 'Data Sources', to: '/s1/connections' },
   { icon: '📦', key: 's2', label: 'Ontology', to: '/s2/object-types' },
+  { icon: '🔔', key: 'alerts', label: 'Alerts', to: '/alerts', badge: true },
 ];
+
+// 顶部告警图标徽标（实时未读/总数）
+const alertCount = ref(0);
+function loadAlertCount() {
+  s2.listAlerts().then((d: any[]) => { alertCount.value = d?.length ?? 0; }).catch(() => { alertCount.value = 0; });
+}
 
 // 次级侧边面板菜单项（按 Palantir 分组）
 interface MenuItem {
@@ -34,7 +41,7 @@ const panelSections = computed<MenuSection[]>(() => {
         { key: 'link-types', label: 'Link types', to: '/s2/link-types', icon: '🔗' },
         { key: 'functions', label: 'Functions', to: '/s2/functions', icon: '⚙️' },
         { key: 'actions', label: 'Actions', to: '/s2/actions', icon: '🚀' },
-        { key: 'rules', label: 'Rules', to: '/s2/rules', icon: '🔔' },
+        { key: 'rules', label: 'Rules', to: '/s2/rules', icon: '📋' },
         { key: 'shared', label: 'Shared Properties', to: '/s2/shared-properties', icon: '🌐', count: sharedCount.value },
         { key: 'explore', label: 'Object Explorer', to: '/s2/explore', icon: '🧭' },
       ]},
@@ -64,9 +71,11 @@ function loadSharedCount() {
   s2shared.list().then((d) => { sharedCount.value = d.length; }).catch(() => { sharedCount.value = 0; });
 }
 onMounted(loadSharedCount);
+onMounted(loadAlertCount);
 
 // 当前激活的图标
 const activeIcon = computed(() => {
+  if (route.path.startsWith('/alerts')) return 'alerts';
   if (route.path.startsWith('/s2')) return 's2';
   if (route.path.startsWith('/s1')) return 's1';
   return 'home';
@@ -101,6 +110,7 @@ function navigateTo(item: { to: string }) {
           class="nav-btn" :class="{ active: activeIcon === item.key }"
           :title="item.label" @click="router.push(item.to)">
           <span class="nav-icon">{{ item.icon }}</span>
+          <span v-if="item.badge && alertCount > 0" class="nav-badge">{{ alertCount > 99 ? '99+' : alertCount }}</span>
         </button>
       </div>
       <div class="nav-bottom">
@@ -282,10 +292,27 @@ html, body, #app {
   justify-content: center;
   transition: all .15s;
   font-size: 17px;
+  position: relative;
 }
 .nav-btn:hover { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.9); }
 .nav-btn.active { background: rgba(255,255,255,0.15); color: #fff; }
 .nav-icon { font-size: 17px; line-height: 1; }
+.nav-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #e53e3e;
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-weight: 600;
+  box-shadow: 0 0 0 2px var(--pal-nav-bg);
+}
 
 /* ========== 次级侧边面板 ========== */
 .side-panel {
