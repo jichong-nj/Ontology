@@ -34,7 +34,7 @@ const panelSections = computed<MenuSection[]>(() => {
         { key: 'link-types', label: 'Link types', to: '/s2/link-types', icon: '🔗' },
         { key: 'functions', label: 'Functions', to: '/s2/functions', icon: '⚙️' },
         { key: 'actions', label: 'Actions', to: '/s2/actions', icon: '🚀' },
-        { key: 'alerts', label: 'Alerts', to: '/s2/alerts', icon: '🔔' },
+        { key: 'rules', label: 'Rules', to: '/s2/rules', icon: '🔔' },
         { key: 'shared', label: 'Shared Properties', to: '/s2/shared-properties', icon: '🌐', count: sharedCount.value },
         { key: 'explore', label: 'Object Explorer', to: '/s2/explore', icon: '🧭' },
       ]},

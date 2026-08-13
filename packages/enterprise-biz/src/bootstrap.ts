@@ -112,6 +112,17 @@ export async function seedEnterpriseBiz(pool: Pool): Promise<PostgresMetadataRep
 
   for (const a of actions) {
     await repo.createAction(a);
+    // 若 DB 中该 action 已存在（ON CONFLICT DO NOTHING 不覆盖），补同步代码侧 preconditions，
+    // 避免「代码定义」与「DB 存储」漂移（Action 内嵌校验规则的代码优先同步）。
+    const existing = await repo.getAction(a.apiName);
+    if (existing) {
+      const same =
+        JSON.stringify(existing.preconditions ?? []) === JSON.stringify(a.preconditions ?? []);
+      if (!same) {
+        await repo.updateAction(a.apiName, { preconditions: a.preconditions ?? [] });
+        console.log(`[S2] 动作已同步 preconditions: ${a.apiName}`);
+      }
+    }
     console.log(`[S2] 动作已创建: ${a.apiName}`);
   }
 

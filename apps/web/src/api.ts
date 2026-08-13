@@ -168,24 +168,13 @@ export interface OntologyFunction {
   body?: string | null;     // 函数体源码（TS：运行时编译注册；空则沿用 seed 注入实现，此时只读不可编辑）
   version: number;
 }
-export interface ActionParameter {
-  name: string;
-  type: string;
-  required?: boolean;
-}
-export interface ActionEffect {
-  kind: 'object' | 'function' | 'none' | 'write';
-  ref?: string;             // kind='function' 时指向函数 apiName
-}
-export interface ActionType {
-  apiName: string;
-  displayName: string;
-  kind?: string;
-  parameters?: ActionParameter[];
-  validationRules?: unknown;
-  effect: ActionEffect;
-  version: number;
-}
+import type {
+  ActionParameter,
+  ActionEffect,
+  ActionPrecondition,
+  ActionType,
+} from '@ontology/ontology-core';
+export type { ActionParameter, ActionEffect, ActionPrecondition, ActionType };
 
 export const s2 = {
   listObjectTypes: () => http.get<ObjectType[]>('/s2/object-types').then((r) => r.data),

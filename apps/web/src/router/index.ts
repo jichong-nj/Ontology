@@ -4,7 +4,7 @@ import S1Connections from '@/pages/s1/Connections.vue';
 import S2ObjectTypes from '@/pages/s2/ObjectTypes.vue';
 import S2ObjectTypeDetail from '@/pages/s2/ObjectTypeDetail.vue';
 import S2LinkTypes from '@/pages/s2/LinkTypes.vue';
-import S2Alerts from '@/pages/s2/Alerts.vue';
+import S2Rules from '@/pages/s2/Alerts.vue';
 import S2Explore from '@/pages/s2/Explore.vue';
 import S2Functions from '@/pages/s2/Functions.vue';
 import S2Actions from '@/pages/s2/Actions.vue';
@@ -36,7 +36,7 @@ const routes = [
         ],
       },
       { path: 'link-types', component: S2LinkTypes, meta: { title: 'Link Types' } },
-      { path: 'alerts', component: S2Alerts, meta: { title: 'Alerts' } },
+      { path: 'rules', component: S2Rules, meta: { title: 'Rules' } },
       { path: 'functions', component: S2Functions, meta: { title: 'Functions' } },
       { path: 'actions', component: S2Actions, meta: { title: 'Actions' } },
       { path: 'shared-properties', component: S2SharedProperties, meta: { title: 'Shared Properties' } },

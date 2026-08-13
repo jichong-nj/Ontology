@@ -131,19 +131,24 @@ export interface ActionParameter {
   required: boolean;
 }
 
+// 动作效果（与"告警"正交；告警只是 effect 的一种副作用，非必选）：
+// - function: 调用一个 OntologyFunction（读写本体侧由函数决定）；
+// - write: 写入本体侧可写表（object_write），不写回只读的数据中台源端；
+// - notify: 触发通知（如站内信/邮件/Webhook），对接通知系统（Step 2 新增）；
+// - approval: 发起审批流（Step 2 新增，对接审批系统）。
+// 注：源端为只读（见 S1），动作不得写回映射源；需要落库的写操作统一走本体可写侧。
+export interface ActionEffect {
+  kind: 'function' | 'write' | 'notify' | 'approval';
+  ref?: string; // kind='function' 时指向函数 apiName；kind='write' 时指向对象类型 apiName；notify/approval 可省略
+}
+
 export interface ActionType {
   apiName: string;
   displayName: string;
   kind?: 'standard' | 'llm';   // llm 表示 LLM 函数（见 S5）
   parameters: ActionParameter[];
-  validationRules: string[];
-  // 动作效果（与"告警"正交；告警只是 effect 的一种副作用，非必选）：
-  // - function: 调用一个 OntologyFunction（读写本体侧由函数决定）；
-  // - write: 写入本体侧可写表（object_write），不写回只读的数据中台源端；
-  // - notify: 触发通知（如站内信/邮件/Webhook），对接通知系统（Step 2 新增）；
-  // - approval: 发起审批流（Step 2 新增，对接审批系统）。
-  // 注：源端为只读（见 S1），动作不得写回映射源；需要落库的写操作统一走本体可写侧。
-  effect: { kind: 'function' | 'write' | 'notify' | 'approval'; ref: string };
+  validationRules?: string[];
+  effect: ActionEffect;
   // 内嵌校验规则（对标 Palantir Action 自带的前置校验/rules）：动作执行前逐条校验命中对象，
   // 不满足的记录被跳过并在结果中标注 skippedByPrecondition。例如「flagged 对象必须含 riskScore」「riskScore 必须 > 0」。
   // 这把"动作能否落地"的约束声明化，FDE 可自助配置，无需改代码。

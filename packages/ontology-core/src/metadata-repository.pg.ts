@@ -679,7 +679,11 @@ export class PostgresMetadataRepository implements MetadataRepository {
       if (k in patch) {
         sets.push(`${col} = $${i++}`);
         const v = (patch as any)[k];
-        vals.push(k === 'parameters' || k === 'validationRules' || k === 'effect' ? JSON.stringify(v) : v);
+        vals.push(
+          k === 'parameters' || k === 'validationRules' || k === 'preconditions' || k === 'effect'
+            ? JSON.stringify(v)
+            : v,
+        );
       }
     }
     if (sets.length === 0) return;

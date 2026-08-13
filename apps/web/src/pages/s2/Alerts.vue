@@ -124,8 +124,12 @@ async function runRules() {
   running.value = true;
   await tryRequest(async () => {
     const res = await s2.runRules();
-    const total = (res.results ?? []).reduce((s: number, x: any) => s + (x.actionsInvoked ?? 0), 0);
-    ElMessage.success(`规则执行完成，触发 ${total} 个动作`);
+    const results = (res.results ?? []) as any[];
+    const total = results.reduce((s: number, x: any) => s + (x.actionsInvoked ?? 0), 0);
+    const skipped = results.reduce((s: number, x: any) => s + (x.skippedByPrecondition ?? 0), 0);
+    let msg = `规则执行完成，触发 ${total} 个动作`;
+    if (skipped > 0) msg += `，${skipped} 条因未通过动作内嵌校验被跳过`;
+    ElMessage.success(msg);
     await load();
   });
   running.value = false;

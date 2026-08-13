@@ -1,193 +1,226 @@
+<template>
+  <div class="page">
+    <div class="header">
+      <div>
+        <h2 class="title">动作类型（Actions）</h2>
+        <span class="subtitle">本体动作定义，可被自动化规则引用执行；每个动作可内嵌前置校验规则（Action 自带 rules，对标 Palantir）</span>
+      </div>
+      <el-button type="primary" @click="openCreate">新建动作</el-button>
+    </div>
+
+    <el-table :data="actions" v-loading="loading" border stripe>
+      <el-table-column prop="apiName" label="API 名称" width="200" />
+      <el-table-column prop="displayName" label="显示名" width="160" />
+      <el-table-column label="动作效果" width="160">
+        <template #default="{ row }">
+          <el-tag size="small" type="info">{{ row.effect?.kind }}</el-tag>
+          <span v-if="row.effect?.ref" class="ref">→ {{ row.effect.ref }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="内嵌校验规则（preconditions）" min-width="280">
+        <template #default="{ row }">
+          <div v-if="row.preconditions?.length" class="precond-list">
+            <el-tag
+              v-for="(p, i) in row.preconditions"
+              :key="i"
+              size="small"
+              type="warning"
+              class="precond-tag"
+            >{{ preconditionText(p) }}</el-tag>
+          </div>
+          <span v-else class="muted">（无，动作无条件执行）</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="160" fixed="right">
+        <template #default="{ row }">
+          <el-button size="small" @click="openEditor(row)">编辑</el-button>
+          <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+
+    <el-empty v-if="!loading && !actions.length" description="暂无动作类型" />
+
+    <el-dialog v-model="editorVisible" :title="editing?.apiName ? `编辑动作：${editing.apiName}` : '新建动作'" width="720px">
+      <el-form v-if="editing" label-width="120px">
+        <el-form-item label="API 名称">
+          <el-input v-model="editing.apiName" :disabled="!!editing.apiName && isExisting" />
+        </el-form-item>
+        <el-form-item label="显示名">
+          <el-input v-model="editing.displayName" />
+        </el-form-item>
+        <el-form-item label="动作效果 kind">
+          <el-select v-model="editing.effect.kind" style="width: 220px">
+            <el-option label="函数 function" value="function" />
+            <el-option label="写对象 write" value="write" />
+            <el-option label="通知 notify" value="notify" />
+            <el-option label="审批 approval" value="approval" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="效果 ref" v-if="editing.effect.kind === 'function' || editing.effect.kind === 'write'">
+          <el-input v-model="editing.effect.ref" :placeholder="editing.effect.kind === 'function' ? '函数 apiName' : '对象类型 apiName'" />
+        </el-form-item>
+
+        <el-divider content-position="left">内嵌校验规则（动作执行前逐条校验）</el-divider>
+        <div v-for="(p, idx) in (editing?.preconditions ?? [])" :key="idx" class="precond-editor">
+          <el-select v-model="p.kind" style="width: 160px">
+            <el-option label="属性必填 requiredProperty" value="requiredProperty" />
+            <el-option label="最小值 minValue" value="minValue" />
+            <el-option label="最大值 maxValue" value="maxValue" />
+            <el-option label="非空 notEmpty" value="notEmpty" />
+          </el-select>
+          <el-input v-model="p.property" placeholder="属性 apiName" style="width: 150px" />
+          <el-input-number
+            v-if="p.kind === 'minValue' || p.kind === 'maxValue'"
+            v-model="p.value"
+            :controls="true"
+            style="width: 120px"
+          />
+          <el-input v-model="p.message" placeholder="校验失败提示" style="width: 200px" />
+          <el-button type="danger" size="small" circle @click="removePrecondition(idx)">−</el-button>
+        </div>
+        <el-button size="small" @click="addPrecondition">+ 添加校验规则</el-button>
+      </el-form>
+      <template #footer>
+        <el-button @click="editorVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
 <script setup lang="ts">
-import { onMounted, ref, reactive } from 'vue';
-import {
-  ElButton, ElCard, ElMessage, ElTag, ElDialog, ElForm, ElFormItem,
-  ElInput, ElSelect, ElOption,
-} from 'element-plus';
-import { Plus, Operation, VideoPlay } from '@element-plus/icons-vue';
-import { s2actions, s2functions } from '@/api';
-import type { ActionType, ActionParameter, ActionEffect, OntologyFunction } from '@/api';
-import { tryRequest } from '@/utils/error';
+import { ref, onMounted } from 'vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { s2actions } from '@/api';
+import type { ActionType, ActionPrecondition } from '@ontology/ontology-core';
 
-const list = ref<ActionType[]>([]);
-const functions = ref<OntologyFunction[]>([]);
+const actions = ref<ActionType[]>([]);
 const loading = ref(false);
-const dialogVisible = ref(false);
+const editorVisible = ref(false);
 const saving = ref(false);
-const editing = ref<string | null>(null);
+const editing = ref<ActionType | null>(null);
+const isExisting = ref(false);
 
-const form = reactive<ActionType>({
-  apiName: '', displayName: '', kind: 'object',
-  parameters: [], effect: { kind: 'function' }, version: 1,
-});
+function preconditionText(p: ActionPrecondition): string {
+  switch (p.kind) {
+    case 'requiredProperty':
+      return `必填 ${p.property}`;
+    case 'minValue':
+      return `${p.property} ≥ ${p.value ?? 0}`;
+    case 'maxValue':
+      return `${p.property} ≤ ${p.value ?? 0}`;
+    case 'notEmpty':
+      return `${p.property} 非空`;
+    default:
+      return p.property;
+  }
+}
 
-async function load() {
-  loading.value = true;
-  await tryRequest(async () => {
-    const [acts, fns] = await Promise.all([s2actions.list(), s2functions.list()]);
-    list.value = acts;
-    functions.value = fns;
-  });
-  loading.value = false;
+function newPrecondition(): ActionPrecondition {
+  return { kind: 'requiredProperty', property: '', message: '' };
+}
+
+function addPrecondition() {
+  if (!editing.value) return;
+  if (!editing.value.preconditions) editing.value.preconditions = [];
+  editing.value.preconditions.push(newPrecondition());
+}
+
+function removePrecondition(idx: number) {
+  if (!editing.value?.preconditions) return;
+  editing.value.preconditions.splice(idx, 1);
+}
+
+function openEditor(row: ActionType) {
+  // 深拷贝，避免编辑时直接改动列表
+  const copy: ActionType = JSON.parse(JSON.stringify(row));
+  if (!copy.preconditions) copy.preconditions = [];
+  if (!copy.effect) copy.effect = { kind: 'function' };
+  editing.value = copy;
+  isExisting.value = true;
+  editorVisible.value = true;
 }
 
 function openCreate() {
-  editing.value = null;
-  Object.assign(form, {
-    apiName: '', displayName: '', kind: 'object',
-    parameters: [], effect: { kind: 'function' as const }, version: 1,
-  });
-  dialogVisible.value = true;
+  const created: ActionType = {
+    apiName: '',
+    displayName: '',
+    parameters: [],
+    preconditions: [],
+    effect: { kind: 'function' },
+    version: 1,
+  };
+  editing.value = created;
+  isExisting.value = false;
+  editorVisible.value = true;
 }
-
-function openEdit(a: ActionType) {
-  editing.value = a.apiName;
-  Object.assign(form, {
-    apiName: a.apiName, displayName: a.displayName, kind: a.kind,
-    parameters: a.parameters ?? [], effect: a.effect ?? { kind: 'function' }, version: a.version,
-  });
-  dialogVisible.value = true;
-}
-
-function addParam() { form.parameters!.push({ name: '', type: 'string', required: false }); }
-function removeParam(i: number) { form.parameters!.splice(i, 1); }
 
 async function save() {
-  if (!form.apiName || !form.displayName) { ElMessage.warning('apiName 与 displayName 必填'); return; }
-  if (form.effect.kind === 'function' && !form.effect.ref) { ElMessage.warning('function 类型动作需选择函数'); return; }
+  if (!editing.value) return;
+  if (!editing.value.apiName || !editing.value.displayName) {
+    ElMessage.warning('API 名称与显示名必填');
+    return;
+  }
   saving.value = true;
-  await tryRequest(async () => {
-    if (editing.value) {
-      await s2actions.update(editing.value, {
-        displayName: form.displayName, parameters: form.parameters, effect: form.effect,
-      });
-      ElMessage.success('已更新');
+  try {
+    if (isExisting.value) {
+      const { apiName, ...patch } = editing.value;
+      await s2actions.update(apiName!, patch);
     } else {
-      await s2actions.create({ ...form });
-      ElMessage.success('已创建');
+      await s2actions.create(editing.value);
     }
-    dialogVisible.value = false;
+    ElMessage.success('已保存动作');
+    editorVisible.value = false;
     await load();
-  });
-  saving.value = false;
+  } catch (e: any) {
+    ElMessage.error(`保存失败: ${e?.message ?? e}`);
+  } finally {
+    saving.value = false;
+  }
 }
 
-const triggerVisible = ref(false);
-const triggerAction = ref<ActionType | null>(null);
-const triggerArgs = ref('{}');
-
-function openTrigger(a: ActionType) {
-  triggerAction.value = a;
-  triggerArgs.value = '{}';
-  triggerVisible.value = true;
-}
-async function runTrigger() {
-  if (!triggerAction.value) return;
-  let args: Record<string, unknown> = {};
-  try { args = JSON.parse(triggerArgs.value || '{}'); } catch { ElMessage.error('参数必须是合法 JSON'); return; }
-  await tryRequest(async () => {
-    const r = await s2actions.trigger(triggerAction.value!.apiName, args);
-    ElMessage.success(`执行成功：${JSON.stringify(r.result)}`);
-    triggerVisible.value = false;
-  });
-}
-
-async function remove(a: ActionType) {
-  await tryRequest(async () => {
-    await s2actions.remove(a.apiName);
+async function remove(row: ActionType) {
+  try {
+    await ElMessageBox.confirm(`确认删除动作「${row.displayName}」？该操作不可恢复。`, '删除确认', {
+      type: 'warning',
+      confirmButtonText: '确认删除',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return; // 用户取消
+  }
+  try {
+    await s2actions.remove(row.apiName);
     ElMessage.success('已删除');
     await load();
-  });
+  } catch (e: any) {
+    ElMessage.error(`删除失败: ${e?.message ?? e}`);
+  }
+}
+
+async function load() {
+  loading.value = true;
+  try {
+    actions.value = await s2actions.list();
+  } catch (e: any) {
+    ElMessage.error(`加载失败: ${e?.message ?? e}`);
+  } finally {
+    loading.value = false;
+  }
 }
 
 onMounted(load);
 </script>
 
-<template>
-  <div class="page">
-    <ElCard>
-      <div class="toolbar">
-        <h2><ElIcon><Operation /></ElIcon> 动作 Actions</h2>
-        <ElButton type="primary" :icon="Plus" @click="openCreate">新建动作</ElButton>
-      </div>
-      <ElTable :data="list" v-loading="loading" stripe>
-        <ElTableColumn prop="displayName" label="显示名" />
-        <ElTableColumn prop="apiName" label="API 名称" />
-        <ElTableColumn label="执行体" width="200">
-          <template #default="{ row }">
-            <ElTag v-if="row.effect?.kind==='function'" type="success">函数：{{ row.effect.ref }}</ElTag>
-            <ElTag v-else type="info">{{ row.effect?.kind }}</ElTag>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="操作" width="240" fixed="right">
-          <template #default="{ row }">
-            <ElButton size="small" type="primary" :icon="VideoPlay" @click="openTrigger(row)">触发</ElButton>
-            <ElButton size="small" @click="openEdit(row)">编辑</ElButton>
-            <ElButton size="small" type="danger" circle @click="remove(row)" />
-          </template>
-        </ElTableColumn>
-      </ElTable>
-    </ElCard>
-
-    <ElDialog v-model="dialogVisible" :title="editing ? '编辑动作' : '新建动作'" width="720px" top="5vh">
-      <ElForm label-width="110px">
-        <ElFormItem label="显示名" required><ElInput v-model="form.displayName" /></ElFormItem>
-        <ElFormItem label="API 名称" required>
-          <ElInput v-model="form.apiName" :disabled="!!editing" />
-        </ElFormItem>
-        <ElFormItem label="执行体类型">
-          <ElSelect v-model="form.effect.kind" style="width:200px">
-            <ElOption label="函数(function)" value="function" />
-            <ElOption label="对象(object)" value="object" disabled />
-            <ElOption label="无(none)" value="none" disabled />
-          </ElSelect>
-        </ElFormItem>
-        <ElFormItem v-if="form.effect.kind==='function'" label="引用函数">
-          <ElSelect v-model="form.effect.ref" style="width:320px" placeholder="选择已注册函数">
-            <ElOption v-for="fn in functions" :key="fn.apiName" :label="`${fn.displayName} (${fn.apiName})`" :value="fn.apiName" />
-          </ElSelect>
-        </ElFormItem>
-        <ElFormItem label="参数">
-          <div class="io-list">
-            <div v-for="(p, i) in form.parameters" :key="i" class="io-row">
-              <ElInput v-model="p.name" placeholder="参数名" style="width:160px" />
-              <ElSelect v-model="p.type" style="width:120px">
-                <ElOption label="string" value="string" />
-                <ElOption label="number" value="number" />
-                <ElOption label="boolean" value="boolean" />
-              </ElSelect>
-              <ElButton size="small" type="danger" circle @click="removeParam(i)">-</ElButton>
-            </div>
-            <ElButton size="small" @click="addParam">+ 添加参数</ElButton>
-          </div>
-        </ElFormItem>
-      </ElForm>
-      <template #footer>
-        <ElButton @click="dialogVisible = false">取消</ElButton>
-        <ElButton type="primary" :loading="saving" @click="save">保存</ElButton>
-      </template>
-    </ElDialog>
-
-    <ElDialog v-model="triggerVisible" title="触发动作" width="520px" top="8vh">
-      <div v-if="triggerAction">
-        <p>动作：<b>{{ triggerAction.displayName }}</b>（{{ triggerAction.apiName }}）</p>
-        <p>执行函数：<ElTag type="success">{{ triggerAction.effect?.ref }}</ElTag></p>
-        <ElFormItem label="参数(JSON)">
-          <ElInput v-model="triggerArgs" type="textarea" :rows="6" style="font-family:monospace" placeholder='{"objectType":"Employee","objectRid":"E0001"}' />
-        </ElFormItem>
-      </div>
-      <template #footer>
-        <ElButton @click="triggerVisible = false">取消</ElButton>
-        <ElButton type="primary" @click="runTrigger">执行</ElButton>
-      </template>
-    </ElDialog>
-  </div>
-</template>
-
 <style scoped>
 .page { padding: 16px; }
-.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.toolbar h2 { display: flex; align-items: center; gap: 6px; margin: 0; }
-.io-list { display: flex; flex-direction: column; gap: 8px; }
-.io-row { display: flex; gap: 8px; align-items: center; }
+.header { margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.title { margin: 0 0 4px; font-size: 20px; }
+.subtitle { color: #888; font-size: 13px; }
+.ref { color: #409eff; margin-left: 4px; }
+.precond-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.precond-tag { margin: 0; }
+.muted { color: #aaa; font-size: 12px; }
+.precond-editor { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
 </style>
