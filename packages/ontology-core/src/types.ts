@@ -18,6 +18,21 @@ export interface PropertyDef {
   reducer?: string;
   reducerFn?: string;      // 关联 OntologyFunction.apiName（派生属性↔函数 闭环）
   sourceMapping?: string;  // 关联 S1 fieldMapping（基础属性来源）
+  // 共享属性引用：指向 SharedProperty.apiName；存在则为"引用共享属性"
+  sharedRef?: string;
+  overridden?: boolean;    // displayName/required 是否与 sharedRef 基准不同（本地覆盖）
+}
+
+// 共享属性：跨多个对象类型复用的属性元数据（元数据集中，数据各自实例持有）
+// 注意：required（是否必填）由各对象类型在"引用"处自行配置，共享侧只定义通用元数据。
+export interface SharedProperty {
+  apiName: string;       // 全局唯一，如 "status"
+  displayName: string;
+  type: PropertyType;
+  description?: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // 派生属性计算规格（序列化为 PropertyDef.reducer 的 JSON 字符串）。
@@ -154,6 +169,16 @@ export interface MetadataRepository {
   createObjectType(def: ObjectType): Promise<void>;
   updateObjectType(apiName: string, def: ObjectType): Promise<void>;
   deleteObjectType(apiName: string): Promise<void>;
+  // 共享属性（跨对象类型复用的属性元数据）
+  listSharedProperties(): Promise<SharedProperty[]>;
+  getSharedProperty(apiName: string): Promise<SharedProperty | null>;
+  createSharedProperty(def: SharedProperty): Promise<void>;
+  updateSharedProperty(apiName: string, patch: Partial<SharedProperty>): Promise<void>;
+  deleteSharedProperty(apiName: string): Promise<void>;
+  // 把某对象类型内嵌的属性"提升"为共享属性（对齐 Foundry convert existing property）
+  convertPropertyToShared(objectType: string, propApiName: string): Promise<void>;
+  // 在某对象类型上应用共享属性（引用，可选本地覆盖 displayName / required）
+  applySharedToObjectType(sharedApiName: string, objectType: string, override?: { displayName?: string; required?: boolean }): Promise<void>;
   // 探索页配置：每对象类型一套独立的图表（含图形样式 kind）
   getExploreConfig(apiName: string): Promise<{ apiName: string; kind: string }[]>;
   saveExploreConfig(apiName: string, charts: { apiName: string; kind: string }[]): Promise<void>;

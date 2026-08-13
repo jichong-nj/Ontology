@@ -32,6 +32,18 @@ CREATE TABLE object_type (
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- 共享属性：跨多个对象类型复用的属性元数据（元数据集中，数据由各自实例持有）
+-- 注意：required（是否必填）由各对象类型在"引用"处自行配置，共享侧只定义通用元数据。
+CREATE TABLE shared_property (
+  api_name     TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  type         TEXT NOT NULL,   -- PropertyType
+  description  TEXT,
+  version      INT NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE link_type (
   api_name        TEXT PRIMARY KEY,
   display_name    TEXT NOT NULL,

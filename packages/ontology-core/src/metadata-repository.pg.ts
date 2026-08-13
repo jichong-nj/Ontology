@@ -9,6 +9,7 @@ import {
   ActionType,
   OntologyFunction,
   PropertyDef,
+  SharedProperty,
   DerivedSpec,
   parseDerivedSpec,
   AlertRule,
@@ -105,6 +106,124 @@ export class PostgresMetadataRepository implements MetadataRepository {
     await this.pool.query(`DELETE FROM link_type WHERE source_type=$1 OR target_type=$1`, [apiName]);
     await this.pool.query(`DELETE FROM object_interface WHERE object_api_name=$1`, [apiName]);
     await this.pool.query(`DELETE FROM object_type WHERE api_name=$1`, [apiName]);
+  }
+
+  // ---------- 共享属性 ----------
+  async listSharedProperties(): Promise<SharedProperty[]> {
+    const { rows } = await this.pool.query(`SELECT * FROM shared_property ORDER BY api_name`);
+    return rows.map(rowToSharedProperty);
+  }
+
+  async getSharedProperty(apiName: string): Promise<SharedProperty | null> {
+    const { rows } = await this.pool.query(`SELECT * FROM shared_property WHERE api_name=$1`, [apiName]);
+    return rows[0] ? rowToSharedProperty(rows[0]) : null;
+  }
+
+  async createSharedProperty(def: SharedProperty): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO shared_property (api_name, display_name, type, description, version, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,1,now(),now())`,
+      [def.apiName, def.displayName, def.type, def.description ?? null],
+    );
+  }
+
+  async updateSharedProperty(apiName: string, patch: Partial<SharedProperty>): Promise<void> {
+    const cur = await this.getSharedProperty(apiName);
+    if (!cur) throw new Error(`SharedProperty not found: ${apiName}`);
+    const next: SharedProperty = {
+      ...cur,
+      ...patch,
+      apiName: cur.apiName, // 主键不可变
+      version: cur.version + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    await this.pool.query(
+      `UPDATE shared_property SET display_name=$2, type=$3, description=$4, version=$5, updated_at=now() WHERE api_name=$1`,
+      [next.apiName, next.displayName, next.type, next.description ?? null, next.version],
+    );
+    // 编辑一处，回写所有引用方的共享元数据字段（displayName/type/description）。
+    // 注意：required 由引用方自行配置，共享侧编辑不覆盖。
+    await this.propagateSharedEdit(apiName);
+  }
+
+  async deleteSharedProperty(apiName: string): Promise<void> {
+    // 解绑所有对象类型的共享引用（不删除对象类型本身）
+    const ots = await this.listObjectTypes();
+    for (const ot of ots) {
+      const dirty = ot.properties.filter((p) => p.sharedRef === apiName);
+      if (dirty.length === 0) continue;
+      for (const p of ot.properties) {
+        if (p.sharedRef === apiName) {
+          p.sharedRef = undefined;
+          p.overridden = false;
+        }
+      }
+      await this.updateObjectType(ot.apiName, ot);
+    }
+    await this.pool.query(`DELETE FROM shared_property WHERE api_name=$1`, [apiName]);
+  }
+
+  // 编辑共享属性后，把所有引用方未覆盖的字段同步为最新共享基准
+  private async propagateSharedEdit(sharedApiName: string): Promise<void> {
+    const sp = await this.getSharedProperty(sharedApiName);
+    if (!sp) return;
+    const ots = await this.listObjectTypes();
+    for (const ot of ots) {
+      let changed = false;
+      for (const p of ot.properties) {
+        if (p.sharedRef === sharedApiName && !p.overridden) {
+          p.displayName = sp.displayName;
+          p.type = sp.type;
+          changed = true;
+        }
+      }
+      if (changed) await this.updateObjectType(ot.apiName, ot);
+    }
+  }
+
+  // 把对象类型内嵌属性"提升"为共享属性：创建共享定义 + 把该属性改挂为引用
+  async convertPropertyToShared(objectType: string, propApiName: string): Promise<void> {
+    const ot = await this.getObjectType(objectType);
+    if (!ot) throw new Error(`ObjectType not found: ${objectType}`);
+    const prop = ot.properties.find((p) => p.apiName === propApiName);
+    if (!prop) throw new Error(`Property not found: ${objectType}.${propApiName}`);
+    if (prop.derived) throw new Error(`派生属性不可提升为共享属性: ${propApiName}`);
+    if (prop.sharedRef) throw new Error(`属性已引用共享属性: ${propApiName}`);
+    if (!(await this.getSharedProperty(propApiName))) {
+      await this.createSharedProperty({
+        apiName: propApiName,
+        displayName: prop.displayName,
+        type: prop.type,
+        version: 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    prop.sharedRef = propApiName;
+    prop.overridden = false;
+    await this.updateObjectType(objectType, ot);
+  }
+
+  // 在某对象类型上应用共享属性（引用）。
+  // 引用方自决 required（默认 false），共享侧不再携带 required；仅 displayName 可覆盖。
+  async applySharedToObjectType(sharedApiName: string, objectType: string, override?: { displayName?: string; required?: boolean }): Promise<void> {
+    const sp = await this.getSharedProperty(sharedApiName);
+    if (!sp) throw new Error(`SharedProperty not found: ${sharedApiName}`);
+    const ot = await this.getObjectType(objectType);
+    if (!ot) throw new Error(`ObjectType not found: ${objectType}`);
+    if (ot.properties.some((p) => p.apiName === sharedApiName)) {
+      throw new Error(`对象类型已含同名属性: ${sharedApiName}`);
+    }
+    const overridden = !!(override && override.displayName !== undefined);
+    ot.properties.push({
+      apiName: sp.apiName,
+      displayName: override?.displayName ?? sp.displayName,
+      type: sp.type,
+      required: override?.required ?? false,
+      sharedRef: sp.apiName,
+      overridden,
+    });
+    await this.updateObjectType(objectType, ot);
   }
 
   async getExploreConfig(apiName: string): Promise<{ apiName: string; kind: string }[]> {
@@ -693,4 +812,16 @@ export class PostgresMetadataRepository implements MetadataRepository {
       version: r.version,
     }));
   }
+}
+
+function rowToSharedProperty(r: any): SharedProperty {
+  return {
+    apiName: r.api_name,
+    displayName: r.display_name,
+    type: r.type,
+    description: r.description ?? undefined,
+    version: r.version,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
+import { s2shared } from '@/api';
 
 const router = useRouter();
 const route = useRoute();
@@ -34,6 +35,7 @@ const panelSections = computed<MenuSection[]>(() => {
         { key: 'functions', label: 'Functions', to: '/s2/functions', icon: '⚙️' },
         { key: 'actions', label: 'Actions', to: '/s2/actions', icon: '🚀' },
         { key: 'alerts', label: 'Alerts', to: '/s2/alerts', icon: '🔔' },
+        { key: 'shared', label: 'Shared Properties', to: '/s2/shared-properties', icon: '🌐', count: sharedCount.value },
         { key: 'explore', label: 'Object Explorer', to: '/s2/explore', icon: '🧭' },
       ]},
     ];
@@ -55,6 +57,13 @@ const panelSections = computed<MenuSection[]>(() => {
 
 // 面板折叠状态
 const panelCollapsed = ref(false);
+
+// 共享属性数量（菜单徽标）
+const sharedCount = ref(0);
+function loadSharedCount() {
+  s2shared.list().then((d) => { sharedCount.value = d.length; }).catch(() => { sharedCount.value = 0; });
+}
+onMounted(loadSharedCount);
 
 // 当前激活的图标
 const activeIcon = computed(() => {

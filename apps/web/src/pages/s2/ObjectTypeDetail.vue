@@ -6,9 +6,9 @@ import {
   ElIcon, ElDialog, ElForm, ElFormItem, ElInput, ElSelect, ElOption,
   ElCheckbox, ElCollapse, ElCollapseItem,
 } from 'element-plus';
-import { Link, Coin, Edit, Connection, Cpu, ArrowDown } from '@element-plus/icons-vue';
-import { s2, s1, s2link, s2functions } from '@/api';
-import type { ObjectType, OntologyProperty, SourceConnection, ProbeTable, LinkType, DerivedSpec, OntologyFunction } from '@/api';
+import { Link, Coin, Edit, Connection, Cpu, ArrowDown, Share } from '@element-plus/icons-vue';
+import { s2, s1, s2link, s2functions, s2shared } from '@/api';
+import type { ObjectType, OntologyProperty, SourceConnection, ProbeTable, LinkType, DerivedSpec, OntologyFunction, SharedProperty } from '@/api';
 import { parseDerivedSpec } from '@/api';
 import { tryRequest } from '@/utils/error';
 
@@ -22,6 +22,7 @@ const connections = ref<SourceConnection[]>([]);
 const tables = ref<ProbeTable[]>([]);
 const linkTypes = ref<LinkType[]>([]);
 const objectTypes = ref<ObjectType[]>([]);
+const sharedProps = ref<SharedProperty[]>([]);
 const tablesLoading = ref(false);
 const loading = ref(false);
 
@@ -234,6 +235,7 @@ function openEdit() {
   editForm.properties = obj.value.properties.map((p) => ({ ...p }));
   editVisible.value = true;
   tables.value = [];
+  tryRequest(async () => { sharedProps.value = await s2shared.list(); });
   if (editForm.sourceConnectionId) {
     tablesLoading.value = true;
     tryRequest(async () => {
@@ -249,6 +251,21 @@ function addDerivedProp() {
     apiName: '', displayName: '', type: 'integer', required: false,
     derived: true, reducer: JSON.stringify({ op: 'countLinks', linkType: '', side: 'target' }),
   });
+}
+// 从共享属性添加：引用某个 SharedProperty（元数据复用，可选本地覆盖）
+const sharedPick = ref('');
+function addSharedProp() {
+  const sp = sharedProps.value.find((s) => s.apiName === sharedPick.value);
+  if (!sp) return;
+  if (editForm.properties.some((p) => p.apiName === sp.apiName)) {
+    ElMessage.warning(`已包含属性：${sp.apiName}`);
+    return;
+  }
+  editForm.properties.push({
+    apiName: sp.apiName, displayName: sp.displayName, type: sp.type,
+    required: false, sharedRef: sp.apiName, overridden: false,
+  });
+  sharedPick.value = '';
 }
 function removeProp(i: number) {
   editForm.properties.splice(i, 1);
@@ -269,6 +286,7 @@ async function saveEdit() {
         apiName: p.apiName, displayName: p.displayName, type: p.type,
         required: !!p.required,
         ...(p.derived ? { derived: true, reducer: p.reducer } : {}),
+        ...(p.sharedRef ? { sharedRef: p.sharedRef, overridden: !!p.overridden } : {}),
       })),
     };
     await s2.updateObjectType(obj.value!.apiName, payload);
@@ -335,7 +353,12 @@ watch(() => route.params.apiName, load);
             </thead>
             <tbody>
               <tr v-for="p in normalProps()" :key="p.apiName">
-                <td class="mono">{{ p.apiName }}</td>
+                <td class="mono">
+                  {{ p.apiName }}
+                  <ElTag v-if="p.sharedRef" size="small" type="success" effect="plain" class="prop-shared-tag">
+                    <ElIcon><Share /></ElIcon> 共享
+                  </ElTag>
+                </td>
                 <td>{{ p.displayName }}</td>
                 <td><ElTag size="small">{{ p.type }}</ElTag></td>
                 <td>{{ p.required ? '是' : '否' }}</td>
@@ -407,17 +430,27 @@ watch(() => route.params.apiName, load);
         <!-- 普通属性 -->
         <div class="wizard-props__head">
           <span>普通属性</span>
-          <ElButton size="small" @click="addProp">添加属性</ElButton>
+          <div class="wizard-props__actions">
+            <ElSelect v-model="sharedPick" placeholder="从共享属性添加" size="small" filterable clearable style="width: 200px">
+              <ElOption v-for="sp in sharedProps.filter((s)=>!editForm.properties.some((p)=>p.apiName===s.apiName))" :key="sp.apiName" :label="`${sp.displayName} (${sp.apiName})`" :value="sp.apiName" />
+            </ElSelect>
+            <ElButton size="small" type="success" plain @click="addSharedProp">引用共享属性</ElButton>
+            <ElButton size="small" @click="addProp">添加属性</ElButton>
+          </div>
         </div>
-        <div v-for="(p, i) in editForm.properties.filter((x: any) => !x.derived)" :key="'n-' + i" class="wizard-prop-row">
-          <ElInput v-model="p.apiName" placeholder="字段名" />
+        <div v-for="(p, i) in editForm.properties.filter((x: any) => !x.derived)" :key="'n-' + i" class="wizard-prop-row wizard-prop-row--normal">
+          <ElInput v-model="p.apiName" placeholder="字段名" :disabled="!!p.sharedRef" />
           <ElInput v-model="p.displayName" placeholder="显示名" />
-          <ElSelect v-model="p.type" style="width: 120px">
+          <ElSelect v-model="p.type" style="width: 120px" :disabled="!!p.sharedRef">
             <ElOption v-for="dt in dataTypes" :key="dt" :label="dt" :value="dt" />
           </ElSelect>
-          <ElButton text type="danger" @click="removeProp(editForm.properties.indexOf(p))">
-            <ElIcon><Link /></ElIcon>
-          </ElButton>
+          <ElSwitch v-if="p.sharedRef" v-model="p.required" style="--el-switch-on-color: #67c23a" />
+          <div v-else class="wizard-prop-row__ops">
+            <ElTag v-if="p.sharedRef" size="small" type="success" effect="plain"><ElIcon><Share /></ElIcon> 共享</ElTag>
+            <ElButton text type="danger" @click="removeProp(editForm.properties.indexOf(p))">
+              <ElIcon><Link /></ElIcon>
+            </ElButton>
+          </div>
         </div>
 
         <!-- 派生属性 -->
@@ -650,6 +683,10 @@ watch(() => route.params.apiName, load);
   font-weight: 600;
 }
 .wizard-props__head--derived { margin-top: var(--space-4); }
+.wizard-props__actions { display: flex; align-items: center; gap: var(--space-1); }
+.wizard-prop-row--normal { grid-template-columns: 1fr 1fr 120px auto; }
+.wizard-prop-row__ops { display: flex; align-items: center; gap: var(--space-1); }
+.prop-shared-tag { margin-left: 4px; vertical-align: middle; }
 .wizard-prop-row {
   display: grid;
   grid-template-columns: 1fr 1fr 120px auto;

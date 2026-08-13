@@ -8,6 +8,7 @@ import S2Alerts from '@/pages/s2/Alerts.vue';
 import S2Explore from '@/pages/s2/Explore.vue';
 import S2Functions from '@/pages/s2/Functions.vue';
 import S2Actions from '@/pages/s2/Actions.vue';
+import S2SharedProperties from '@/pages/s2/SharedProperties.vue';
 
 const routes = [
   { path: '/', component: Overview, meta: { title: 'Ontology Manager' } },
@@ -38,6 +39,7 @@ const routes = [
       { path: 'alerts', component: S2Alerts, meta: { title: 'Alerts' } },
       { path: 'functions', component: S2Functions, meta: { title: 'Functions' } },
       { path: 'actions', component: S2Actions, meta: { title: 'Actions' } },
+      { path: 'shared-properties', component: S2SharedProperties, meta: { title: 'Shared Properties' } },
       { path: 'explore/:objectType?', component: S2Explore, meta: { title: '探索' } },
     ],
   },

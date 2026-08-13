@@ -40,6 +40,7 @@ export async function seedEnterpriseBiz(pool: Pool): Promise<PostgresMetadataRep
     await repo.createObjectType(ot);
     console.log(`  - 对象类型已创建: ${ot.apiName}`);
   }
+
   // 2) 再为带映射的对象类型注册 S1 数据源字段映射
   for (const m of objectTypeMappings) {
     const full = byApi.get(m.objectType.apiName);
@@ -49,6 +50,46 @@ export async function seedEnterpriseBiz(pool: Pool): Promise<PostgresMetadataRep
     }
     const { qualityStatus } = await svc.createObjectTypeWithMapping({ ...m, objectType: full });
     console.log(`  - ${m.objectType.apiName} <- ${m.sourceTable} (${qualityStatus})`);
+  }
+
+  // 3) 共享属性（Shared properties）演示（须在 S1 映射注册之后，避免被覆盖）：
+  //   - 把 Employee / Department 上的内嵌属性"提升"为共享属性（元数据集中）；
+  //   - 再把同一个共享属性复用（引用）到其它原本没有该属性的对象类型，
+  //     实现"一处定义、多处复用"。派生属性不参与共享。
+  const sharedSeeds: Array<{
+    fromType: string; prop: string;            // 提升来源：Employee.<prop>
+    applyTo: string[];                          // 复用到的目标对象类型
+  }> = [
+    { fromType: 'Employee', prop: 'name',     applyTo: ['Alert'] },          // Alert 原本无 name
+    { fromType: 'Employee', prop: 'status',   applyTo: ['Department', 'Alert'] }, // Department/Alert 无 status
+    { fromType: 'Employee', prop: 'title',    applyTo: ['Department', 'Project'] }, // 二者均无 title
+    { fromType: 'Department', prop: 'location', applyTo: ['Project'] },       // Project 无 location
+    { fromType: 'Employee', prop: 'managerId', applyTo: ['Project'] },       // Project 无 managerId
+  ];
+
+  for (const s of sharedSeeds) {
+    // 提升：若共享属性已存在也不影响，convert 方法幂等（已引用则跳过，未引用则挂引用）
+    try {
+      await repo.convertPropertyToShared(s.fromType, s.prop);
+      console.log(`[Shared] 已提升共享属性: ${s.prop} (from ${s.fromType})`);
+    } catch (e: any) {
+      console.warn(`[Shared] 提升失败(跳过) ${s.prop}: ${e.message}`);
+    }
+    // 把共享属性复用（引用）到目标对象类型（已引用则跳过，避免重复）
+    for (const target of s.applyTo) {
+      const t = await repo.getObjectType(target);
+      if (!t) continue;
+      if (t.properties.some((p) => p.sharedRef === s.prop)) {
+        console.log(`[Shared] ${target} 已引用 ${s.prop}（跳过）`);
+        continue;
+      }
+      try {
+        await repo.applySharedToObjectType(s.prop, target);
+        console.log(`[Shared] 已应用共享属性 ${s.prop} -> ${target}`);
+      } catch (e: any) {
+        console.warn(`[Shared] 应用失败(跳过) ${s.prop}->${target}: ${e.message}`);
+      }
+    }
   }
 
   for (const lt of linkTypes) {

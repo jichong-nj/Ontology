@@ -413,6 +413,94 @@ app.delete('/api/s2/object-types/:apiName', async (req, res) => {
   }
 });
 
+// ---------- S2 共享属性（Shared properties）----------
+app.get('/api/s2/shared-properties', async (_req, res) => {
+  try {
+    const list = await repo.listSharedProperties();
+    res.json(list);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/s2/shared-properties/:apiName', async (req, res) => {
+  try {
+    const sp = await repo.getSharedProperty(req.params.apiName);
+    if (!sp) return res.status(404).json({ error: 'not found' });
+    res.json(sp);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/s2/shared-properties', async (req, res) => {
+  try {
+    const def = req.body;
+    if (!def?.apiName || !def?.displayName || !def?.type) {
+      return res.status(400).json({ error: 'apiName/displayName/type 必填' });
+    }
+    await repo.createSharedProperty({
+      apiName: def.apiName,
+      displayName: def.displayName,
+      type: def.type,
+      description: def.description,
+      version: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    res.status(201).json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/s2/shared-properties/:apiName', async (req, res) => {
+  try {
+    await repo.updateSharedProperty(req.params.apiName, req.body ?? {});
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/s2/shared-properties/:apiName', async (req, res) => {
+  try {
+    await repo.deleteSharedProperty(req.params.apiName);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 把对象类型内嵌属性提升为共享属性
+app.post('/api/s2/shared-properties/convert', async (req, res) => {
+  try {
+    const { objectType, propApiName } = req.body ?? {};
+    if (!objectType || !propApiName) {
+      return res.status(400).json({ error: 'objectType/propApiName 必填' });
+    }
+    await repo.convertPropertyToShared(objectType, propApiName);
+    res.status(201).json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 在某对象类型上应用共享属性（引用，可选覆盖）
+app.post('/api/s2/shared-properties/:apiName/apply', async (req, res) => {
+  try {
+    const { objectType, displayName, required } = req.body ?? {};
+    if (!objectType) return res.status(400).json({ error: 'objectType 必填' });
+    await repo.applySharedToObjectType(req.params.apiName, objectType, {
+      ...(displayName !== undefined ? { displayName } : {}),
+      ...(required !== undefined ? { required } : {}),
+    });
+    res.status(201).json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ---------- S2 关系类型 ----------
 app.get('/api/s2/link-types', async (_req, res) => {
   try {

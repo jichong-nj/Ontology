@@ -82,6 +82,19 @@ export interface OntologyProperty {
   derived?: boolean;
   reducer?: string;            // DerivedSpec 的 JSON 序列化
   reducerFn?: string;          // 引用已注册函数 apiName（与 reducer 二选一，优先级更高）
+  // 共享属性引用
+  sharedRef?: string;          // 引用 SharedProperty.apiName
+  overridden?: boolean;        // 本地覆盖共享基准
+}
+
+export interface SharedProperty {
+  apiName: string;
+  displayName: string;
+  type: string;
+  description?: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // 派生属性计算规格（与后端 ontology-core DerivedSpec 对应）
@@ -200,6 +213,21 @@ export const s2 = {
     http.get<{ charts: { apiName: string; kind: 'bar' | 'pie' | 'line' }[] }>(`/s2/object-types/${apiName}/explore-config`).then((r) => r.data),
   saveExploreConfig: (apiName: string, charts: { apiName: string; kind: 'bar' | 'pie' | 'line' }[]) =>
     http.put(`/s2/object-types/${apiName}/explore-config`, { charts }).then((r) => r.data),
+};
+
+// 共享属性（Shared properties）：跨对象类型复用的属性元数据
+export const s2shared = {
+  list: () => http.get<SharedProperty[]>('/s2/shared-properties').then((r) => r.data),
+  get: (apiName: string) => http.get<SharedProperty>(`/s2/shared-properties/${apiName}`).then((r) => r.data),
+  create: (sp: SharedProperty) => http.post('/s2/shared-properties', sp).then((r) => r.data),
+  update: (apiName: string, patch: Partial<SharedProperty>) => http.put(`/s2/shared-properties/${apiName}`, patch).then((r) => r.data),
+  remove: (apiName: string) => http.delete(`/s2/shared-properties/${apiName}`).then((r) => r.data),
+  // 把对象类型内嵌属性提升为共享属性
+  convert: (objectType: string, propApiName: string) =>
+    http.post('/s2/shared-properties/convert', { objectType, propApiName }).then((r) => r.data),
+  // 在某对象类型上应用（引用）共享属性，可选本地覆盖
+  apply: (apiName: string, objectType: string, override?: { displayName?: string; required?: boolean }) =>
+    http.post(`/s2/shared-properties/${apiName}/apply`, { objectType, ...(override ?? {}) }).then((r) => r.data),
 };
 
 export const s2functions = {
