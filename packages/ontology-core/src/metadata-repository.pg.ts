@@ -799,19 +799,53 @@ export class PostgresMetadataRepository implements MetadataRepository {
   }
 
   async listAlertRules(): Promise<AlertRule[]> {
-    const { rows } = await this.pool.query(`SELECT * FROM alert_rule ORDER BY api_name`);
-    return rows.map((r: any) => ({
-      apiName: r.api_name,
-      displayName: r.display_name,
-      enabled: r.enabled,
-      intervalSeconds: r.interval_seconds,
-      functionApiName: r.function_api_name,
-      actionApiName: r.action_api_name,
-      params: r.params,
-      alertObjectType: r.alert_object_type,
-      version: r.version,
-    }));
+    const { rows } = await this.pool.query(`SELECT * FROM alert_rule ORDER  BY api_name`);
+    return rows.map(rowToAlertRule);
   }
+
+  async getAlertRule(apiName: string): Promise<AlertRule | null> {
+    const { rows } = await this.pool.query(`SELECT * FROM alert_rule WHERE api_name = $1`, [apiName]);
+    return rows[0] ? rowToAlertRule(rows[0]) : null;
+  }
+
+  async updateAlertRule(apiName: string, patch: Partial<AlertRule>): Promise<void> {
+    const current = await this.getAlertRule(apiName);
+    if (!current) throw new Error(`告警规则不存在: ${apiName}`);
+    const merged: AlertRule = {
+      ...current,
+      ...patch,
+      apiName, // 主键不可改
+      version: (current.version ?? 1) + 1,
+    };
+    await this.pool.query(
+      `UPDATE alert_rule SET
+        display_name = $2, enabled = $3, interval_seconds = $4,
+        function_api_name = $5, action_api_name = $6, params = $7,
+        alert_object_type = $8, version = $9
+       WHERE api_name = $1`,
+      [apiName, merged.displayName, merged.enabled, merged.intervalSeconds,
+        merged.functionApiName, merged.actionApiName, JSON.stringify(merged.params ?? {}),
+        merged.alertObjectType, merged.version],
+    );
+  }
+
+  async deleteAlertRule(apiName: string): Promise<void> {
+    await this.pool.query(`DELETE FROM alert_rule WHERE api_name = $1`, [apiName]);
+  }
+}
+
+function rowToAlertRule(r: any): AlertRule {
+  return {
+    apiName: r.api_name,
+    displayName: r.display_name,
+    enabled: r.enabled,
+    intervalSeconds: r.interval_seconds,
+    functionApiName: r.function_api_name,
+    actionApiName: r.action_api_name,
+    params: r.params,
+    alertObjectType: r.alert_object_type,
+    version: r.version,
+  };
 }
 
 function rowToSharedProperty(r: any): SharedProperty {

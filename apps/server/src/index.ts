@@ -3,7 +3,7 @@
 import express from 'express';
 import { Pool } from 'pg';
 import { PostgresMetadataRepository, TypeScriptFunctionSandbox } from '@ontology/ontology-core';
-import type { OntologyFunction, ActionType } from '@ontology/ontology-core';
+import type { OntologyFunction, ActionType, AlertRule } from '@ontology/ontology-core';
 import { PostgresMappingStore, MappingService } from '@ontology/data-integration';
 import {
   functions,
@@ -314,6 +314,21 @@ app.get('/api/s2/alert-rules', async (_req, res) => {
   }
 });
 
+// 新建告警规则（FDE 可自助配置，无需改码）
+app.post('/api/s2/alert-rules', async (req, res) => {
+  try {
+    const def = req.body as AlertRule;
+    if (!def?.apiName) return res.status(400).json({ error: 'apiName 必填' });
+    if (await repo.getAlertRule(def.apiName)) {
+      return res.status(409).json({ error: `规则已存在: ${def.apiName}` });
+    }
+    await repo.createAlertRule(def);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // 手动触发全部告警规则（后台定时任务的手动入口）
 app.post('/api/s2/alert-rules/run', async (_req, res) => {
   try {
@@ -325,6 +340,36 @@ app.post('/api/s2/alert-rules/run', async (_req, res) => {
     }
     const result = await scheduler.runAll();
     res.json({ ok: true, results: result });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 单条告警规则：详情 / 更新 / 删除（FDE 可自助配置，无需改码）
+app.get('/api/s2/alert-rules/:apiName', async (req, res) => {
+  try {
+    const rule = await repo.getAlertRule(req.params.apiName);
+    if (!rule) return res.status(404).json({ error: '规则不存在' });
+    res.json(rule);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.put('/api/s2/alert-rules/:apiName', async (req, res) => {
+  try {
+    const patch = req.body as Partial<AlertRule>;
+    await repo.updateAlertRule(req.params.apiName, patch);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/s2/alert-rules/:apiName', async (req, res) => {
+  try {
+    await repo.deleteAlertRule(req.params.apiName);
+    res.json({ ok: true });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }

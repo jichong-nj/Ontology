@@ -99,6 +99,14 @@ export async function seedEnterpriseBiz(pool: Pool): Promise<PostgresMetadataRep
 
   for (const fn of functions) {
     await repo.createFunction(fn);
+    // 若 DB 中该函数已存在但 body 为空（旧库 seed 过的注入式函数），
+    // 补写代码里的默认 body，使函数体可在前端在线编辑；FDE 已改过 body 的不覆盖。
+    if (fn.body) {
+      const existing = await repo.getFunction(fn.apiName);
+      if (existing && !existing.body) {
+        await repo.updateFunction(fn.apiName, { body: fn.body });
+      }
+    }
     console.log(`[S2] 函数已创建: ${fn.apiName}`);
   }
 

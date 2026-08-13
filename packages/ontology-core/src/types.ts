@@ -227,7 +227,10 @@ export interface MetadataRepository {
   deleteFunction(apiName: string): Promise<void>;
   // 告警规则（后台定时任务；条件命中后由可配置的 Action 生成告警对象）
   createAlertRule(def: AlertRule): Promise<void>;
+  getAlertRule(apiName: string): Promise<AlertRule | null>;
   listAlertRules(): Promise<AlertRule[]>;
+  updateAlertRule(apiName: string, patch: Partial<AlertRule>): Promise<void>;
+  deleteAlertRule(apiName: string): Promise<void>;
 }
 
 // 告警规则：后台定时任务。周期执行某个可配置 Function（条件评估），

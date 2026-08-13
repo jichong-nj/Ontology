@@ -28,6 +28,11 @@ export class TypeScriptFunctionSandbox implements FunctionSandbox {
     this.registry.set(apiName, fn);
   }
 
+  // 查询某函数是否已在沙箱注册（用于 bootstrap 兜底判断，避免覆盖 DB 中的可编辑 body 版本）
+  has(apiName: string): boolean {
+    return this.registry.has(apiName);
+  }
+
   // 从存库的 TS 源码编译注册。约定 body 为：return (args, ctx) => { ...; return ... }
   // 其中 ctx 为运行时注入的 FunctionContext（含 repo / objects / links）。
   registerFromSource(apiName: string, body: string): void {

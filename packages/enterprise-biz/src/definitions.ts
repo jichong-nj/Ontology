@@ -1,6 +1,7 @@
 // 企业业务库 -> S2 Ontology 对象/关系类型定义
 // 属性 apiName 与 enterprise_biz 源表字段一一对应（见 packages/enterprise-biz/sql/schema.sql）。
 import type { ObjectType, LinkType, OntologyFunction, ActionType, AlertRule } from '@ontology/ontology-core';
+import { EVALUATE_DIMISSION_RISK_BODY, CREATE_DIMISSION_ALERT_BODY } from './dimission-risk';
 
 const V = 1;
 
@@ -59,6 +60,10 @@ export const objectTypes: ObjectType[] = [
       { apiName: 'workHours', displayName: '日均上班时长(小时)', type: 'float', required: false, sourceMapping: 'work_hours' },
       // 离职风险预警：可写属性，由 evaluateDimissionRisk 函数计算后修改（非派生）
       { apiName: 'dimissionRisk', displayName: '离职风险预警', type: 'boolean', required: false, derived: false },
+      // 离职风险分（100 分制，满分 100），由 evaluateDimissionRisk 计算后写入
+      { apiName: 'riskScore', displayName: '离职风险分', type: 'integer', required: false, derived: false },
+      // 离职风险等级：none/low/medium/high（>80 不告警 / <=80 低 / <=70 中 / <=50 高）
+      { apiName: 'riskLevel', displayName: '离职风险等级', type: 'string', required: false, derived: false },
       // 年请假天数（派生）：聚合 EmployeeLeave 关系中本人员为 source 的请假记录 durationDays 之和
       {
         apiName: 'annualLeaveDays',
@@ -274,11 +279,31 @@ export const functions: OntologyFunction[] = [
     language: 'typescript',
     entry: 'evaluateDimissionRisk',
     inputs: [
-      { name: 'threshold', type: 'float', required: false }, // 触发比例，默认 0.8
+      { name: 'threshold', type: 'float', required: false }, // 规则2触发比例，默认 0.8
+      { name: 'leaveDeduct', type: 'float', required: false }, // 规则1每多1天扣分量，默认 10
+      { name: 'workDeduct', type: 'float', required: false }, // 规则2每低5%扣分量，默认 10
+      { name: 'leaveBase', type: 'float', required: false }, // 规则1起扣天数，默认 1
       { name: 'departmentId', type: 'integer', required: false }, // 可选：仅评估某个部门
     ],
     outputs: ['object'],
-    description: '对每个部门计算人员日均上班时间(workHours)的均值，若某人员 workHours < 部门均值*阈值(默认0.8)则将其 dimissionRisk 置为 true。作用于本体可写侧 object_write，不回写只读源端。阈值 threshold 可选(默认0.8)，departmentId 可选(默认全部门)。',
+    description: '满分100分的离职风险评分：规则1 请假天数>起扣天数(默认1)每多1天扣 leaveDeduct(默认10)；规则2 工时<部门均值*阈值(默认0.8)每低5%扣 workDeduct(默认10)。结果写入 Employee 的 riskScore/riskLevel 并可被告警规则引用。参数均可由 alert_rule.params 或调用 args 覆盖，可在线编辑函数体。',
+    // 可在线编辑的函数体（FDE 可在 S2 Functions 面板修改即时生效；缺省参数见 body 内默认值）
+    body: EVALUATE_DIMISSION_RISK_BODY,
+    version: V,
+  },
+  {
+    apiName: 'createDimissionAlert',
+    displayName: '生成离职风险告警',
+    language: 'typescript',
+    entry: 'createDimissionAlert',
+    inputs: [
+      { name: 'rule', type: 'string', required: true },
+      { name: 'alertObjectType', type: 'string', required: true },
+      { name: 'flagged', type: 'object', required: true },
+    ],
+    outputs: ['object'],
+    description: '动作实现：将 evaluateDimissionRisk 返回的命中人员生成 Alert 对象（写入本体可写侧）。由 alert_rule 通过 actionApiName 引用。可在线编辑函数体。',
+    body: CREATE_DIMISSION_ALERT_BODY,
     version: V,
   },
 ];
@@ -302,6 +327,7 @@ export const actions: ActionType[] = [
 ];
 
 // 告警规则（后台定时任务）：可配置 Function 评估 + 可配置 Action 落地
+// params 作为函数 args 透传，FDE 可在此面板直接调整算分参数（阈值/扣分量/起扣天数），无需改码重启。
 export const alertRules: AlertRule[] = [
   {
     apiName: 'dimissionRiskRule',
@@ -310,7 +336,12 @@ export const alertRules: AlertRule[] = [
     intervalSeconds: 60,
     functionApiName: 'evaluateDimissionRisk',
     actionApiName: 'createDimissionAlert',
-    params: { threshold: 0.8 },
+    params: {
+      threshold: 0.8, // 规则2：工时低于部门均值的比例起扣点
+      leaveDeduct: 10, // 规则1：请假每多1天扣的分
+      workDeduct: 10, // 规则2：工时每低5%扣的分
+      leaveBase: 1, // 规则1：请假起扣天数
+    },
     alertObjectType: 'Alert',
     version: V,
   },

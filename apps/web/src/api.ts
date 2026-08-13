@@ -204,6 +204,10 @@ export const s2 = {
     http.post<{ ok: boolean; result: unknown }>(`/s2/functions/${fnApiName}/invoke`, params).then((r) => r.data),
   // 告警规则列表
   listAlertRules: () => http.get<any[]>('/s2/alert-rules').then((r) => r.data),
+  getAlertRule: (apiName: string) => http.get<any>(`/s2/alert-rules/${apiName}`).then((r) => r.data),
+  createAlertRule: (def: any) => http.post('/s2/alert-rules', def).then((r) => r.data),
+  updateAlertRule: (apiName: string, patch: any) => http.put(`/s2/alert-rules/${apiName}`, patch).then((r) => r.data),
+  deleteAlertRule: (apiName: string) => http.delete(`/s2/alert-rules/${apiName}`).then((r) => r.data),
   // 手动运行全部告警规则
   runAlertRules: () => http.post<{ ok: boolean; results: unknown[] }>('/s2/alert-rules/run').then((r) => r.data),
   // 告警对象列表
