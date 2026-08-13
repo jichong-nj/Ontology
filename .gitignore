@@ -20,3 +20,6 @@ build/
 # 项目本地数据（非源码，按规范不入库）
 .codebuddy/
 todo.md
+
+# AI 生成图片（非源码）
+generated-images/
