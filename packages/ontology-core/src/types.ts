@@ -138,7 +138,9 @@ export interface OntologyFunction {
   entry: string;
   inputs: ActionParameter[];
   outputs: PropertyType[];
-  // 函数体源码（TS：运行时 new Function 编译注册；空则沿用 seed 注入的注册式实现）。python 暂不支持运行时执行。
+  // 函数说明：描述函数作用、入参含义、使用场景，便于其他开发者/使用者理解。
+  description?: string | null;
+  // 函数体源码（TS：运行时 new Function 编译注册；空则沿用 seed 注入的注册式实现，此时为只读、不可在线编辑）。python 暂不支持运行时执行。
   body?: string | null;
   version: number;
 }
@@ -152,9 +154,9 @@ export interface MetadataRepository {
   createObjectType(def: ObjectType): Promise<void>;
   updateObjectType(apiName: string, def: ObjectType): Promise<void>;
   deleteObjectType(apiName: string): Promise<void>;
-  // 探索页配置：每对象类型一套独立的图表（属性 apiName 有序列表）
-  getExploreConfig(apiName: string): Promise<string[]>;
-  saveExploreConfig(apiName: string, charts: string[]): Promise<void>;
+  // 探索页配置：每对象类型一套独立的图表（含图形样式 kind）
+  getExploreConfig(apiName: string): Promise<{ apiName: string; kind: string }[]>;
+  saveExploreConfig(apiName: string, charts: { apiName: string; kind: string }[]): Promise<void>;
   // 关系类型
   listLinkTypes(): Promise<LinkType[]>;
   getLinkType(apiName: string): Promise<LinkType | null>;

@@ -151,7 +151,8 @@ export interface OntologyFunction {
   entry: string;
   inputs: FunctionInput[];
   outputs: string[];
-  body?: string | null;     // 函数体源码（TS：运行时编译注册；空则沿用 seed 注入实现）
+  description?: string | null; // 函数说明：作用、入参含义、使用场景
+  body?: string | null;     // 函数体源码（TS：运行时编译注册；空则沿用 seed 注入实现，此时只读不可编辑）
   version: number;
 }
 export interface ActionParameter {
@@ -194,10 +195,10 @@ export const s2 = {
   runAlertRules: () => http.post<{ ok: boolean; results: unknown[] }>('/s2/alert-rules/run').then((r) => r.data),
   // 告警对象列表
   listAlerts: () => http.get<any[]>('/s2/alerts').then((r) => r.data),
-  // 探索页图表配置：每对象类型一套独立的图表（属性 apiName 有序列表）
+  // 探索页图表配置：每对象类型一套独立的图表（属性 apiName + 图形样式 kind 有序列表）
   getExploreConfig: (apiName: string) =>
-    http.get<{ charts: string[] }>(`/s2/object-types/${apiName}/explore-config`).then((r) => r.data),
-  saveExploreConfig: (apiName: string, charts: string[]) =>
+    http.get<{ charts: { apiName: string; kind: 'bar' | 'pie' | 'line' }[] }>(`/s2/object-types/${apiName}/explore-config`).then((r) => r.data),
+  saveExploreConfig: (apiName: string, charts: { apiName: string; kind: 'bar' | 'pie' | 'line' }[]) =>
     http.put(`/s2/object-types/${apiName}/explore-config`, { charts }).then((r) => r.data),
 };
 

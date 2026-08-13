@@ -4,8 +4,9 @@ import { useRoute, useRouter } from 'vue-router';
 import {
   ElButton, ElCard, ElMessage, ElTag, ElDescriptions, ElDescriptionsItem,
   ElIcon, ElDialog, ElForm, ElFormItem, ElInput, ElSelect, ElOption,
+  ElCheckbox, ElCollapse, ElCollapseItem,
 } from 'element-plus';
-import { Link, Coin, Edit, Connection, Cpu } from '@element-plus/icons-vue';
+import { Link, Coin, Edit, Connection, Cpu, ArrowDown } from '@element-plus/icons-vue';
 import { s2, s1, s2link, s2functions } from '@/api';
 import type { ObjectType, OntologyProperty, SourceConnection, ProbeTable, LinkType, DerivedSpec, OntologyFunction } from '@/api';
 import { parseDerivedSpec } from '@/api';
@@ -20,6 +21,7 @@ const obj = ref<ObjectType | null>(null);
 const connections = ref<SourceConnection[]>([]);
 const tables = ref<ProbeTable[]>([]);
 const linkTypes = ref<LinkType[]>([]);
+const objectTypes = ref<ObjectType[]>([]);
 const tablesLoading = ref(false);
 const loading = ref(false);
 
@@ -49,6 +51,10 @@ function connName(id?: string) {
   return connections.value.find((c) => c.id === id)?.displayName || id;
 }
 
+// 普通属性 / 派生属性 分组
+const normalProps = () => (obj.value?.properties ?? []).filter((p) => !p.derived);
+const derivedProps = () => (obj.value?.properties ?? []).filter((p) => p.derived);
+
 // 派生属性 reducer 解析 / 配置辅助
 const AGG_OPS = ['avgLinks', 'sumLinks', 'minLinks', 'maxLinks', 'collectLinks'];
 function derivedOp(p: OntologyProperty): string {
@@ -74,6 +80,17 @@ function derivedSingle(p: OntologyProperty): boolean {
 }
 function derivedLimit(p: OntologyProperty): number | undefined {
   return parseDerivedSpec(p.reducer)?.limit;
+}
+// 派生类型摘要标签文本
+const OP_LABELS: Record<string, string> = {
+  countLinks: '关联计数', avgLinks: '对端均值', sumLinks: '对端求和',
+  minLinks: '对端最小', maxLinks: '对端最大', collectLinks: '收集列表',
+  expression: '表达式',
+};
+function derivedOpLabel(p: OntologyProperty): string {
+  const fn = derivedReducerFn(p);
+  if (fn) return `函数:${fn}`;
+  return OP_LABELS[derivedOp(p)] ?? derivedOp(p);
 }
 // 切换算子时清理与新算子无关的字段，避免脏配置
 function onDerivedOpChange(p: OntologyProperty, op: string) {
@@ -105,6 +122,37 @@ function onToggleDerived(p: OntologyProperty, val: boolean) {
 function derivedReducerFn(p: OntologyProperty): string {
   return p.reducerFn ?? '';
 }
+// 对端聚合属性可选列表：根据关系类型 + 本对象角色，取另一端对象类型的属性
+function aggPropOptions(p: OntologyProperty): { apiName: string; displayName: string }[] {
+  const ltApi = derivedLinkType(p);
+  const lt = linkTypes.value.find((l) => l.apiName === ltApi);
+  if (!lt) return [];
+  const side = derivedSide(p);
+  // side=target 表示本对象是 target，聚合的是 source 端对象；反之亦然
+  const otherType = side === 'target' ? lt.sourceType : lt.targetType;
+  const ot = objectTypes.value.find((o) => o.apiName === otherType);
+  if (!ot) return [];
+  return ot.properties.filter((x) => !x.derived).map((x) => ({ apiName: x.apiName, displayName: x.displayName }));
+}
+// 派生模式：'op' = 结构化算子，'fn' = 引用已注册函数，'' = 尚未选择
+function derivedMode(p: OntologyProperty): 'op' | 'fn' | '' {
+  if (p.reducerFn !== undefined) return 'fn';
+  if (p.reducer) return 'op';
+  return '';
+}
+// 切换派生模式（二选一，互斥）。注意：选 'fn' 时保留 reducerFn（即便为空字符串占位）让 derivedMode 识别为 fn 模式；选 'op' 清空 reducerFn 并初始化 reducer
+function onDerivedModeChange(p: OntologyProperty, mode: 'op' | 'fn' | '') {
+  if (mode === 'fn') {
+    p.reducer = '';            // 清空结构化配置，但保留/初始化 reducerFn 占位以维持 fn 模式
+    if (p.reducerFn === undefined) p.reducerFn = '';
+  } else if (mode === 'op') {
+    delete p.reducerFn;
+    p.reducer = JSON.stringify({ op: 'countLinks', linkType: '', side: 'target' } as DerivedSpec);
+  } else {
+    delete p.reducerFn;
+    p.reducer = '';
+  }
+}
 // 引用函数：选中则写入 reducerFn 并清空结构化 reducer；清空则回到结构化模式
 function onReducerFnChange(p: OntologyProperty, fnApi: string) {
   if (fnApi) {
@@ -121,19 +169,27 @@ async function loadFunctions() {
   await tryRequest(async () => { functions.value = await s2functions.list(); });
 }
 
+// 派生属性展开/收起状态（按属性索引）
+const derivedExpanded = reactive<Record<number, boolean>>({});
+function toggleDerivedExpand(i: number) {
+  derivedExpanded[i] = !derivedExpanded[i];
+}
+
 async function load() {
   const apiName = targetApiName();
   if (!apiName) return;
   loading.value = true;
   await tryRequest(async () => {
-    const [o, cs, lts] = await Promise.all([
+    const [o, cs, lts, ots] = await Promise.all([
       s2.getObjectType(apiName),
       s1.listConnections(),
       s2link.listLinkTypes(),
+      s2.listObjectTypes(),
     ]);
     obj.value = o;
     connections.value = cs;
     linkTypes.value = lts;
+    objectTypes.value = ots;
   });
   await loadFunctions();
   loading.value = false;
@@ -187,6 +243,12 @@ function openEdit() {
 }
 function addProp() {
   editForm.properties.push({ apiName: '', displayName: '', type: 'string', required: false, derived: false });
+}
+function addDerivedProp() {
+  editForm.properties.push({
+    apiName: '', displayName: '', type: 'integer', required: false,
+    derived: true, reducer: JSON.stringify({ op: 'countLinks', linkType: '', side: 'target' }),
+  });
 }
 function removeProp(i: number) {
   editForm.properties.splice(i, 1);
@@ -264,33 +326,44 @@ watch(() => route.params.apiName, load);
 
         <ElCard class="detail-card detail-card--props" shadow="never">
           <template #header><span class="card-title"><ElIcon><Link /></ElIcon> 属性 ({{ obj.properties.length }})</span></template>
+
+          <!-- 普通属性 -->
+          <h4 class="prop-group__title">普通属性 <span class="prop-group__count">{{ normalProps().length }}</span></h4>
+          <table class="prop-table">
+            <thead>
+              <tr><th>属性</th><th>显示名</th><th>类型</th><th>必填</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="p in normalProps()" :key="p.apiName">
+                <td class="mono">{{ p.apiName }}</td>
+                <td>{{ p.displayName }}</td>
+                <td><ElTag size="small">{{ p.type }}</ElTag></td>
+                <td>{{ p.required ? '是' : '否' }}</td>
+              </tr>
+              <tr v-if="normalProps().length === 0">
+                <td colspan="4" class="empty">暂无普通属性</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- 派生属性 -->
+          <h4 class="prop-group__title">派生属性 <span class="prop-group__count">{{ derivedProps().length }}</span></h4>
           <table class="prop-table">
             <thead>
               <tr><th>属性</th><th>显示名</th><th>类型</th><th>必填</th><th>派生</th></tr>
             </thead>
             <tbody>
-              <tr v-for="p in obj.properties" :key="p.apiName">
+              <tr v-for="p in derivedProps()" :key="p.apiName">
                 <td class="mono">{{ p.apiName }}</td>
                 <td>{{ p.displayName }}</td>
                 <td><ElTag size="small">{{ p.type }}</ElTag></td>
                 <td>{{ p.required ? '是' : '否' }}</td>
                 <td>
-                  <template v-if="p.derived">
-                    <ElTag size="small" type="warning"><ElIcon><Cpu /></ElIcon> 派生</ElTag>
-                    <div class="derived-calc">
-                      <ElInput v-model="ensureCalc(p.apiName).rid" size="small" placeholder="对象实例 rid" style="width: 140px" />
-                      <ElButton size="small" :loading="ensureCalc(p.apiName).loading" @click="calcDerived(p)">计算</ElButton>
-                      <span v-if="ensureCalc(p.apiName).error" class="derived-err">{{ ensureCalc(p.apiName).error }}</span>
-                      <span v-else-if="ensureCalc(p.apiName).value !== '' && ensureCalc(p.apiName).value !== undefined" class="derived-val">
-                        = {{ ensureCalc(p.apiName).value }}
-                      </span>
-                    </div>
-                  </template>
-                  <span v-else>—</span>
+                  <ElTag size="small" type="warning"><ElIcon><Cpu /></ElIcon> {{ derivedReducerFn(p) ? `函数:${derivedReducerFn(p)}` : derivedOp(p) }}</ElTag>
                 </td>
               </tr>
-              <tr v-if="obj.properties.length === 0">
-                <td colspan="5" class="empty">暂无属性</td>
+              <tr v-if="derivedProps().length === 0">
+                <td colspan="5" class="empty">暂无派生属性</td>
               </tr>
             </tbody>
           </table>
@@ -331,70 +404,137 @@ watch(() => route.params.apiName, load);
           </ElFormItem>
         </div>
 
+        <!-- 普通属性 -->
         <div class="wizard-props__head">
-          <span>属性</span>
+          <span>普通属性</span>
           <ElButton size="small" @click="addProp">添加属性</ElButton>
         </div>
-        <div v-for="(p, i) in editForm.properties" :key="i" class="wizard-prop-row">
+        <div v-for="(p, i) in editForm.properties.filter((x: any) => !x.derived)" :key="'n-' + i" class="wizard-prop-row">
           <ElInput v-model="p.apiName" placeholder="字段名" />
           <ElInput v-model="p.displayName" placeholder="显示名" />
           <ElSelect v-model="p.type" style="width: 120px">
             <ElOption v-for="dt in dataTypes" :key="dt" :label="dt" :value="dt" />
           </ElSelect>
-          <ElButton text type="danger" @click="removeProp(i)">
+          <ElButton text type="danger" @click="removeProp(editForm.properties.indexOf(p))">
             <ElIcon><Link /></ElIcon>
           </ElButton>
         </div>
-        <!-- 派生属性配置 -->
+
+        <!-- 派生属性 -->
+        <div class="wizard-props__head wizard-props__head--derived">
+          <span>派生属性</span>
+          <ElButton size="small" type="warning" plain @click="addDerivedProp">添加派生属性</ElButton>
+        </div>
+        <!-- 派生属性配置：每个派生属性独立卡片，收起显示摘要，展开编辑 -->
         <template v-for="(p, i) in editForm.properties" :key="'der-' + i">
-          <div v-if="p.derived" class="derived-cfg">
-            <ElTag size="small" type="warning">派生 #{{ i + 1 }}</ElTag>
-            <span class="derived-cfg__label">算子</span>
-            <ElSelect :model-value="derivedOp(p)" style="width: 170px" @change="(v:string)=>onDerivedOpChange(p,v)">
-              <ElOption label="关联计数(countLinks)" value="countLinks" />
-              <ElOption label="对端均值(avgLinks)" value="avgLinks" />
-              <ElOption label="对端求和(sumLinks)" value="sumLinks" />
-              <ElOption label="对端最小(minLinks)" value="minLinks" />
-              <ElOption label="对端最大(maxLinks)" value="maxLinks" />
-              <ElOption label="收集列表(collectLinks)" value="collectLinks" />
-              <ElOption label="表达式(expression)" value="expression" />
-            </ElSelect>
-            <span class="derived-cfg__label">或引用函数</span>
-            <ElSelect :model-value="derivedReducerFn(p)" placeholder="选择已注册函数（与上面算子二选一）" style="width: 240px" clearable @change="(v:string)=>onReducerFnChange(p,v)">
-              <ElOption v-for="fn in functions" :key="fn.apiName" :label="`${fn.displayName} (${fn.apiName})`" :value="fn.apiName" />
-            </ElSelect>
-            <template v-if="derivedOp(p) !== 'expression' && !derivedReducerFn(p)">
-              <span class="derived-cfg__label">关系类型</span>
-              <ElSelect :model-value="derivedLinkType(p)" placeholder="选择关系" style="width: 230px" @change="(v:string)=>setDerivedSpec(p,{linkType:v})">
-                <ElOption v-for="lt in linkTypes" :key="lt.apiName" :label="`${lt.displayName} (${lt.sourceType}→${lt.targetType})`" :value="lt.apiName" />
-              </ElSelect>
-              <span class="derived-cfg__label">本对象角色</span>
-              <ElSelect :model-value="derivedSide(p)" style="width: 130px" @change="(v:'source'|'target')=>setDerivedSpec(p,{side:v})">
-                <ElOption label="source（起点）" value="source" />
-                <ElOption label="target（终点）" value="target" />
-              </ElSelect>
-            </template>
-            <template v-if="derivedOp(p) === 'countLinks'">
-              <ElCheckbox :model-value="derivedDistinct(p)" @change="(v:any)=>setDerivedSpec(p,{distinct:!!v})">按对端去重</ElCheckbox>
-            </template>
-            <template v-if="AGG_OPS.includes(derivedOp(p))">
-              <span class="derived-cfg__label">{{ derivedOp(p) === 'collectLinks' ? '收集属性' : '对端属性' }}</span>
-              <ElInput :model-value="derivedProp(p)" size="small" style="width: 150px" :placeholder="derivedOp(p)==='collectLinks' ? '如：name' : '如：workHours'" @update:model-value="(v:string)=>setDerivedSpec(p,{prop:v})" />
-            </template>
-            <template v-if="derivedOp(p) === 'collectLinks'">
-              <ElCheckbox :model-value="derivedAsSet(p)" @change="(v:any)=>setDerivedSpec(p,{asSet:!!v})">去重集合</ElCheckbox>
-              <ElCheckbox :model-value="derivedSingle(p)" @change="(v:any)=>setDerivedSpec(p,{single:!!v})" title="关系唯一端只取一个对端属性（如 Project 的 Lead engineer name）">单链接取标量</ElCheckbox>
-              <span class="derived-cfg__label">上限</span>
-              <ElInput :model-value="derivedLimit(p)" size="small" style="width: 88px" placeholder="全部" @update:model-value="(v:string)=>setDerivedSpec(p,{limit:v?Number(v):undefined})" />
-            </template>
-            <template v-if="derivedOp(p) === 'expression'">
-              <span class="derived-cfg__label">表达式</span>
-              <ElInput :model-value="derivedProp(p)" size="small" style="width: 200px" placeholder="占位（第一期不执行）" @update:model-value="(v:string)=>setDerivedSpec(p,{expr:v})" />
-            </template>
+          <div v-if="p.derived" class="derived-card">
+            <!-- 收起态：摘要行 -->
+            <div class="derived-card__summary" @click="toggleDerivedExpand(i)">
+              <ElTag size="small" type="warning"><ElIcon><Cpu /></ElIcon> 派生</ElTag>
+              <span class="derived-card__field mono">{{ p.apiName || '未命名' }}</span>
+              <span class="derived-card__display">{{ p.displayName || '—' }}</span>
+              <ElTag size="small">{{ p.type || 'string' }}</ElTag>
+              <ElTag size="small" type="info">{{ derivedReducerFn(p) ? `函数:${derivedReducerFn(p)}` : derivedOpLabel(p) }}</ElTag>
+              <ElIcon class="derived-card__arrow"><ArrowDown /></ElIcon>
+            </div>
+
+            <!-- 展开态：编辑表单 -->
+            <div v-show="derivedExpanded[i]" class="derived-card__body">
+              <!-- 第一步：选择派生模式（算子 / 引用函数），二选一 -->
+              <div class="derived-row">
+                <span class="derived-label">派生模式</span>
+                <ElRadioGroup :model-value="derivedMode(p)" @change="(v:any)=>onDerivedModeChange(p, v)">
+                  <ElRadioButton label="结构化算子" value="op" />
+                  <ElRadioButton label="引用函数" value="fn" />
+                </ElRadioGroup>
+              </div>
+
+              <!-- 模式一：结构化算子 -->
+              <template v-if="derivedMode(p) === 'op'">
+                <div class="derived-row">
+                  <span class="derived-label">算子</span>
+                  <ElSelect :model-value="derivedOp(p)" style="width: 240px" @change="(v:string)=>onDerivedOpChange(p,v)">
+                    <ElOption label="关联计数 (countLinks)" value="countLinks" />
+                    <ElOption label="对端均值 (avgLinks)" value="avgLinks" />
+                    <ElOption label="对端求和 (sumLinks)" value="sumLinks" />
+                    <ElOption label="对端最小 (minLinks)" value="minLinks" />
+                    <ElOption label="对端最大 (maxLinks)" value="maxLinks" />
+                    <ElOption label="收集列表 (collectLinks)" value="collectLinks" />
+                    <ElOption label="表达式 (expression)" value="expression" />
+                  </ElSelect>
+                </div>
+
+                <template v-if="derivedOp(p) !== 'expression'">
+                  <div class="derived-row">
+                    <span class="derived-label">关系类型</span>
+                    <ElSelect :model-value="derivedLinkType(p)" placeholder="选择关系类型" style="flex:1" @change="(v:string)=>setDerivedSpec(p,{linkType:v})">
+                      <ElOption v-for="lt in linkTypes" :key="lt.apiName" :label="`${lt.displayName} (${lt.sourceType}→${lt.targetType})`" :value="lt.apiName" />
+                    </ElSelect>
+                  </div>
+                  <div class="derived-row">
+                    <span class="derived-label">本对象角色</span>
+                    <ElSelect :model-value="derivedSide(p)" style="width: 180px" @change="(v:'source'|'target')=>setDerivedSpec(p,{side:v})">
+                      <ElOption label="source（起点）" value="source" />
+                      <ElOption label="target（终点）" value="target" />
+                    </ElSelect>
+                  </div>
+                </template>
+
+                <template v-if="derivedOp(p) === 'countLinks'">
+                  <div class="derived-row">
+                    <ElCheckbox :model-value="derivedDistinct(p)" @change="(v:any)=>setDerivedSpec(p,{distinct:!!v})">按对端去重</ElCheckbox>
+                  </div>
+                </template>
+
+                <template v-if="AGG_OPS.includes(derivedOp(p))">
+                  <div class="derived-row">
+                    <span class="derived-label">{{ derivedOp(p) === 'collectLinks' ? '收集属性' : '对端聚合属性' }}</span>
+                    <ElSelect :model-value="derivedProp(p)" style="flex:1" filterable clearable
+                      :placeholder="aggPropOptions(p).length ? '选择对端属性' : '请先选择关系类型与角色'"
+                      :disabled="!aggPropOptions(p).length"
+                      @change="(v:string)=>setDerivedSpec(p,{prop:v})">
+                      <ElOption v-for="ap in aggPropOptions(p)" :key="ap.apiName" :label="`${ap.displayName} (${ap.apiName})`" :value="ap.apiName" />
+                    </ElSelect>
+                  </div>
+                </template>
+
+                <template v-if="derivedOp(p) === 'collectLinks'">
+                  <div class="derived-row derived-row--wrap">
+                    <ElCheckbox :model-value="derivedAsSet(p)" @change="(v:any)=>setDerivedSpec(p,{asSet:!!v})">去重集合</ElCheckbox>
+                    <ElCheckbox :model-value="derivedSingle(p)" @change="(v:any)=>setDerivedSpec(p,{single:!!v})" title="关系唯一端只取一个对端属性（如 Project 的 Lead engineer name）">单链接取标量</ElCheckbox>
+                    <span class="derived-label" style="width:auto">上限</span>
+                    <ElInput :model-value="derivedLimit(p)" size="small" style="width: 100px" placeholder="全部" @update:model-value="(v:string)=>setDerivedSpec(p,{limit:v?Number(v):undefined})" />
+                  </div>
+                </template>
+
+                <template v-if="derivedOp(p) === 'expression'">
+                  <div class="derived-row">
+                    <span class="derived-label">表达式</span>
+                    <ElInput :model-value="parseDerivedSpec(p.reducer)?.expr ?? ''" size="default" style="flex:1" placeholder="占位（第一期不执行）" @update:model-value="(v:string)=>setDerivedSpec(p,{expr:v})" />
+                  </div>
+                </template>
+              </template>
+
+              <!-- 模式二：引用函数 -->
+              <template v-else-if="derivedMode(p) === 'fn'">
+                <div class="derived-row">
+                  <span class="derived-label">引用函数</span>
+                  <ElSelect :model-value="derivedReducerFn(p)" placeholder="选择已注册函数" style="flex:1" clearable @change="(v:string)=>onReducerFnChange(p,v)">
+                    <ElOption v-for="fn in functions" :key="fn.apiName" :label="`${fn.displayName} (${fn.apiName})`" :value="fn.apiName" />
+                  </ElSelect>
+                </div>
+                <div class="derived-row" v-if="derivedReducerFn(p)">
+                  <span class="derived-label">函数说明</span>
+                  <span class="derived-fn-desc">{{ functions.find(f=>f.apiName===derivedReducerFn(p))?.description || '（该函数暂无说明）' }}</span>
+                </div>
+              </template>
+
+              <div class="derived-card__footer">
+                <ElCheckbox v-model="p.derived" @change="(v:any)=>onToggleDerived(p, !!v)">保持为派生属性</ElCheckbox>
+                <ElButton size="small" type="danger" text @click="toggleDerivedExpand(i)">收起</ElButton>
+              </div>
+            </div>
           </div>
-          <ElCheckbox v-model="p.derived" class="derived-chk" @change="(v:any)=>onToggleDerived(p, !!v)">
-            属性「{{ p.apiName || '未命名' }}」设为派生（计算值）
-          </ElCheckbox>
         </template>
       </ElForm>
       <template #footer>
@@ -475,6 +615,25 @@ watch(() => route.params.apiName, load);
 }
 .prop-table .mono { font-size: 12px; }
 .empty { text-align: center; color: var(--text-muted); padding: 16px; }
+.prop-group__title {
+  margin: 4px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.prop-group__title:not(:first-child) { margin-top: var(--space-4); }
+.prop-group__count {
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--accent-soft, #f5f7fa);
+  border-radius: 10px;
+  padding: 0 8px;
+  line-height: 18px;
+}
 .detail-empty { color: var(--text-muted); padding: var(--space-6); }
 
 .edit-grid {
@@ -490,25 +649,75 @@ watch(() => route.params.apiName, load);
   font-size: 13px;
   font-weight: 600;
 }
+.wizard-props__head--derived { margin-top: var(--space-4); }
 .wizard-prop-row {
   display: grid;
   grid-template-columns: 1fr 1fr 120px auto;
   gap: var(--space-1);
   margin-bottom: var(--space-1);
 }
-.derived-cfg {
+/* 派生属性卡片：独立一行，收起摘要 + 展开编辑 */
+.derived-card {
+  border: 1px solid var(--border, #e4e7ed);
+  border-radius: var(--radius, 6px);
+  margin-bottom: var(--space-2);
+  background: #fff;
+  overflow: hidden;
+}
+.derived-card__summary {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-2);
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  margin-bottom: var(--space-1);
-  background: var(--accent-soft);
-  border-radius: var(--radius);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
 }
-.derived-cfg__label { font-size: 12px; color: var(--text-secondary); }
-.derived-cfg__hint { font-size: 12px; color: var(--text-muted); }
-.derived-chk { margin: 2px 0 var(--space-2); font-size: 13px; }
+.derived-card__summary:hover { background: var(--accent-soft, #f5f7fa); }
+.derived-card__field { font-weight: 600; font-size: 13px; min-width: 100px; }
+.derived-card__display { color: var(--text-secondary); font-size: 13px; }
+.derived-card__arrow {
+  margin-left: auto;
+  transition: transform 0.25s;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.derived-card__body {
+  padding: var(--space-3) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--border, #e4e7ed);
+  background: #fafbfc;
+}
+.derived-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.derived-row--wrap { flex-wrap: wrap; }
+.derived-label {
+  width: 110px;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.derived-fn-desc {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--accent-soft, #f5f7fa);
+  padding: var(--space-1) var(--space-2);
+  border-radius: 4px;
+  line-height: 1.5;
+}
+.derived-card__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--border, #e4e7ed);
+}
 .derived-calc {
   display: flex;
   align-items: center;

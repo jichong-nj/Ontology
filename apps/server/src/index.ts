@@ -192,6 +192,7 @@ app.post('/api/s2/functions', async (req, res) => {
       entry: def.entry,
       inputs: def.inputs ?? [],
       outputs: def.outputs ?? [],
+      description: def.description ?? null,
       body: def.body ?? null,
       version: def.version ?? 1,
     };
@@ -365,7 +366,7 @@ app.get('/api/s2/object-types/:apiName/explore-config', async (req, res) => {
 
 app.put('/api/s2/object-types/:apiName/explore-config', async (req, res) => {
   try {
-    const charts = Array.isArray(req.body?.charts) ? req.body.charts.map(String) : [];
+    const charts = Array.isArray(req.body?.charts) ? req.body.charts : [];
     await repo.saveExploreConfig(req.params.apiName, charts);
     res.json({ ok: true });
   } catch (e: any) {

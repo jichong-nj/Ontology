@@ -19,13 +19,27 @@ const currentObjectType = ref<ObjectType | null>(null);
 const loading = ref(false);
 
 // ========== 属性图表画布（探索仪表盘，每个 objectType 一套独立配置）==========
-// charts: 当前对象类型已添加的图表属性（有序，持久化到后端 explore_config）
-const charts = ref<string[]>([]);
+export interface ChartItem {
+  apiName: string;
+  kind: 'bar' | 'pie' | 'line';
+}
+// charts: 当前对象类型已添加的图表属性（有序，含图形样式，持久化到后端 explore_config）
+const charts = ref<ChartItem[]>([]);
 const propToAdd = ref(''); // 搜索框当前选中的待添加属性
 const savingConfig = ref(false);
 
 // 拖动排序状态
 const dragIndex = ref<number | null>(null);
+
+// 兼容旧数据（纯字符串数组）与混合格式，统一为 ChartItem
+function normalizeCharts(raw: any[]): ChartItem[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  return arr.map((c) =>
+    typeof c === 'string'
+      ? { apiName: c, kind: 'bar' as const }
+      : { apiName: String(c.apiName), kind: (c.kind || 'bar') as ChartItem['kind'] },
+  );
+}
 
 async function loadExploreConfig() {
   if (!objectTypeApiName.value) {
@@ -33,7 +47,7 @@ async function loadExploreConfig() {
     return;
   }
   const cfg = await s2.getExploreConfig(objectTypeApiName.value);
-  charts.value = cfg.charts || [];
+  charts.value = normalizeCharts(cfg.charts || []);
 }
 
 async function saveConfig() {
@@ -47,8 +61,16 @@ async function saveConfig() {
 
 function addProp(apiName: string) {
   if (!apiName) return;
-  if (!charts.value.includes(apiName)) {
-    charts.value.push(apiName);
+  if (!charts.value.some((c) => c.apiName === apiName)) {
+    charts.value.push({ apiName, kind: 'bar' });
+    saveConfig();
+  }
+}
+
+function updateChartKind(apiName: string, kind: ChartItem['kind']) {
+  const item = charts.value.find((c) => c.apiName === apiName);
+  if (item) {
+    item.kind = kind;
     saveConfig();
   }
 }
@@ -274,7 +296,7 @@ const graphEdges = computed(() => {
     <!-- 顶部导航栏 -->
     <header class="explore-header">
       <ElBreadcrumb separator="/">
-        <ElBreadcrumbItem :to="{ path: '/s2/explore' }">Object Explore</ElBreadcrumbItem>
+        <ElBreadcrumbItem :to="{ path: '/s2/explore' }">Object Explorer</ElBreadcrumbItem>
         <ElBreadcrumbItem v-if="objectTypeApiName">
           {{ currentObjectType?.displayName || objectTypeApiName }}
         </ElBreadcrumbItem>
@@ -425,8 +447,8 @@ const graphEdges = computed(() => {
             </div>
             <div v-if="charts.length" class="chart-grid">
               <div
-                v-for="(pa, idx) in charts"
-                :key="pa"
+                v-for="(item, idx) in charts"
+                :key="item.apiName"
                 class="chart-grid__cell"
                 draggable="true"
                 :class="{ 'chart-grid__cell--drag': dragIndex === idx }"
@@ -435,10 +457,12 @@ const graphEdges = computed(() => {
                 @drop="onDrop(idx)"
               >
                 <PropertyChartCard
-                  v-if="getPropDef(pa)"
+                  v-if="getPropDef(item.apiName)"
                   :object-type="objectTypeApiName"
-                  :property="getPropDef(pa)!"
-                  @remove="confirmRemove(pa)"
+                  :property="getPropDef(item.apiName)!"
+                  :kind="item.kind"
+                  @remove="confirmRemove(item.apiName)"
+                  @update:kind="(k) => updateChartKind(item.apiName, k)"
                 />
               </div>
             </div>

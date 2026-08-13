@@ -34,7 +34,7 @@ const panelSections = computed<MenuSection[]>(() => {
         { key: 'functions', label: 'Functions', to: '/s2/functions', icon: '⚙️' },
         { key: 'actions', label: 'Actions', to: '/s2/actions', icon: '🚀' },
         { key: 'alerts', label: 'Alerts', to: '/s2/alerts', icon: '🔔' },
-        { key: 'explore', label: 'Object Explore', to: '/s2/explore', icon: '🧭' },
+        { key: 'explore', label: 'Object Explorer', to: '/s2/explore', icon: '🧭' },
       ]},
     ];
   }

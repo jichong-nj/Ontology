@@ -12,13 +12,15 @@ import { tryRequest } from '@/utils/error';
 const list = ref<OntologyFunction[]>([]);
 const loading = ref(false);
 const dialogVisible = ref(false);
+const viewVisible = ref(false);     // 只读查看（seed 注入函数）
 const saving = ref(false);
 const editing = ref<string | null>(null); // apiName 或 null(新建)
 
 const form = reactive<OntologyFunction>({
   apiName: '', displayName: '', language: 'typescript', entry: 'main',
-  inputs: [], outputs: [], body: '', version: 1,
+  inputs: [], outputs: [], description: '', body: '', version: 1,
 });
+const viewFn = ref<OntologyFunction | null>(null);
 
 const BODY_TEMPLATE = `// 函数体约定：返回 (args, ctx) => { ... }
 //   args: 调用方传入的参数字典
@@ -39,7 +41,7 @@ function openCreate() {
   editing.value = null;
   Object.assign(form, {
     apiName: '', displayName: '', language: 'typescript', entry: 'main',
-    inputs: [], outputs: [], body: BODY_TEMPLATE, version: 1,
+    inputs: [], outputs: [], description: '', body: BODY_TEMPLATE, version: 1,
   });
   dialogVisible.value = true;
 }
@@ -49,9 +51,15 @@ function openEdit(fn: OntologyFunction) {
   Object.assign(form, {
     apiName: fn.apiName, displayName: fn.displayName, language: fn.language,
     entry: fn.entry, inputs: fn.inputs ?? [], outputs: fn.outputs ?? [],
-    body: fn.body ?? '', version: fn.version,
+    description: fn.description ?? '', body: fn.body ?? '', version: fn.version,
   });
   dialogVisible.value = true;
+}
+
+// 仅查看：seed 注入函数无 body，不支持在线编辑，仅展示说明与签名
+function openView(fn: OntologyFunction) {
+  viewFn.value = fn;
+  viewVisible.value = true;
 }
 
 function addInput() { form.inputs.push({ name: '', type: 'string', required: false }); }
@@ -67,7 +75,7 @@ async function save() {
     if (editing.value) {
       await s2functions.update(editing.value, {
         displayName: form.displayName, language: form.language, entry: form.entry,
-        inputs: form.inputs, outputs: form.outputs, body: form.body,
+        inputs: form.inputs, outputs: form.outputs, description: form.description, body: form.body,
       });
       ElMessage.success('已更新');
     } else {
@@ -111,6 +119,9 @@ onMounted(load);
             <span v-if="!row.inputs?.length">—</span>
           </template>
         </ElTableColumn>
+        <ElTableColumn label="说明" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.description || '—' }}</template>
+        </ElTableColumn>
         <ElTableColumn label="可编辑" width="90">
           <template #default="{ row }">
             <ElTag v-if="row.body" size="small" type="success">是</ElTag>
@@ -119,7 +130,8 @@ onMounted(load);
         </ElTableColumn>
         <ElTableColumn label="操作" width="180" fixed="right">
           <template #default="{ row }">
-            <ElButton size="small" @click="openEdit(row)">编辑</ElButton>
+            <ElButton v-if="row.body" size="small" @click="openEdit(row)">编辑</ElButton>
+            <ElButton v-else size="small" @click="openView(row)">查看</ElButton>
             <ElButton size="small" type="danger" :icon="Delete" circle @click="remove(row)" />
           </template>
         </ElTableColumn>
@@ -139,6 +151,10 @@ onMounted(load);
           </ElSelect>
         </ElFormItem>
         <ElFormItem label="入口"><ElInput v-model="form.entry" placeholder="main" /></ElFormItem>
+        <ElFormItem label="函数说明">
+          <ElInput v-model="form.description" type="textarea" :rows="3"
+            placeholder="描述函数作用、入参含义、使用场景，便于他人理解与使用" />
+        </ElFormItem>
 
         <ElFormItem label="入参">
           <div class="io-list">
@@ -180,6 +196,25 @@ onMounted(load);
       <template #footer>
         <ElButton @click="dialogVisible = false">取消</ElButton>
         <ElButton type="primary" :loading="saving" @click="save">保存</ElButton>
+      </template>
+    </ElDialog>
+
+    <ElDialog v-model="viewVisible" title="查看函数（seed 注入，只读）" width="720px" top="6vh">
+      <ElDescriptions v-if="viewFn" :column="1" border>
+        <ElDescriptionsItem label="显示名">{{ viewFn.displayName }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="API 名称">{{ viewFn.apiName }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="语言">{{ viewFn.language }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="入口">{{ viewFn.entry }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="入参">
+          <ElTag v-for="i in viewFn.inputs" :key="i.name" size="small" type="info" style="margin-right:4px">{{ i.name }}:{{ i.type }}</ElTag>
+          <span v-if="!viewFn.inputs?.length">—</span>
+        </ElDescriptionsItem>
+        <ElDescriptionsItem label="出参">{{ (viewFn.outputs ?? []).join(', ') || '—' }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="函数说明">{{ viewFn.description || '—' }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="类型">注入式（由后端 seed 注册，不可在线编辑）</ElDescriptionsItem>
+      </ElDescriptions>
+      <template #footer>
+        <ElButton @click="viewVisible = false">关闭</ElButton>
       </template>
     </ElDialog>
   </div>

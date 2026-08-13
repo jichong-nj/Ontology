@@ -243,6 +243,7 @@ export const functions: OntologyFunction[] = [
       { name: 'departmentId', type: 'integer', required: false }, // 可选：仅评估某个部门
     ],
     outputs: ['object'],
+    description: '对每个部门计算人员日均上班时间(workHours)的均值，若某人员 workHours < 部门均值*阈值(默认0.8)则将其 dimissionRisk 置为 true。作用于本体可写侧 object_write，不回写只读源端。阈值 threshold 可选(默认0.8)，departmentId 可选(默认全部门)。',
     version: V,
   },
 ];

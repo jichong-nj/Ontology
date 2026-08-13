@@ -107,20 +107,31 @@ export class PostgresMetadataRepository implements MetadataRepository {
     await this.pool.query(`DELETE FROM object_type WHERE api_name=$1`, [apiName]);
   }
 
-  async getExploreConfig(apiName: string): Promise<string[]> {
+  async getExploreConfig(apiName: string): Promise<{ apiName: string; kind: string }[]> {
     const { rows } = await this.pool.query(
       `SELECT COALESCE(explore_config->'charts', '[]'::jsonb) AS charts FROM object_type WHERE api_name=$1`,
       [apiName],
     );
     if (rows.length === 0) return [];
     const charts = rows[0].charts;
-    return Array.isArray(charts) ? charts.map((c: any) => String(c)) : [];
+    if (!Array.isArray(charts)) return [];
+    // 兼容旧数据：纯字符串 -> {apiName, kind:'bar'}
+    return charts.map((c: any) =>
+      typeof c === 'string'
+        ? { apiName: c, kind: 'bar' }
+        : { apiName: String(c.apiName), kind: c.kind || 'bar' },
+    );
   }
 
-  async saveExploreConfig(apiName: string, charts: string[]): Promise<void> {
+  async saveExploreConfig(apiName: string, charts: { apiName: string; kind: string }[]): Promise<void> {
+    // 规范化，保证存的是 [{apiName, kind}]
+    const norm = (Array.isArray(charts) ? charts : []).map((c: any) => ({
+      apiName: String(c.apiName),
+      kind: c.kind || 'bar',
+    }));
     await this.pool.query(
-      `UPDATE object_type SET explore_config = jsonb_build_object('charts', $2::text[]), updated_at = now() WHERE api_name=$1`,
-      [apiName, charts],
+      `UPDATE object_type SET explore_config = jsonb_build_object('charts', $2::jsonb), updated_at = now() WHERE api_name=$1`,
+      [apiName, JSON.stringify(norm)],
     );
   }
 
@@ -341,14 +352,60 @@ export class PostgresMetadataRepository implements MetadataRepository {
   }
 
   /**
+   * 判断某对象类型的某属性是否为派生属性。
+   */
+  private async isDerivedProp(objectType: string, property: string): Promise<boolean> {
+    const ot = await this.getObjectType(objectType);
+    if (!ot) return false;
+    const prop = ot.properties.find((p: PropertyDef) => p.apiName === property);
+    return !!prop?.derived;
+  }
+
+  /**
+   * 逐实例计算派生属性值，返回 [value, ...]。用于图表聚合（histogram/aggregate）时
+   * 派生属性不落库、需实时计算的场景。
+   * reducerFn 模式依赖沙箱，此处不传沙箱，仅支持结构化算子（countLinks 等无需沙箱的算子）。
+   */
+  private async collectDerivedValues(objectType: string, property: string): Promise<unknown[]> {
+    const { rows } = await this.pool.query(
+      `SELECT DISTINCT object_rid FROM object_write WHERE object_type = $1 ORDER BY object_rid`,
+      [objectType],
+    );
+    const values: unknown[] = [];
+    for (const r of rows) {
+      try {
+        const { value } = await this.computeDerived(objectType, property, r.object_rid);
+        values.push(value);
+      } catch {
+        // 单个实例计算失败忽略（如缺配置）
+      }
+    }
+    return values;
+  }
+
+  /**
    * 按属性分组计数（用于分类属性的条形图）。
    * 取每个实例最新 patch 中的属性值，GROUP BY 计数。
+   * 若属性为派生属性，则实时计算各实例派生值后再聚合。
    */
   async aggregateByProperty(
     objectType: string,
     property: string,
     topN = 20,
   ): Promise<{ key: string; count: number }[]> {
+    if (await this.isDerivedProp(objectType, property)) {
+      const vals = await this.collectDerivedValues(objectType, property);
+      const map = new Map<string, number>();
+      for (const v of vals) {
+        if (v == null) continue;
+        const k = String(v);
+        map.set(k, (map.get(k) ?? 0) + 1);
+      }
+      return [...map.entries()]
+        .map(([key, count]) => ({ key, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, topN);
+    }
     const col = property.replace(/[^A-Za-z0-9_]/g, '');
     const { rows } = await this.pool.query(
       `SELECT (patch->>$1) AS k, count(*)::int AS n
@@ -367,12 +424,36 @@ export class PostgresMetadataRepository implements MetadataRepository {
   /**
    * 数值属性的直方图分桶（用于数值属性的分布图）。
    * 自动计算 min/max，按 bucketCount 等分。
+   * 若属性为派生属性，则实时计算各实例派生值后再分桶。
    */
   async histogramByProperty(
     objectType: string,
     property: string,
     bucketCount = 20,
   ): Promise<{ bucket: number; min: number; max: number; count: number }[]> {
+    let values: number[] = [];
+    if (await this.isDerivedProp(objectType, property)) {
+      const raw = await this.collectDerivedValues(objectType, property);
+      values = raw.filter((v): v is number => typeof v === 'number' && isFinite(v));
+    }
+    if (values.length > 0) {
+      const mn = Math.min(...values);
+      const mx = Math.max(...values);
+      if (!isFinite(mn) || !isFinite(mx) || mn === mx) {
+        return [{ bucket: 0, min: mn, max: mx, count: values.length }];
+      }
+      const width = (mx - mn) / bucketCount;
+      const buckets: { bucket: number; min: number; max: number; count: number }[] = [];
+      for (let i = 0; i < bucketCount; i++) {
+        const bMin = mn + i * width;
+        const bMax = mn + (i + 1) * width;
+        const cnt = values.filter((v) =>
+          v >= bMin && (i === bucketCount - 1 ? v <= bMax : v < bMax),
+        ).length;
+        buckets.push({ bucket: i, min: bMin, max: bMax, count: cnt });
+      }
+      return buckets;
+    }
     const col = property.replace(/[^A-Za-z0-9_]/g, '');
     const { rows: ext } = await this.pool.query(
       `SELECT min((patch->>$1)::numeric) AS mn, max((patch->>$1)::numeric) AS mx
@@ -505,10 +586,10 @@ export class PostgresMetadataRepository implements MetadataRepository {
 
   async createFunction(def: OntologyFunction): Promise<void> {
     await this.pool.query(
-      `INSERT INTO ontology_function (api_name, display_name, language, entry, inputs, outputs, body, version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `INSERT INTO ontology_function (api_name, display_name, language, entry, inputs, outputs, description, body, version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (api_name) DO NOTHING`,
-      [def.apiName, def.displayName, def.language, def.entry, JSON.stringify(def.inputs), JSON.stringify(def.outputs), def.body ?? null, def.version],
+      [def.apiName, def.displayName, def.language, def.entry, JSON.stringify(def.inputs), JSON.stringify(def.outputs), def.description ?? null, def.body ?? null, def.version],
     );
   }
 
@@ -518,7 +599,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
     let i = 1;
     const map: Record<string, string> = {
       displayName: 'display_name', language: 'language', entry: 'entry',
-      inputs: 'inputs', outputs: 'outputs', body: 'body', version: 'version',
+      inputs: 'inputs', outputs: 'outputs', description: 'description', body: 'body', version: 'version',
     };
     for (const [k, col] of Object.entries(map)) {
       if (k in patch) {
@@ -549,6 +630,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       entry: r.entry,
       inputs: r.inputs,
       outputs: r.outputs,
+      description: r.description ?? null,
       body: r.body,
       version: r.version,
     }));
@@ -565,6 +647,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       entry: r.entry,
       inputs: r.inputs,
       outputs: r.outputs,
+      description: r.description ?? null,
       body: r.body,
       version: r.version,
     };

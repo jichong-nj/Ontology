@@ -3,19 +3,28 @@ import { ref, computed, onMounted, watch } from 'vue';
 import VChart from 'vue-echarts';
 import { use } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { BarChart } from 'echarts/charts';
-import { GridComponent, TooltipComponent, TitleComponent } from 'echarts/components';
+import { BarChart, PieChart, LineChart } from 'echarts/charts';
+import { GridComponent, TooltipComponent, TitleComponent, LegendComponent } from 'echarts/components';
 import { Close } from '@element-plus/icons-vue';
 import { s2explore } from '@/api';
 
-use([CanvasRenderer, BarChart, GridComponent, TooltipComponent, TitleComponent]);
+use([CanvasRenderer, BarChart, PieChart, LineChart, GridComponent, TooltipComponent, TitleComponent, LegendComponent]);
+
+export type ChartKind = 'bar' | 'pie' | 'line';
 
 const props = defineProps<{
   objectType: string;
   property: { apiName: string; displayName?: string; type?: string };
+  kind: ChartKind;
 }>();
 
-const emit = defineEmits<{ (e: 'remove'): void }>();
+const emit = defineEmits<{ (e: 'remove'): void; (e: 'update:kind', kind: ChartKind): void }>();
+
+const KIND_OPTIONS: { value: ChartKind; label: string }[] = [
+  { value: 'bar', label: '柱状图' },
+  { value: 'pie', label: '饼图' },
+  { value: 'line', label: '折线图' },
+];
 
 // 根据类型决定图表种类：数值 -> 直方图，其它 -> 条形图
 const isNumeric = computed(() =>
@@ -44,49 +53,80 @@ onMounted(load);
 watch(() => [props.objectType, props.property.apiName], load);
 
 const option = computed(() => {
-  if (isNumeric.value) {
+  const kind = props.kind || 'bar';
+  // 图表数据来源：数值属性走直方图，其它走聚合条形
+  const labels = isNumeric.value
+    ? histData.value.map((d) => d.min.toFixed(0))
+    : barData.value.map((d) => d.key);
+  const values = isNumeric.value
+    ? histData.value.map((d) => d.count)
+    : barData.value.map((d) => d.count);
+  const pieData = labels.map((l, i) => ({ name: l, value: values[i] }));
+
+  if (kind === 'pie') {
     return {
-      grid: { left: 48, right: 16, top: 24, bottom: 36 },
-      tooltip: {
-        trigger: 'axis',
-        formatter: (p: any) => {
-          const d = histData.value[p[0].dataIndex];
-          return `区间: ${d.min.toFixed(2)} ~ ${d.max.toFixed(2)}<br/>数量: ${d.count}`;
-        },
-      },
-      xAxis: {
-        type: 'category',
-        data: histData.value.map((d) => d.min.toFixed(0)),
-        axisLabel: { fontSize: 9, color: '#909399' },
-        name: '值',
-        nameTextStyle: { fontSize: 10 },
-      },
-      yAxis: { type: 'value', axisLabel: { fontSize: 9, color: '#909399' } },
+      tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+      legend: { type: 'scroll', bottom: 0, textStyle: { fontSize: 9, color: '#909399' } },
       series: [
         {
-          type: 'bar',
-          data: histData.value.map((d) => d.count),
-          itemStyle: { color: '#5b8ff9', borderRadius: [2, 2, 0, 0] },
-          barWidth: '70%',
+          type: 'pie',
+          radius: ['38%', '68%'],
+          center: ['50%', '46%'],
+          data: pieData,
+          itemStyle: { borderRadius: 3, borderColor: '#fff', borderWidth: 1 },
+          label: { fontSize: 9 },
         },
       ],
     };
   }
-  return {
-    grid: { left: 48, right: 16, top: 16, bottom: 60 },
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+
+  // bar / line 共用坐标轴
+  const base = {
+    grid: { left: 48, right: 16, top: 24, bottom: isNumeric.value ? 36 : 60 },
+    tooltip: isNumeric.value
+      ? {
+          trigger: 'axis',
+          formatter: (p: any) => {
+            const d = histData.value[p[0].dataIndex];
+            return `区间: ${d.min.toFixed(2)} ~ ${d.max.toFixed(2)}<br/>数量: ${d.count}`;
+          },
+        }
+      : { trigger: 'axis', axisPointer: { type: 'shadow' } },
     xAxis: {
       type: 'category',
-      data: barData.value.map((d) => d.key),
-      axisLabel: { fontSize: 9, color: '#909399', rotate: 45, interval: 0 },
+      data: labels,
+      axisLabel: { fontSize: 9, color: '#909399', rotate: isNumeric.value ? 0 : 45, interval: 0 },
+      name: isNumeric.value ? '值' : '',
+      nameTextStyle: { fontSize: 10 },
     },
     yAxis: { type: 'value', axisLabel: { fontSize: 9, color: '#909399' } },
+  };
+  if (kind === 'line') {
+    return {
+      ...base,
+      series: [
+        {
+          type: 'line',
+          data: values,
+          smooth: true,
+          showSymbol: true,
+          symbolSize: 5,
+          itemStyle: { color: '#5b8ff9' },
+          lineStyle: { color: '#5b8ff9', width: 2 },
+          areaStyle: { color: 'rgba(91,143,249,0.12)' },
+        },
+      ],
+    };
+  }
+  // bar（默认）
+  return {
+    ...base,
     series: [
       {
         type: 'bar',
-        data: barData.value.map((d) => d.count),
+        data: values,
         itemStyle: { color: '#5b8ff9', borderRadius: [2, 2, 0, 0] },
-        barWidth: '60%',
+        barWidth: isNumeric.value ? '70%' : '60%',
       },
     ],
   };
@@ -99,6 +139,9 @@ const option = computed(() => {
       <span class="prop-chart-card__title">{{ property.displayName || property.apiName }}</span>
       <div class="prop-chart-card__head-right">
         <span class="prop-chart-card__type">{{ isNumeric ? '数值分布' : '分类计数' }}</span>
+        <el-select :model-value="kind" size="small" style="width: 96px" @change="(v: ChartKind) => emit('update:kind', v)">
+          <el-option v-for="opt in KIND_OPTIONS" :key="opt.value" :label="opt.label" :value="opt.value" />
+        </el-select>
         <button class="prop-chart-card__remove" title="移除图表" @click="emit('remove')">
           <el-icon><Close /></el-icon>
         </button>
