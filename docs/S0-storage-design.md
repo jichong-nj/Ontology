@@ -122,16 +122,18 @@ CREATE TABLE ontology_function (
   version INT NOT NULL
 );
 
--- 告警规则（后台定时任务；条件命中后由 Action 生成告警对象）
-CREATE TABLE alert_rule (
+-- 自动化规则（通用规则引擎；条件命中后由 Action 落地，告警仅是动作产物之一）
+-- Step 2：表名 alert_rule -> rule；alert_object_type -> target_object_type；
+--         function_api_name -> condition_function；新增 trigger(JSONB) 承载 schedule/event 触发器。
+CREATE TABLE rule (
   api_name TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
-  interval_seconds INT NOT NULL DEFAULT 60,
-  function_api_name TEXT NOT NULL REFERENCES ontology_function(api_name),
+  trigger JSONB NOT NULL DEFAULT '{"kind":"schedule","intervalSeconds":60}'::jsonb,
+  condition_function TEXT NOT NULL REFERENCES ontology_function(api_name),
   action_api_name TEXT NOT NULL REFERENCES action_type(api_name),
   params JSONB NOT NULL DEFAULT '{}'::jsonb,
-  alert_object_type TEXT NOT NULL,
+  target_object_type TEXT NOT NULL,
   version INT NOT NULL DEFAULT 1
 );
 ```

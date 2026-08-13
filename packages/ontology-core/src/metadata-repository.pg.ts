@@ -12,7 +12,7 @@ import {
   SharedProperty,
   DerivedSpec,
   parseDerivedSpec,
-  AlertRule,
+  AutomationRule,
   FunctionSandbox,
 } from './types';
 import { Pool } from 'pg';
@@ -787,63 +787,63 @@ export class PostgresMetadataRepository implements MetadataRepository {
     };
   }
 
-  async createAlertRule(def: AlertRule): Promise<void> {
+  async createRule(def: AutomationRule): Promise<void> {
     await this.pool.query(
-      `INSERT INTO alert_rule
-        (api_name, display_name, enabled, interval_seconds, function_api_name, action_api_name, params, alert_object_type, version)
+      `INSERT INTO rule
+        (api_name, display_name, enabled, trigger, condition_function, action_api_name, params, target_object_type, version)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (api_name) DO NOTHING`,
-      [def.apiName, def.displayName, def.enabled, def.intervalSeconds, def.functionApiName,
-        def.actionApiName, JSON.stringify(def.params ?? {}), def.alertObjectType, def.version],
+      [def.apiName, def.displayName, def.enabled, JSON.stringify(def.trigger), def.conditionFunction,
+        def.actionApiName, JSON.stringify(def.params ?? {}), def.targetObjectType, def.version],
     );
   }
 
-  async listAlertRules(): Promise<AlertRule[]> {
-    const { rows } = await this.pool.query(`SELECT * FROM alert_rule ORDER  BY api_name`);
-    return rows.map(rowToAlertRule);
+  async listRules(): Promise<AutomationRule[]> {
+    const { rows } = await this.pool.query(`SELECT * FROM rule ORDER BY api_name`);
+    return rows.map(rowToRule);
   }
 
-  async getAlertRule(apiName: string): Promise<AlertRule | null> {
-    const { rows } = await this.pool.query(`SELECT * FROM alert_rule WHERE api_name = $1`, [apiName]);
-    return rows[0] ? rowToAlertRule(rows[0]) : null;
+  async getRule(apiName: string): Promise<AutomationRule | null> {
+    const { rows } = await this.pool.query(`SELECT * FROM rule WHERE api_name = $1`, [apiName]);
+    return rows[0] ? rowToRule(rows[0]) : null;
   }
 
-  async updateAlertRule(apiName: string, patch: Partial<AlertRule>): Promise<void> {
-    const current = await this.getAlertRule(apiName);
-    if (!current) throw new Error(`告警规则不存在: ${apiName}`);
-    const merged: AlertRule = {
+  async updateRule(apiName: string, patch: Partial<AutomationRule>): Promise<void> {
+    const current = await this.getRule(apiName);
+    if (!current) throw new Error(`自动化规则不存在: ${apiName}`);
+    const merged: AutomationRule = {
       ...current,
       ...patch,
       apiName, // 主键不可改
       version: (current.version ?? 1) + 1,
     };
     await this.pool.query(
-      `UPDATE alert_rule SET
-        display_name = $2, enabled = $3, interval_seconds = $4,
-        function_api_name = $5, action_api_name = $6, params = $7,
-        alert_object_type = $8, version = $9
+      `UPDATE rule SET
+        display_name = $2, enabled = $3, trigger = $4,
+        condition_function = $5, action_api_name = $6, params = $7,
+        target_object_type = $8, version = $9
        WHERE api_name = $1`,
-      [apiName, merged.displayName, merged.enabled, merged.intervalSeconds,
-        merged.functionApiName, merged.actionApiName, JSON.stringify(merged.params ?? {}),
-        merged.alertObjectType, merged.version],
+      [apiName, merged.displayName, merged.enabled, JSON.stringify(merged.trigger),
+        merged.conditionFunction, merged.actionApiName, JSON.stringify(merged.params ?? {}),
+        merged.targetObjectType, merged.version],
     );
   }
 
-  async deleteAlertRule(apiName: string): Promise<void> {
-    await this.pool.query(`DELETE FROM alert_rule WHERE api_name = $1`, [apiName]);
+  async deleteRule(apiName: string): Promise<void> {
+    await this.pool.query(`DELETE FROM rule WHERE api_name = $1`, [apiName]);
   }
 }
 
-function rowToAlertRule(r: any): AlertRule {
+function rowToRule(r: any): AutomationRule {
   return {
     apiName: r.api_name,
     displayName: r.display_name,
     enabled: r.enabled,
-    intervalSeconds: r.interval_seconds,
-    functionApiName: r.function_api_name,
+    trigger: r.trigger,
+    conditionFunction: r.condition_function,
     actionApiName: r.action_api_name,
     params: r.params,
-    alertObjectType: r.alert_object_type,
+    targetObjectType: r.target_object_type,
     version: r.version,
   };
 }

@@ -9,7 +9,7 @@ import { Pool } from 'pg';
 import {
   PostgresMetadataRepository,
   TypeScriptFunctionSandbox,
-  AlertScheduler,
+  RuleScheduler,
 } from '@ontology/ontology-core';
 import { PostgresMappingStore, MappingService } from '@ontology/data-integration';
 import {
@@ -68,7 +68,7 @@ beforeEach(async () => {
   for (const lt of linkTypes) await repo.createLinkType(lt);
   for (const fn of functions) await repo.createFunction(fn);
   for (const a of actions) await repo.createAction(a);
-  for (const r of alertRules) await repo.createAlertRule(r);
+  for (const r of alertRules) await repo.createRule(r);
 
   // S3：实例下推（本体可写侧）
   await repo.clearLinkInstances('EmployeeDepartment');
@@ -143,13 +143,13 @@ describe('场景：离职预警（S1→S2→S3→函数）', () => {
     expect(result.flaggedCount).toBe(1);
   });
 
-  it('后台告警调度器：可配置 Function + Action 生成告警对象', async () => {
+  it('后台规则调度器：可配置 Function + Action 生成告警对象', async () => {
     registerDimissionRisk(sandbox, repo); // 含 createDimissionAlert 动作注册
-    const scheduler = new AlertScheduler(repo, sandbox, { tickMs: 1000 });
+    const scheduler = new RuleScheduler(repo, sandbox, { tickMs: 1000 });
     const results = await scheduler.runAll();
     expect(results.length).toBe(1);
     expect(results[0].flaggedCount).toBe(2);
-    expect(results[0].alertsCreated).toBe(2);
+    expect(results[0].actionsInvoked).toBe(2);
 
     // 告警对象已写入本体可写侧 Alert 类型
     const alerts = await repo.listObjectProperties('Alert');
@@ -161,9 +161,9 @@ describe('场景：离职预警（S1→S2→S3→函数）', () => {
     registerDimissionRisk(sandbox, repo);
     // 新增一条禁用的同类规则，验证「enabled=false 不执行」
     const disabledRule = { ...alertRules[0], apiName: 'disabledRule', enabled: false };
-    await repo.createAlertRule(disabledRule);
+    await repo.createRule(disabledRule);
     const before = (await repo.listObjectProperties('Alert')).length;
-    const scheduler = new AlertScheduler(repo, sandbox, { tickMs: 1000 });
+    const scheduler = new RuleScheduler(repo, sandbox, { tickMs: 1000 });
     const results = await scheduler.runAll();
     const disabled = results.find((r) => r.rule === 'disabledRule');
     expect(disabled?.ran).toBe(false);

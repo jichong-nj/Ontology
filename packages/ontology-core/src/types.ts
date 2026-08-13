@@ -137,11 +137,13 @@ export interface ActionType {
   kind?: 'standard' | 'llm';   // llm 表示 LLM 函数（见 S5）
   parameters: ActionParameter[];
   validationRules: string[];
-  // 动作效果：
+  // 动作效果（与"告警"正交；告警只是 effect 的一种副作用，非必选）：
   // - function: 调用一个 OntologyFunction（读写本体侧由函数决定）；
-  // - write: 写入本体侧可写表（object_write），不写回只读的数据中台源端。
+  // - write: 写入本体侧可写表（object_write），不写回只读的数据中台源端；
+  // - notify: 触发通知（如站内信/邮件/Webhook），对接通知系统（Step 2 新增）；
+  // - approval: 发起审批流（Step 2 新增，对接审批系统）。
   // 注：源端为只读（见 S1），动作不得写回映射源；需要落库的写操作统一走本体可写侧。
-  effect: { kind: 'function' | 'write'; ref: string };
+  effect: { kind: 'function' | 'write' | 'notify' | 'approval'; ref: string };
   version: number;
 }
 
@@ -225,30 +227,38 @@ export interface MetadataRepository {
   listFunctions(): Promise<OntologyFunction[]>;
   updateFunction(apiName: string, patch: Partial<OntologyFunction>): Promise<void>;
   deleteFunction(apiName: string): Promise<void>;
-  // 告警规则（后台定时任务；条件命中后由可配置的 Action 生成告警对象）
-  createAlertRule(def: AlertRule): Promise<void>;
-  getAlertRule(apiName: string): Promise<AlertRule | null>;
-  listAlertRules(): Promise<AlertRule[]>;
-  updateAlertRule(apiName: string, patch: Partial<AlertRule>): Promise<void>;
-  deleteAlertRule(apiName: string): Promise<void>;
+  // 自动化规则（通用「满足条件→执行动作」；后台定时/事件触发，条件命中后由可配置 Action 落地）
+  createRule(def: AutomationRule): Promise<void>;
+  getRule(apiName: string): Promise<AutomationRule | null>;
+  listRules(): Promise<AutomationRule[]>;
+  updateRule(apiName: string, patch: Partial<AutomationRule>): Promise<void>;
+  deleteRule(apiName: string): Promise<void>;
 }
 
-// 告警规则：后台定时任务。周期执行某个可配置 Function（条件评估），
-// 当返回「命中对象」时调用某个可配置 Action 生成告警对象（写入本体可写侧）。
-export interface AlertRule {
+// 触发器：决定「何时触发一次规则评估」。
+// - schedule: 按间隔周期轮询（对应 Palantir Schedule / cron）；
+// - event: 由对象写入事件触发（对应 Palantir 流式/对象事件触发，Step 2 新增）。
+export type RuleTrigger =
+  | { kind: 'schedule'; intervalSeconds: number }
+  | { kind: 'event'; on: 'object_write'; objectType: string; conditionProperty?: string };
+
+// 自动化规则：通用的「满足条件就执行动作」编排单元（对齐 Palantir Watchdog + Action Type + Schedule）。
+// 规则本身不绑定"告警"语义——告警仅是 createDimissionAlert 这个 Action 的产物之一。
+export interface AutomationRule {
   apiName: string;
   displayName: string;
   enabled: boolean;
-  // 触发周期（cron 或简单间隔）。第一期支持 intervalSeconds（简版，便于演示）。
-  intervalSeconds: number;
-  // 可配置的条件评估函数（必须是已注册的 OntologyFunction apiName）
-  functionApiName: string;
-  // 可配置的动作：命中后由该 Action 生成告警对象
+  // 触发器：本期支持 schedule（周期）与 event（对象写入事件）。
+  // 替代原 intervalSeconds 单一字段，使触发方式与条件/动作正交。
+  trigger: RuleTrigger;
+  // 可配置的条件评估函数（必须是已注册的 OntologyFunction apiName），返回 { flagged: [{rid, ...}] }
+  conditionFunction: string;
+  // 可配置的动作：命中后由该 Action 落地（写对象/通知/审批等）。
   actionApiName: string;
   // 传入条件函数的参数（如 threshold）
   params?: Record<string, unknown>;
-  // 告警对象写入的目标对象类型（如 Alert）
-  alertObjectType: string;
+  // 动作的落点对象类型（如 Alert）。仅当 Action 是写对象类动作时使用；通知/审批可忽略。
+  targetObjectType: string;
   version: number;
 }
 

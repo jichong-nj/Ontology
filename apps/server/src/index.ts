@@ -3,7 +3,7 @@
 import express from 'express';
 import { Pool } from 'pg';
 import { PostgresMetadataRepository, TypeScriptFunctionSandbox } from '@ontology/ontology-core';
-import type { OntologyFunction, ActionType, AlertRule } from '@ontology/ontology-core';
+import type { OntologyFunction, ActionType, AutomationRule } from '@ontology/ontology-core';
 import { PostgresMappingStore, MappingService } from '@ontology/data-integration';
 import {
   functions,
@@ -17,7 +17,7 @@ import {
   buildSandbox,
   registerDbFunctions,
 } from '@ontology/enterprise-biz';
-import { AlertScheduler } from '@ontology/ontology-core';
+import { RuleScheduler } from '@ontology/ontology-core';
 
 const META_URL =
   process.env.META_DATABASE_URL ||
@@ -40,7 +40,7 @@ async function getSandbox(): Promise<TypeScriptFunctionSandbox> {
   }
   return sharedSandbox;
 }
-let alertScheduler: import('@ontology/ontology-core').AlertScheduler | null = null;
+let ruleScheduler: import('@ontology/ontology-core').RuleScheduler | null = null;
 async function bootstrapEnterpriseBiz() {
   try {
     // 1) 将企业治理数据写为对象实例（S1 源库在 manage 端；对象/关系/函数定义落在元数据库）
@@ -55,7 +55,7 @@ async function bootstrapEnterpriseBiz() {
     }
     await getSandbox(); // 预热共享沙箱（注册 evaluateDimissionRisk / createDimissionAlert）
     // 启动后台告警调度器（可配置 Function 评估 + 可配置 Action 落地告警对象）
-    alertScheduler = startScheduler(repo, 10_000);
+    ruleScheduler = startScheduler(repo, 10_000);
     console.log('[bootstrap] enterprise-biz 场景已注册（对象实例 + 函数 + 告警调度器）');
   } catch (e: any) {
     console.error('[bootstrap] enterprise-biz 引导失败:', e.message);
@@ -304,39 +304,39 @@ app.post('/api/s2/functions/:fnApiName/invoke', async (req, res) => {
   }
 });
 
-// 告警规则列表
-app.get('/api/s2/alert-rules', async (_req, res) => {
+// 自动化规则列表（通用「满足条件→执行动作」）
+app.get('/api/s2/rules', async (_req, res) => {
   try {
-    const rules = await repo.listAlertRules();
+    const rules = await repo.listRules();
     res.json(rules);
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }
 });
 
-// 新建告警规则（FDE 可自助配置，无需改码）
-app.post('/api/s2/alert-rules', async (req, res) => {
+// 新建自动化规则（FDE 可自助配置，无需改码）
+app.post('/api/s2/rules', async (req, res) => {
   try {
-    const def = req.body as AlertRule;
+    const def = req.body as AutomationRule;
     if (!def?.apiName) return res.status(400).json({ error: 'apiName 必填' });
-    if (await repo.getAlertRule(def.apiName)) {
+    if (await repo.getRule(def.apiName)) {
       return res.status(409).json({ error: `规则已存在: ${def.apiName}` });
     }
-    await repo.createAlertRule(def);
+    await repo.createRule(def);
     res.json({ ok: true });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }
 });
 
-// 手动触发全部告警规则（后台定时任务的手动入口）
-app.post('/api/s2/alert-rules/run', async (_req, res) => {
+// 手动触发全部自动化规则（后台定时任务的手动入口）
+app.post('/api/s2/rules/run', async (_req, res) => {
   try {
     // 优先复用后台调度器；若后台未启动（如仅测试/轻量部署），按需构建设置了函数的调度器。
-    let scheduler = alertScheduler;
+    let scheduler = ruleScheduler;
     if (!scheduler) {
       const sb = await getSandbox();
-      scheduler = new AlertScheduler(repo, sb, { tickMs: 999_999_999 });
+      scheduler = new RuleScheduler(repo, sb, { tickMs: 999_999_999 });
     }
     const result = await scheduler.runAll();
     res.json({ ok: true, results: result });
@@ -345,10 +345,10 @@ app.post('/api/s2/alert-rules/run', async (_req, res) => {
   }
 });
 
-// 单条告警规则：详情 / 更新 / 删除（FDE 可自助配置，无需改码）
-app.get('/api/s2/alert-rules/:apiName', async (req, res) => {
+// 单条自动化规则：详情 / 更新 / 删除（FDE 可自助配置，无需改码）
+app.get('/api/s2/rules/:apiName', async (req, res) => {
   try {
-    const rule = await repo.getAlertRule(req.params.apiName);
+    const rule = await repo.getRule(req.params.apiName);
     if (!rule) return res.status(404).json({ error: '规则不存在' });
     res.json(rule);
   } catch (e: any) {
@@ -356,19 +356,19 @@ app.get('/api/s2/alert-rules/:apiName', async (req, res) => {
   }
 });
 
-app.put('/api/s2/alert-rules/:apiName', async (req, res) => {
+app.put('/api/s2/rules/:apiName', async (req, res) => {
   try {
-    const patch = req.body as Partial<AlertRule>;
-    await repo.updateAlertRule(req.params.apiName, patch);
+    const patch = req.body as Partial<AutomationRule>;
+    await repo.updateRule(req.params.apiName, patch);
     res.json({ ok: true });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }
 });
 
-app.delete('/api/s2/alert-rules/:apiName', async (req, res) => {
+app.delete('/api/s2/rules/:apiName', async (req, res) => {
   try {
-    await repo.deleteAlertRule(req.params.apiName);
+    await repo.deleteRule(req.params.apiName);
     res.json({ ok: true });
   } catch (e: any) {
     res.status(400).json({ error: e.message });

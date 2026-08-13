@@ -202,14 +202,14 @@ export const s2 = {
   // 触发一个 Ontology Function（如离职风险评估）
   invokeFunction: (fnApiName: string, params: Record<string, unknown> = {}) =>
     http.post<{ ok: boolean; result: unknown }>(`/s2/functions/${fnApiName}/invoke`, params).then((r) => r.data),
-  // 告警规则列表
-  listAlertRules: () => http.get<any[]>('/s2/alert-rules').then((r) => r.data),
-  getAlertRule: (apiName: string) => http.get<any>(`/s2/alert-rules/${apiName}`).then((r) => r.data),
-  createAlertRule: (def: any) => http.post('/s2/alert-rules', def).then((r) => r.data),
-  updateAlertRule: (apiName: string, patch: any) => http.put(`/s2/alert-rules/${apiName}`, patch).then((r) => r.data),
-  deleteAlertRule: (apiName: string) => http.delete(`/s2/alert-rules/${apiName}`).then((r) => r.data),
-  // 手动运行全部告警规则
-  runAlertRules: () => http.post<{ ok: boolean; results: unknown[] }>('/s2/alert-rules/run').then((r) => r.data),
+  // 自动化规则列表（通用「满足条件→执行动作」）
+  listRules: () => http.get<any[]>('/s2/rules').then((r) => r.data),
+  getRule: (apiName: string) => http.get<any>(`/s2/rules/${apiName}`).then((r) => r.data),
+  createRule: (def: any) => http.post('/s2/rules', def).then((r) => r.data),
+  updateRule: (apiName: string, patch: any) => http.put(`/s2/rules/${apiName}`, patch).then((r) => r.data),
+  deleteRule: (apiName: string) => http.delete(`/s2/rules/${apiName}`).then((r) => r.data),
+  // 手动运行全部规则
+  runRules: () => http.post<{ ok: boolean; results: unknown[] }>('/s2/rules/run').then((r) => r.data),
   // 告警对象列表
   listAlerts: () => http.get<any[]>('/s2/alerts').then((r) => r.data),
   // 探索页图表配置：每对象类型一套独立的图表（属性 apiName + 图形样式 kind 有序列表）

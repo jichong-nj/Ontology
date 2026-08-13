@@ -16,7 +16,7 @@
 | Action Types | `ActionType` + `effect{kind:function\|write}` | ⚠️ 部分 | 缺 `validationNotifications`、`formedFrom`、`parameters` 的运行时校验与回填 |
 | Functions | `OntologyFunction` + `TypeScriptFunctionSandbox` | ⚠️ 部分 | 仅 TS 可执行；缺 Python 运行时、缺"函数即本体一等公民"的 UI/版本治理 |
 | Interfaces | `InterfaceDef` + 接口方法 | ✅ 框架在 | 多态运行时引擎在，但无实际接口/实现样例落地 |
-| Scheduling / Automation | `AlertRule` + `AlertScheduler` | 🆕 新增 | Palantir 由 Pipeline/Action 调度或 AIP Automate 承担；我们用规则表+定时轮询实现闭环 |
+| Scheduling / Automation | `AutomationRule`（`RuleScheduler`，表 `rule`）+ 定时轮询 + 事件触发(schedule/event trigger) + 多 effect 动作(function/write/notify/approval) | 🆕 新增 | Palantir 由 Pipeline/Action 调度或 AIP Automate / Watchdog 承担；我们已抽象为通用规则引擎（条件函数→动作），Step 2 已加事件触发与多 effect 动作类型 |
 
 ## 2. 关键差距（按重要性排序）
 
@@ -52,11 +52,11 @@
 
 ### G6. 可观测与编排
 - Palantir 有 Action 执行历史、函数调用链路、AIP Logic 可视化编排。
-- 我们仅有 `AlertScheduler` 的 `AlertEvaluationResult` 返回，无持久化执行日志/链路追踪。
+- 我们仅有 `RuleScheduler` 的 `RuleEvaluationResult` 返回，无持久化执行日志/链路追踪。
 
 ## 3. 已做到位、且对标正确的部分
 1. **源端只读、本体可写侧分离**：`object_write` 不回写 S1 映射源，符合 Palantir "Ontology 是操作层、源是只读真相源"的约束。
-2. **Action/Functions 解耦 + 规则化调度**：`AlertRule` 仅引用 `functionApiName`/`actionApiName`，逻辑与调度分离——与 Foundry "Action 调用 Function、Schedule 驱动"一致。
+2. **Action/Functions 解耦 + 规则化调度**：`AlertRule`（通用规则）仅引用 `functionApiName`/`actionApiName`，逻辑与调度分离——与 Foundry "Action 调用 Function、Schedule 驱动"及 Watchdog + Action Type 一致。告警仅是动作产物之一，规则引擎本身通用。
 3. **派生属性不落库、聚合对端**：`avgLinks` 跨 `link_instance` 聚合对端 `workHours`，是 Palantir 派生属性的标准形态。
 4. **告警对象落本体可写侧**：生成 `Alert` 实例而非改源数据，符合"动势层(Kinetic)产生新对象"的语义。
 

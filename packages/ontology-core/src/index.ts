@@ -4,5 +4,5 @@ export { PostgresMetadataRepository } from './metadata-repository.pg';
 export { DefaultInterfaceMethodEngine } from './interface-method-engine';
 export { TypeScriptFunctionSandbox } from './function-sandbox';
 export type { TsFn } from './function-sandbox';
-export { AlertScheduler } from './alert-scheduler';
-export type { AlertEvaluationResult } from './alert-scheduler';
+export { RuleScheduler } from './rule-scheduler';
+export type { RuleSchedulerOptions, RuleEvaluationResult } from './rule-scheduler';

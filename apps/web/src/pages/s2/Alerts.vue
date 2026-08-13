@@ -10,18 +10,20 @@ interface RuleItem {
   apiName: string;
   displayName: string;
   enabled: boolean;
-  intervalSeconds: number;
-  functionApiName: string;
+  trigger: { kind: 'schedule' | 'event'; intervalSeconds?: number; on?: string; objectType?: string; conditionProperty?: string };
+  conditionFunction: string;
   actionApiName: string;
   params: Record<string, unknown>;
-  alertObjectType: string;
+  targetObjectType: string;
   version: number;
 }
 
+// 规则中心：通用自动化规则（满足条件→执行动作），当前动作产物之一为告警对象
 const alerts = ref<AlertItem[]>([]);
 const rules = ref<RuleItem[]>([]);
 const functions = ref<{ apiName: string; displayName: string }[]>([]);
 const actions = ref<{ apiName: string; displayName: string }[]>([]);
+const objectTypes = ref<{ apiName: string; displayName: string }[]>([]);
 const loading = ref(false);
 const running = ref(false);
 
@@ -33,35 +35,45 @@ const form = reactive({
   apiName: '',
   displayName: '',
   enabled: true,
+  triggerKind: 'schedule' as 'schedule' | 'event',
   intervalSeconds: 60,
-  functionApiName: '',
+  eventObjectType: '',
+  conditionFunction: '',
   actionApiName: '',
-  alertObjectType: 'Alert',
+  targetObjectType: 'Alert',
   paramsText: '{\n  "threshold": 0.8,\n  "leaveDeduct": 10,\n  "workDeduct": 10,\n  "leaveBase": 1\n}',
 });
 const paramsError = ref('');
 
 async function load() {
   await tryRequest(async () => {
-    const [a, r, f, ac] = await Promise.all([
+    const [a, r, f, ac, ot] = await Promise.all([
       s2.listAlerts(),
-      s2.listAlertRules(),
+      s2.listRules(),
       s2functions.list(),
       s2actions.list(),
+      s2.listObjectTypes(),
     ]);
     alerts.value = a;
     rules.value = r;
     functions.value = f.map((x: any) => ({ apiName: x.apiName, displayName: x.displayName ?? x.apiName }));
     actions.value = ac.map((x: any) => ({ apiName: x.apiName, displayName: x.displayName ?? x.apiName }));
+    objectTypes.value = ot.map((x: any) => ({ apiName: x.apiName, displayName: x.displayName ?? x.apiName }));
   });
+}
+
+function triggerLabel(r: RuleItem): string {
+  if (r.trigger.kind === 'schedule') return `周期 ${r.trigger.intervalSeconds ?? '-'}s`;
+  if (r.trigger.kind === 'event') return `事件: 写入 ${r.trigger.objectType ?? '?'}`;
+  return r.trigger.kind;
 }
 
 async function runRules() {
   running.value = true;
   await tryRequest(async () => {
-    const res = await s2.runAlertRules();
-    const total = (res.results ?? []).reduce((s: number, x: any) => s + (x.alertsCreated ?? 0), 0);
-    ElMessage.success(`规则执行完成，生成 ${total} 条告警`);
+    const res = await s2.runRules();
+    const total = (res.results ?? []).reduce((s: number, x: any) => s + (x.actionsInvoked ?? 0), 0);
+    ElMessage.success(`规则执行完成，触发 ${total} 个动作`);
     await load();
   });
   running.value = false;
@@ -73,10 +85,12 @@ function openCreate() {
     apiName: '',
     displayName: '',
     enabled: true,
+    triggerKind: 'schedule',
     intervalSeconds: 60,
-    functionApiName: functions.value[0]?.apiName ?? '',
+    eventObjectType: objectTypes.value[0]?.apiName ?? '',
+    conditionFunction: functions.value[0]?.apiName ?? '',
     actionApiName: actions.value[0]?.apiName ?? '',
-    alertObjectType: 'Alert',
+    targetObjectType: 'Alert',
     paramsText: '{\n  "threshold": 0.8\n}',
   });
   paramsError.value = '';
@@ -89,10 +103,12 @@ async function openEdit(rule: RuleItem) {
     apiName: rule.apiName,
     displayName: rule.displayName,
     enabled: rule.enabled,
-    intervalSeconds: rule.intervalSeconds,
-    functionApiName: rule.functionApiName,
+    triggerKind: rule.trigger.kind,
+    intervalSeconds: rule.trigger.intervalSeconds ?? 60,
+    eventObjectType: rule.trigger.objectType ?? objectTypes.value[0]?.apiName ?? '',
+    conditionFunction: rule.conditionFunction,
     actionApiName: rule.actionApiName,
-    alertObjectType: rule.alertObjectType,
+    targetObjectType: rule.targetObjectType,
     paramsText: JSON.stringify(rule.params ?? {}, null, 2),
   });
   paramsError.value = '';
@@ -112,31 +128,36 @@ async function save() {
   }
   if (paramsError.value) return;
   if (!form.apiName.trim()) { paramsError.value = '规则名(apiName)必填'; return; }
-  if (!form.functionApiName) { paramsError.value = '请选择条件函数'; return; }
+  if (!form.conditionFunction) { paramsError.value = '请选择条件函数'; return; }
   if (!form.actionApiName) { paramsError.value = '请选择落地动作'; return; }
+
+  const trigger =
+    form.triggerKind === 'schedule'
+      ? { kind: 'schedule' as const, intervalSeconds: Number(form.intervalSeconds) }
+      : { kind: 'event' as const, on: 'object_write' as const, objectType: form.eventObjectType };
 
   saving.value = true;
   await tryRequest(async () => {
     if (editing.value) {
-      await s2.updateAlertRule(editing.value, {
+      await s2.updateRule(editing.value, {
         displayName: form.displayName,
         enabled: form.enabled,
-        intervalSeconds: Number(form.intervalSeconds),
-        functionApiName: form.functionApiName,
+        trigger,
+        conditionFunction: form.conditionFunction,
         actionApiName: form.actionApiName,
-        alertObjectType: form.alertObjectType,
+        targetObjectType: form.targetObjectType,
         params,
       });
       ElMessage.success('规则已更新');
     } else {
-      await s2.createAlertRule({
+      await s2.createRule({
         apiName: form.apiName.trim(),
         displayName: form.displayName || form.apiName.trim(),
         enabled: form.enabled,
-        intervalSeconds: Number(form.intervalSeconds),
-        functionApiName: form.functionApiName,
+        trigger,
+        conditionFunction: form.conditionFunction,
         actionApiName: form.actionApiName,
-        alertObjectType: form.alertObjectType,
+        targetObjectType: form.targetObjectType,
         params,
         version: 1,
       });
@@ -150,7 +171,7 @@ async function save() {
 
 async function toggleEnabled(rule: RuleItem) {
   await tryRequest(async () => {
-    await s2.updateAlertRule(rule.apiName, { enabled: !rule.enabled });
+    await s2.updateRule(rule.apiName, { enabled: !rule.enabled });
     ElMessage.success(rule.enabled ? '已禁用' : '已启用');
     await load();
   });
@@ -158,12 +179,12 @@ async function toggleEnabled(rule: RuleItem) {
 
 async function removeRule(rule: RuleItem) {
   await ElMessageBox.confirm(
-    `确定删除告警规则「${rule.displayName}」(${rule.apiName}) 吗？此操作不可撤销。`,
+    `确定删除自动化规则「${rule.displayName}」(${rule.apiName}) 吗？此操作不可撤销。`,
     '删除确认',
     { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
   ).then(async () => {
     await tryRequest(async () => {
-      await s2.deleteAlertRule(rule.apiName);
+      await s2.deleteRule(rule.apiName);
       ElMessage.success('已删除');
       await load();
     });
@@ -177,26 +198,28 @@ onMounted(load);
   <div class="alerts">
     <header class="page-head">
       <div>
-        <h2 class="page-title"><ElIcon><Bell /></ElIcon> 告警中心</h2>
-        <p class="page-sub">后台定时巡检（可配置 Function 评估 + 可配置 Action 落地），命中后生成告警对象</p>
+        <h2 class="page-title"><ElIcon><Bell /></ElIcon> 规则中心</h2>
+        <p class="page-sub">通用自动化规则：满足条件（可配置 Function 评估）即执行动作（可配置 Action 落地）。当前动作产物之一为告警对象。</p>
       </div>
       <div class="page-actions">
         <ElButton :loading="loading" @click="load"><ElIcon><Refresh /></ElIcon> 刷新</ElButton>
-        <ElButton type="warning" :loading="running" @click="runRules">运行告警规则</ElButton>
+        <ElButton type="warning" :loading="running" @click="runRules">运行全部规则</ElButton>
         <ElButton type="primary" @click="openCreate"><ElIcon><Plus /></ElIcon> 新建规则</ElButton>
       </div>
     </header>
 
     <ElCard class="alerts__rules" shadow="never">
-      <template #header><span class="card-title">告警规则（后台定时任务 · 可自助配置）</span></template>
+      <template #header><span class="card-title">自动化规则（条件评估 → 动作落地 · 可自助配置）</span></template>
       <table class="rule-table">
-        <thead><tr><th>规则</th><th>启用</th><th>周期</th><th>条件函数</th><th>落地动作</th><th>参数</th><th>操作</th></tr></thead>
+        <thead><tr><th>规则</th><th>启用</th><th>触发器</th><th>条件函数</th><th>落地动作</th><th>参数</th><th>操作</th></tr></thead>
         <tbody>
           <tr v-for="r in rules" :key="r.apiName">
             <td class="mono">{{ r.apiName }}<div class="sub">{{ r.displayName }}</div></td>
             <td><ElTag :type="r.enabled ? 'success' : 'info'" size="small">{{ r.enabled ? '启用' : '禁用' }}</ElTag></td>
-            <td>{{ r.intervalSeconds }}s</td>
-            <td class="mono">{{ r.functionApiName }}</td>
+            <td>
+              <ElTag :type="r.trigger?.kind === 'schedule' ? 'info' : 'warning'" size="small">{{ triggerLabel(r) }}</ElTag>
+            </td>
+            <td class="mono">{{ r.conditionFunction }}</td>
             <td class="mono">{{ r.actionApiName }}</td>
             <td class="mono params">{{ JSON.stringify(r.params) }}</td>
             <td class="ops">
@@ -229,7 +252,7 @@ onMounted(load);
     </ElCard>
 
     <!-- 新建 / 编辑 抽屉 -->
-    <ElDialog v-model="dialogVisible" :title="editing ? '编辑告警规则' : '新建告警规则'" width="560px">
+    <ElDialog v-model="dialogVisible" :title="editing ? '编辑自动化规则' : '新建自动化规则'" width="560px">
       <ElForm label-width="110px">
         <ElFormItem label="规则名" required>
           <ElInput v-model="form.apiName" :disabled="!!editing" placeholder="如 dimissionRiskRule" />
@@ -240,11 +263,23 @@ onMounted(load);
         <ElFormItem label="启用">
           <ElSwitch v-model="form.enabled" />
         </ElFormItem>
-        <ElFormItem label="触发周期(秒)">
+        <ElFormItem label="触发器类型">
+          <ElRadioGroup v-model="form.triggerKind">
+            <ElRadioButton value="schedule">周期(schedule)</ElRadioButton>
+            <ElRadioButton value="event">事件(event)</ElRadioButton>
+          </ElRadioGroup>
+        </ElFormItem>
+        <ElFormItem v-if="form.triggerKind === 'schedule'" label="周期(秒)">
           <ElInput v-model.number="form.intervalSeconds" type="number" :min="5" />
         </ElFormItem>
+        <ElFormItem v-else label="监听对象类型">
+          <ElSelect v-model="form.eventObjectType" placeholder="选择对象写入事件的类型" style="width:100%">
+            <ElOption v-for="o in objectTypes" :key="o.apiName" :label="`${o.displayName} (${o.apiName})`" :value="o.apiName" />
+          </ElSelect>
+          <div class="hint">当该对象类型发生写入(object_write)时，触发规则条件评估。</div>
+        </ElFormItem>
         <ElFormItem label="条件函数" required>
-          <ElSelect v-model="form.functionApiName" placeholder="选择评估函数" style="width:100%">
+          <ElSelect v-model="form.conditionFunction" placeholder="选择评估函数" style="width:100%">
             <ElOption v-for="f in functions" :key="f.apiName" :label="`${f.displayName} (${f.apiName})`" :value="f.apiName" />
           </ElSelect>
         </ElFormItem>
@@ -253,8 +288,8 @@ onMounted(load);
             <ElOption v-for="a in actions" :key="a.apiName" :label="`${a.displayName} (${a.apiName})`" :value="a.apiName" />
           </ElSelect>
         </ElFormItem>
-        <ElFormItem label="告警对象类型">
-          <ElInput v-model="form.alertObjectType" placeholder="如 Alert" />
+        <ElFormItem label="落点对象类型">
+          <ElInput v-model="form.targetObjectType" placeholder="如 Alert（仅写类动作需要）" />
         </ElFormItem>
         <ElFormItem label="参数(params)">
           <ElInput v-model="form.paramsText" type="textarea" :rows="6" placeholder='JSON 对象，如 {"threshold":0.8}' />

@@ -11,7 +11,7 @@ import {
 import { objectTypes, linkTypes, functions, actions, alertRules } from './definitions';
 import { sourceConnection, objectTypeMappings } from './mappings';
 import { registerDimissionRisk } from './dimission-risk';
-import { TypeScriptFunctionSandbox, AlertScheduler } from '@ontology/ontology-core';
+import { TypeScriptFunctionSandbox, RuleScheduler } from '@ontology/ontology-core';
 
 const META_URL = process.env.META_DATABASE_URL ||
   'postgresql://ontology:ontology@localhost:5432/ontology';
@@ -116,8 +116,8 @@ export async function seedEnterpriseBiz(pool: Pool): Promise<PostgresMetadataRep
   }
 
   for (const r of alertRules) {
-    await repo.createAlertRule(r);
-    console.log(`[S2] 告警规则已创建: ${r.apiName} (${r.enabled ? '启用' : '禁用'})`);
+    await repo.createRule(r);
+    console.log(`[S2] 自动化规则已创建: ${r.apiName} (${r.enabled ? '启用' : '禁用'})`);
   }
 
   return repo;
@@ -439,10 +439,11 @@ export async function registerDbFunctions(repo: PostgresMetadataRepository, sand
   }
 }
 
-// 启动后台告警调度器（按 alert_rule 周期执行可配置 Function 与 Action）
-export function startScheduler(repo: PostgresMetadataRepository, tickMs = 10_000): AlertScheduler {
+// 启动后台规则调度器（按通用 rule 表的 trigger 执行可配置 Function 与 Action）
+// 触发器支持 schedule（周期轮询）与 event（对象写入事件）。规则语义是通用的「满足条件→执行动作」。
+export function startScheduler(repo: PostgresMetadataRepository, tickMs = 10_000): RuleScheduler {
   const sandbox = buildSandbox(repo);
-  const scheduler = new AlertScheduler(repo, sandbox, { tickMs });
+  const scheduler = new RuleScheduler(repo, sandbox, { tickMs });
   scheduler.start();
   return scheduler;
 }

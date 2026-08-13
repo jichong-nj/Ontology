@@ -1,6 +1,6 @@
 // 企业业务库 -> S2 Ontology 对象/关系类型定义
 // 属性 apiName 与 enterprise_biz 源表字段一一对应（见 packages/enterprise-biz/sql/schema.sql）。
-import type { ObjectType, LinkType, OntologyFunction, ActionType, AlertRule } from '@ontology/ontology-core';
+import type { ObjectType, LinkType, OntologyFunction, ActionType, AutomationRule } from '@ontology/ontology-core';
 import { EVALUATE_DIMISSION_RISK_BODY, CREATE_DIMISSION_ALERT_BODY } from './dimission-risk';
 
 const V = 1;
@@ -326,15 +326,18 @@ export const actions: ActionType[] = [
   },
 ];
 
-// 告警规则（后台定时任务）：可配置 Function 评估 + 可配置 Action 落地
+// 自动化规则（通用规则引擎，Step 2 将表/类型重命名为 AutomationRule）：
+// 满足条件（可配置 Function 评估）→ 执行动作（可配置 Action 落地）。
+// 此处规则的动作是 createDimissionAlert（生成 Alert 对象），但规则本身不绑定"告警"——
+// 同引擎可承载数据质量、到期提醒等其他动作。
 // params 作为函数 args 透传，FDE 可在此面板直接调整算分参数（阈值/扣分量/起扣天数），无需改码重启。
-export const alertRules: AlertRule[] = [
+export const alertRules: AutomationRule[] = [
   {
     apiName: 'dimissionRiskRule',
     displayName: '离职风险定时巡检',
     enabled: true,
-    intervalSeconds: 60,
-    functionApiName: 'evaluateDimissionRisk',
+    trigger: { kind: 'schedule', intervalSeconds: 60 },
+    conditionFunction: 'evaluateDimissionRisk',
     actionApiName: 'createDimissionAlert',
     params: {
       threshold: 0.8, // 规则2：工时低于部门均值的比例起扣点
@@ -342,7 +345,7 @@ export const alertRules: AlertRule[] = [
       workDeduct: 10, // 规则2：工时每低5%扣的分
       leaveBase: 1, // 规则1：请假起扣天数
     },
-    alertObjectType: 'Alert',
+    targetObjectType: 'Alert',
     version: V,
   },
 ];
