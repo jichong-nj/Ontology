@@ -610,6 +610,21 @@ app.get('/api/s2/explore/instances/:objectType', async (req, res) => {
   }
 });
 
+// 实例查询（对齐 Palantir List Objects）：条件过滤 + 游标分页
+// query: filter=JSON数组(pageSize,pageToken 可选)。filter 项 {property,operator,value}
+app.get('/api/s2/explore/instances/:objectType/query', async (req, res) => {
+  try {
+    const { objectType } = req.params;
+    const filter = req.query.filter ? JSON.parse(String(req.query.filter)) : undefined;
+    const pageSize = req.query.pageSize ? Number(req.query.pageSize) : undefined;
+    const pageToken = req.query.pageToken ? String(req.query.pageToken) : undefined;
+    const result = await repo.listInstances(objectType, { filter, pageSize, pageToken });
+    res.json(result);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // 获取某个具体对象的所有关联关系（按 link_type 分组，含对端对象属性）
 app.get('/api/s2/explore/object/:objectType/:objectRid/links', async (req, res) => {
   try {
@@ -717,7 +732,7 @@ const agentRuntime: AgentRuntime = {
     return scheduler.runAll();
   },
   listAlerts: () => repo.listObjectProperties('Alert'),
-  getInstances: (objectType) => repo.listObjectProperties(objectType),
+  getInstances: (objectType, opts) => repo.listInstances(objectType, opts),
   getObjectLinks: async (objectType, objectRid) => {
     const { rows } = await pool.query(
       `SELECT li.link_type, lt.display_name AS link_display_name,
