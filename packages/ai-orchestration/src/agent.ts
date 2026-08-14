@@ -123,7 +123,7 @@ function allToolSpecs(): ToolSpec[] {
       type: 'function',
       function: {
         name: 'list_object_types',
-        description: '列出本体中所有对象类型（Employee/Department/Product/Device/Project/LeaveRecord/Alert 等）。',
+        description: '列出本体中所有对象类型（返回完整列表）。只依据本工具真实返回的类型作答，不得臆测或补充未出现的类型。',
         parameters: { type: 'object', properties: {}, required: [] },
       },
     },
@@ -283,6 +283,7 @@ export class AIPAgent {
           model: this.currentModelName(),
           messages,
           temperature: this.cfg.temperature,
+          maxTokens: this.active?.maxTokens,
           tools,
         });
       } catch (e: any) {
@@ -329,6 +330,7 @@ export class AIPAgent {
       model: this.currentModelName(),
       messages,
       temperature: this.cfg.temperature,
+      maxTokens: this.active?.maxTokens,
       tools: [], // 最后一步不再允许调用工具，强制产出总结
     });
     return { reply: final.content ?? '(已达到最大步数，未能总结)', steps };
@@ -359,6 +361,7 @@ export class AIPAgent {
           model: modelName,
           messages,
           temperature: this.cfg.temperature,
+          maxTokens: this.active?.maxTokens,
           tools,
         })) {
           if (chunk.delta.reasoningContent) {
@@ -437,6 +440,7 @@ export class AIPAgent {
         model: this.currentModelName(),
         messages,
         temperature: this.cfg.temperature,
+        maxTokens: this.active?.maxTokens,
         tools: [],
       })) {
         if (chunk.delta.content) {

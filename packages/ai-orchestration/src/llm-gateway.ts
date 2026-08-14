@@ -30,6 +30,7 @@ export interface LLMRequest {
   model: string;
   messages: ChatMessage[];
   temperature: number;
+  maxTokens?: number; // 输出 token 上限；不传则用默认值 4096
   tools?: ToolSpec[];
   toolChoice?: 'auto' | 'none' | { type: 'function'; function: { name: string } };
 }
@@ -68,8 +69,8 @@ export class OpenAICompatibleLLM {
         return o;
       }),
       temperature: req.temperature,
-      max_tokens: 4096,
     };
+    if (req.maxTokens != null) body.max_tokens = req.maxTokens;
     if (req.tools && req.tools.length > 0) {
       body.tools = req.tools;
       body.tool_choice = req.toolChoice ?? 'auto';
@@ -133,10 +134,10 @@ export class OpenAICompatibleLLM {
         return o;
       }),
       temperature: req.temperature,
-      max_tokens: 4096,
       stream: true,
       stream_options: { include_usage: false },
     };
+    if (req.maxTokens != null) body.max_tokens = req.maxTokens;
     if (req.tools && req.tools.length > 0) {
       body.tools = req.tools;
       body.tool_choice = req.toolChoice ?? 'auto';
