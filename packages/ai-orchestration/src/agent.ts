@@ -25,7 +25,7 @@ export interface AgentRuntime {
   triggerAction(name: string, args: Record<string, unknown>): Promise<unknown>;
   runRules(): Promise<unknown>;
   listAlerts(): Promise<unknown>;
-  getInstances(objectType: string): Promise<unknown>;
+  getInstances(objectType: string, opts?: { filter?: unknown[]; pageSize?: number; pageToken?: string }): Promise<unknown>;
   getObjectLinks(objectType: string, objectRid: string): Promise<unknown>;
   aggregate(objectType: string, property: string, topN?: number): Promise<unknown>;
   histogram(objectType: string, property: string, buckets?: number): Promise<unknown>;
@@ -131,10 +131,29 @@ function allToolSpecs(): ToolSpec[] {
       type: 'function',
       function: {
         name: 'get_instances',
-        description: '获取某对象类型的全部实例及其属性。',
+        description: '获取某对象类型的实例（对齐 Palantir 思路：支持属性过滤 + 游标分页）。' +
+          'filter 为条件列表，每项 { property, operator, value }，operator 支持 eq/neq/gt/gte/lt/lte/contains/isNull（数值/日期比较按数值处理）；多条件 AND 组合。' +
+          '返回 { data, nextPageToken }；nextPageToken 非空时带上它作为 pageToken 再调用以获取下一页；为空表示末页。',
         parameters: {
           type: 'object',
-          properties: { objectType: { type: 'string', description: '对象类型 apiName' } },
+          properties: {
+            objectType: { type: 'string', description: '对象类型 apiName' },
+            filter: {
+              type: 'array',
+              description: '过滤条件数组，例：[{property:"dimissionRisk",operator:"gte",value:0.8}]',
+              items: {
+                type: 'object',
+                properties: {
+                  property: { type: 'string' },
+                  operator: { type: 'string', enum: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull'] },
+                  value: {},
+                },
+                required: ['property', 'operator'],
+              },
+            },
+            pageSize: { type: 'number', description: '每页条数，默认 100，上限 1000' },
+            pageToken: { type: 'string', description: '上一页返回的 nextPageToken；首页不传' },
+          },
           required: ['objectType'],
         },
       },
@@ -206,7 +225,11 @@ function buildToolMap(rt: AgentRuntime) {
     list_rules: async () => rt.listRules(),
     run_rules: async () => rt.runRules(),
     list_object_types: async () => rt.listObjectTypes(),
-    get_instances: async (a: any) => rt.getInstances(a.objectType),
+    get_instances: async (a: any) => rt.getInstances(a.objectType, {
+      filter: a.filter,
+      pageSize: a.pageSize,
+      pageToken: a.pageToken,
+    }),
     get_object_links: async (a: any) => rt.getObjectLinks(a.objectType, a.objectRid),
     aggregate: async (a: any) => rt.aggregate(a.objectType, a.property, a.topN),
     histogram: async (a: any) => rt.histogram(a.objectType, a.property, a.buckets),
@@ -225,7 +248,7 @@ function selectTools(enabled: string[]): ToolSpec[] {
 function safeStringify(v: unknown): string {
   try {
     const s = typeof v === 'string' ? v : JSON.stringify(v);
-    return s.length > 4000 ? s.slice(0, 4000) + '…(截断)' : s;
+    return s.length > 20000 ? s.slice(0, 20000) + '…(截断)' : s;
   } catch {
     return String(v);
   }

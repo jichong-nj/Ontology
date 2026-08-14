@@ -6,6 +6,22 @@ export type PropertyType =
   | 'date' | 'timestamp' | 'geopoint' | 'array' | 'object';
 // 注：geopoint 类型保留供接口/数据建模使用；地图可视化已裁剪（S3 不含 Map），仅作为坐标数据承载。
 
+// 实例查询过滤条件（对齐 Palantir properties.{prop}.{operator} 思路）
+export type InstanceFilterOperator =
+  | 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains' | 'isNull';
+
+export interface InstanceFilter {
+  property: string;
+  operator: InstanceFilterOperator;
+  value?: unknown; // isNull 时表示是否为空（true=空，false=非空）
+}
+
+export interface InstanceQuery {
+  filter?: InstanceFilter[];
+  pageSize?: number;    // 默认 100，上限 1000
+  pageToken?: string;   // 上一页 nextPageToken（按 object_rid 游标）
+}
+
 export interface PropertyDef {
   apiName: string;
   displayName: string;
@@ -221,6 +237,11 @@ export interface MetadataRepository {
   computeDerived(objectType: string, propApiName: string, objectRid: string): Promise<{ value: unknown }>;
   // 读取某对象类型下所有实例的（最新一次 patch 合并后的）属性，供函数/动作读取实例数据
   listObjectProperties(objectType: string): Promise<{ objectRid: string; properties: Record<string, unknown> }[]>;
+  // 实例查询（对齐 Palantir）：属性级条件过滤 + 游标分页
+  listInstances(
+    objectType: string,
+    opts?: InstanceQuery,
+  ): Promise<{ data: { objectRid: string; properties: Record<string, unknown> }[]; nextPageToken: string | null }>;
   // 按属性分组计数（分类属性的分布条形图）
   aggregateByProperty(objectType: string, property: string, topN?: number): Promise<{ key: string; count: number }[]>;
   // 数值属性的直方图分桶（分布图）

@@ -113,10 +113,10 @@ return async (args, ctx) => {
     const overLeave = leave > leaveBase;
     const isRisk = level !== 'none' || belowAvg || overLeave;
 
-    await repo.writeObjectPatch('Employee', e.objectRid, { riskScore: score, riskLevel: level, dimissionRisk: isRisk }, actor);
+    await repo.writeObjectPatch('Employee', e.objectRid, { riskScore: score, riskLevel: level, dimissionRisk: score / 100 }, actor);
 
     if (isRisk) {
-      flagged.push({ rid: e.objectRid, name, workHours: wh, deptAvg: avg, annualLeaveDays: leave, score, level, dimissionRisk: isRisk });
+      flagged.push({ rid: e.objectRid, name, workHours: wh, deptAvg: avg, annualLeaveDays: leave, score, level, dimissionRisk: score / 100 });
     }
   }
 
@@ -210,10 +210,10 @@ export function makeEvaluateDimissionRisk(repo: MetadataRepository): TsFn {
       const overLeave = leave > leaveBase;
       const isRisk = level !== 'none' || belowAvg || overLeave;
 
-      await repo.writeObjectPatch('Employee', e.objectRid, { riskScore: score, riskLevel: level, dimissionRisk: isRisk }, actor);
+      await repo.writeObjectPatch('Employee', e.objectRid, { riskScore: score, riskLevel: level, dimissionRisk: score / 100 }, actor);
 
       if (isRisk) {
-        flagged.push({ rid: e.objectRid, name, workHours: wh, deptAvg: avg, annualLeaveDays: leave, score, level, dimissionRisk: isRisk });
+        flagged.push({ rid: e.objectRid, name, workHours: wh, deptAvg: avg, annualLeaveDays: leave, score, level, dimissionRisk: score / 100 });
       }
     }
 

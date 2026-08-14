@@ -474,6 +474,91 @@ export class PostgresMetadataRepository implements MetadataRepository {
   }
 
   /**
+   * 实例查询（对齐 Palantir 思路）：支持属性级条件过滤 + 游标分页。
+   * - filter: 属性过滤条件列表（AND 组合），operator 支持 eq/neq/gt/gte/lt/lte/contains/isNull
+   * - pageSize: 每页条数（默认 100，上限 1000）
+   * - pageToken: 上一页返回的 nextPageToken（按 object_rid 游标），为空取首页
+   * 返回 { data, nextPageToken }，nextPageToken 为 null 表示末页。
+   * 安全性：property 名经白名单过滤（仅保留字母数字下划线），值全部参数化。
+   */
+  async listInstances(
+    objectType: string,
+    opts?: {
+      filter?: InstanceFilter[];
+      pageSize?: number;
+      pageToken?: string;
+    },
+  ): Promise<{ data: { objectRid: string; properties: Record<string, unknown> }[]; nextPageToken: string | null }> {
+    const pageSize = Math.min(Math.max(opts?.pageSize ?? 100, 1), 1000);
+    const filter = opts?.filter ?? [];
+    const params: unknown[] = [objectType];
+    const wheres: string[] = ['object_type = $1'];
+
+    filter.forEach((f) => {
+      const col = f.property.replace(/[^A-Za-z0-9_]/g, '');
+      if (!col) return;
+      if (f.operator === 'isNull') {
+        wheres.push(`patch->>'${col}' IS ${f.value ? 'NOT ' : ''}NULL`);
+        return;
+      }
+      const ph = `$${params.length + 1}`;
+      params.push(String(f.value));
+      switch (f.operator) {
+        case 'eq':
+          wheres.push(`patch->>'${col}' = ${ph}`);
+          break;
+        case 'neq':
+          wheres.push(`patch->>'${col}' <> ${ph}`);
+          break;
+        case 'gt':
+          wheres.push(`(CASE WHEN patch->>'${col}' ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (patch->>'${col}')::numeric END) > (${ph})::numeric`);
+          break;
+        case 'gte':
+          wheres.push(`(CASE WHEN patch->>'${col}' ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (patch->>'${col}')::numeric END) >= (${ph})::numeric`);
+          break;
+        case 'lt':
+          wheres.push(`(CASE WHEN patch->>'${col}' ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (patch->>'${col}')::numeric END) < (${ph})::numeric`);
+          break;
+        case 'lte':
+          wheres.push(`(CASE WHEN patch->>'${col}' ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (patch->>'${col}')::numeric END) <= (${ph})::numeric`);
+          break;
+        case 'contains':
+          wheres.push(`patch->>'${col}' LIKE ${ph}`);
+          params[params.length - 1] = `%${String(f.value)}%`;
+          break;
+        default:
+          break;
+      }
+    });
+
+    if (opts?.pageToken) {
+      params.push(opts.pageToken);
+      wheres.push(`object_rid > $${params.length}`);
+    }
+
+    // 多取 1 条判断是否还有下一页（游标式，避免 OFFSET 深翻页与快照一致性问题）
+    params.push(pageSize + 1);
+    const { rows } = await this.pool.query(
+      `SELECT object_rid, patch
+         FROM (SELECT DISTINCT ON (object_rid) object_rid, patch
+                 FROM object_write
+                WHERE ${wheres.join(' AND ')}
+                ORDER BY object_rid, id DESC) t
+        ORDER BY object_rid
+        LIMIT $${params.length}`,
+      params,
+    );
+
+    const hasMore = rows.length > pageSize;
+    const page = rows.slice(0, pageSize).map((r: any) => ({
+      objectRid: r.object_rid,
+      properties: r.patch ?? {},
+    }));
+    const nextPageToken = hasMore && page.length > 0 ? page[page.length - 1].objectRid : null;
+    return { data: page, nextPageToken };
+  }
+
+  /**
    * 判断某对象类型的某属性是否为派生属性。
    */
   private async isDerivedProp(objectType: string, property: string): Promise<boolean> {
