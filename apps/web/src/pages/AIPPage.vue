@@ -1,235 +1,319 @@
+<template>
+  <div class="aip-layout">
+    <!-- 左侧：Agent 列表 -->
+    <aside class="aip-sidebar">
+      <div class="sidebar-head">
+        <span class="sidebar-title">智能体</span>
+        <el-button size="small" type="primary" plain @click="openNewAgent">+ 新建</el-button>
+      </div>
+      <ul class="agent-list">
+        <li
+          v-for="a in agents"
+          :key="a.id"
+          :class="['agent-item', { active: a.id === currentId }]"
+          @click="switchAgent(a.id)"
+        >
+          <div class="agent-name">{{ a.displayName }}</div>
+          <div class="agent-id">{{ a.id }}</div>
+          <el-button
+            size="small"
+            text
+            class="agent-del"
+            @click.stop="confirmDelete(a)"
+            title="删除"
+          >🗑</el-button>
+        </li>
+      </ul>
+    </aside>
+
+    <!-- 右侧：对话区（参考早期 chat 版本的气泡布局） -->
+    <section class="aip-main">
+      <div class="main-head">
+        <div class="head-info">
+          <strong>{{ currentConfig?.displayName || 'Ontology Agent' }}</strong>
+          <span class="muted">（{{ currentId }}）</span>
+          <span v-if="enabledToolLabels.length" class="tool-tags">
+            <el-tag v-for="l in enabledToolLabels" :key="l" size="small" class="tool-tag">{{ l }}</el-tag>
+          </span>
+        </div>
+        <div class="head-actions">
+          <el-button size="small" :loading="cfgLoading" @click="loadConfig">刷新配置</el-button>
+          <el-button size="small" @click="openConfig">配置</el-button>
+          <el-button size="small" type="danger" plain @click="clearChat">清空对话</el-button>
+        </div>
+      </div>
+
+      <div ref="scrollRef" class="chat">
+        <!-- 空状态：欢迎语 + 快捷提问 -->
+        <div v-if="messages.length === 0" class="chat-empty">
+          <p>👋 我是 Ontology 智能体，可调用本体函数 / 动作 / 规则 / 探索 / 告警回答你的问题。</p>
+          <div class="quick">
+            <el-button v-for="q in quickPrompts" :key="q" size="small" @click="quickAsk(q)">{{ q }}</el-button>
+          </div>
+        </div>
+
+        <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
+          <div class="msg-role">{{ m.role === 'user' ? '你' : 'Agent' }}</div>
+          <div class="msg-body">
+            <!-- 用户消息 -->
+            <div v-if="m.role === 'user'" class="bubble user">{{ m.content }}</div>
+            <!-- AI 消息：思考(可折叠) → 工具调用(可折叠) → 回复正文(最后) -->
+            <template v-else>
+              <!-- 思考链（单次合并，可折叠） -->
+              <el-collapse v-if="m.thinking" class="think-collapse">
+                <el-collapse-item name="t">
+                  <template #title><span class="collapse-title">💭 思考过程</span></template>
+                  <div class="thinking">{{ m.thinking }}</div>
+                </el-collapse-item>
+              </el-collapse>
+              <!-- 工具调用（可折叠，工具名正确） -->
+              <el-collapse v-if="m.steps?.length" class="steps-collapse">
+                <el-collapse-item name="s">
+                  <template #title><span class="collapse-title">🔧 工具调用 ({{ m.steps.length }})</span></template>
+                  <div v-for="(s, j) in m.steps" :key="j" class="step">
+                    <div class="step-header">
+                      <el-tag size="small" type="warning">🔧 {{ s.tool || '未知工具' }}</el-tag>
+                    </div>
+                    <details open class="step-detail">
+                      <summary>参数</summary>
+                      <pre class="step-args mono">{{ pretty(s.args) }}</pre>
+                    </details>
+                    <details open class="step-detail">
+                      <summary>返回</summary>
+                      <pre class="step-result mono">{{ pretty(s.result) }}</pre>
+                    </details>
+                  </div>
+                </el-collapse-item>
+              </el-collapse>
+              <!-- 回复正文（始终在最后） -->
+              <div v-if="m.content" class="bubble ai" v-html="renderMd(m.content)"></div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <el-input
+          v-model="input"
+          type="textarea"
+          :rows="3"
+          placeholder="向智能体提问，例如：列出高风险离职人员"
+          @keydown.ctrl.enter="send"
+        />
+        <div class="composer-actions">
+          <el-button @click="stopStream" :disabled="!streaming">停止</el-button>
+          <el-button type="primary" @click="send" :disabled="streaming">发送 (Ctrl+Enter)</el-button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Agent 新建/配置 Dialog -->
+    <el-dialog v-model="configVisible" :title="configIsNew ? '新建智能体' : '配置：' + currentConfig?.displayName" width="720px">
+      <el-form label-width="110px">
+        <el-form-item label="Agent ID">
+          <el-input v-model="form.id" :disabled="!configIsNew" placeholder="英文/数字/_/-，如 hr_expert" />
+        </el-form-item>
+        <el-form-item label="显示名">
+          <el-input v-model="form.displayName" />
+        </el-form-item>
+        <el-form-item label="人设提示词">
+          <el-input v-model="form.systemPrompt" type="textarea" :rows="4" />
+        </el-form-item>
+        <el-form-item label="默认模型">
+          <el-select v-model="form.defaultModelId" filterable placeholder="选择模型" @visible-change="(v:boolean)=>v&&loadModels()">
+            <el-option v-for="m in models" :key="m.id" :label="m.displayName" :value="m.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="温度">
+          <el-slider v-model="form.temperature" :min="0" :max="1" :step="0.1" style="width: 300px" />
+        </el-form-item>
+        <el-form-item label="启用能力">
+          <el-checkbox-group v-model="form.enabledTools">
+            <el-checkbox value="functions">函数</el-checkbox>
+            <el-checkbox value="actions">动作</el-checkbox>
+            <el-checkbox value="rules">规则</el-checkbox>
+            <el-checkbox value="explore">探索</el-checkbox>
+            <el-checkbox value="alerts">告警</el-checkbox>
+          </el-checkbox-group>
+        </el-form-item>
+        <el-form-item label="可访问对象类型">
+          <el-select
+            v-model="form.objectTypes"
+            multiple
+            filterable
+            collapse-tags
+            placeholder="空 = 可访问全部对象类型"
+            style="width: 100%"
+            @visible-change="(v:boolean)=>v&&loadObjectTypes()"
+          >
+            <el-option v-for="ot in allObjectTypes" :key="ot.apiName" :label="ot.displayName + '（' + ot.apiName + '）'" :value="ot.apiName" />
+          </el-select>
+          <div class="muted small">仅勾选的对象类型可被该智能体列示与查询；留空表示不限制。</div>
+        </el-form-item>
+        <el-form-item label="最大步数">
+          <el-input-number v-model="form.maxSteps" :min="1" :max="20" />
+          <div class="muted small">智能体一次回答中最多可连续调用工具（查数据/算函数/触动作）的轮次；达到上限会强制总结。默认 6 轮，复杂任务可上调。</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="configVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveConfig">保存</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
 <script setup lang="ts">
-import { ref, shallowRef, reactive, computed, onMounted, nextTick, triggerRef } from 'vue';
-import { renderMarkdown } from '@/markdown';
-import {
-  ElCard, ElButton, ElIcon, ElMessage, ElDialog, ElForm, ElFormItem, ElInput,
-  ElCheckboxGroup, ElCheckbox, ElSelect, ElOption, ElTag,
-} from 'element-plus';
-import { Refresh, ChatDotRound, Setting, Cpu } from '@element-plus/icons-vue';
-import {
-  aip, type AIPAgentConfigDTO, type AIPModelDTO, type AgentStreamEvent,
-} from '@/api';
-import { tryRequest } from '@/utils/error';
+import { ref, reactive, onMounted, nextTick, computed } from 'vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import MarkdownIt from 'markdown-it';
+import { aip as api, AIPAgentConfigDTO } from '../api';
+import { s2 } from '../api';
+import type { ObjectType } from '../api';
+
+const md = new MarkdownIt({ html: false, linkify: true, breaks: false });
+function renderMd(s: string): string {
+  return md.render(s ?? '');
+}
 
 const CONFIG_ID = 'default';
+const currentId = ref(CONFIG_ID);
+const agents = ref<AIPAgentConfigDTO[]>([]);
+const currentConfig = ref<AIPAgentConfigDTO | null>(null);
+const allObjectTypes = ref<ObjectType[]>([]);
+const models = ref<{ id: string; displayName: string }[]>([]);
 
-interface AgentStep {
-  id: string;
-  tool: string;
-  args: unknown;
-  result?: unknown;
-  ok?: boolean;
-  status: 'running' | 'done';
-}
-// LLM 调用状态：体现在对话中「正在调用 qwen... / 成功 / 失败」
-interface CallStatus {
-  step: number;
-  model: string;
-  status: 'calling' | 'ok' | 'failed';
-  message?: string;
-}
-// 思考/推理：可折叠的一行提示 + 展开内容
-interface ThoughtBlock {
-  text: string;       // 已累计的完整思考内容
-  collapsed: boolean; // 是否折叠
-  label: string;      // 折叠时的一行提示
-}
-interface ChatMsg {
-  role: 'user' | 'assistant';
-  text?: string;       // 用户消息
-  calls: CallStatus[]; // LLM 调用状态时间线
-  thoughts: ThoughtBlock[];
-  steps: AgentStep[];
-  reply: string;       // 最终答复（流式累积原始文本）
-  renderedReply: string;// markdown 渲染后的 HTML（节流更新）
-  streaming: boolean;
-}
-
-const messages = shallowRef<ChatMsg[]>([]);
+const messages = ref<{ role: 'user' | 'ai'; content: string; steps?: any[]; thinking?: string }[]>([]);
 const input = ref('');
-const sending = ref(false);
-const stopFlag = ref(false);
-const cfg = ref<AIPAgentConfigDTO | null>(null);
+const streaming = ref(false);
+let abortCtl: AbortController | null = null;
+const scrollRef = ref<HTMLElement | null>(null);
 const cfgLoading = ref(false);
-const dialogVisible = ref(false);
-const models = ref<AIPModelDTO[]>([]);
+
+const configVisible = ref(false);
+const configIsNew = ref(false);
+const form = ref<Partial<AIPAgentConfigDTO>>({});
 
 const TOOL_OPTIONS = [
-  { value: 'functions', label: '函数（执行 Ontology 函数）' },
-  { value: 'actions', label: '动作（触发 Action）' },
-  { value: 'rules', label: '规则（运行自动化规则）' },
-  { value: 'explore', label: '探索（查询实例/关系/聚合）' },
-  { value: 'alerts', label: '告警（查看 Alert 实例）' },
+  { value: 'functions', label: '函数' },
+  { value: 'actions', label: '动作' },
+  { value: 'rules', label: '规则' },
+  { value: 'explore', label: '探索' },
+  { value: 'alerts', label: '告警' },
 ];
+const quickPrompts = [
+  '现在哪些员工离职风险较高？', '列出所有对象类型', '统计各部门人数', '运行一次全部规则', '查看当前告警',
+];
+const enabledToolLabels = computed(() =>
+  (currentConfig.value?.enabledTools ?? []).map((t) => TOOL_OPTIONS.find((o) => o.value === t)?.label ?? t),
+);
 
-const form = reactive({
-  displayName: 'Ontology Agent',
-  systemPrompt: '',
-  modelScope: [] as string[],
-  defaultModelId: '',
-  temperature: 0.2,
-  enabledTools: ['functions', 'actions', 'rules', 'explore', 'alerts'],
-  maxSteps: 6,
-});
-
-const activeModelId = ref('');
-const chatBox = ref<HTMLElement | null>(null);
-let abortCtrl: AbortController | null = null;
-const scrollToBottom = async () => {
-  await nextTick();
-  if (chatBox.value) chatBox.value.scrollTop = chatBox.value.scrollHeight;
-};
-
-// 流式渲染节流：每 300ms 将原始 reply 渲染为 markdown HTML，避免每 chunk 全量重解析
-let renderTimer: ReturnType<typeof setInterval> | null = null;
-function startRenderThrottle(msg: ChatMsg) {
-  stopRenderThrottle();
-  renderTimer = setInterval(() => {
-    if (msg.reply !== msg.renderedReply) {
-      msg.renderedReply = renderMarkdown(msg.reply);
-    }
-  }, 300);
-}
-function stopRenderThrottle() {
-  if (renderTimer) { clearInterval(renderTimer); renderTimer = null; }
+async function loadAgents() {
+  agents.value = await api.listAgents();
+  if (!agents.value.find((a) => a.id === currentId.value)) {
+    currentId.value = agents.value[0]?.id ?? CONFIG_ID;
+  }
+  await loadConfig();
 }
 
-async function loadAll() {
+async function loadConfig() {
   cfgLoading.value = true;
-  await Promise.all([
-    tryRequest(async () => { models.value = await aip.listModels(); }),
-    tryRequest(async () => {
-      const c = await aip.getConfig(CONFIG_ID);
-      cfg.value = c;
-      if (c) {
-        Object.assign(form, {
-          displayName: c.displayName,
-          systemPrompt: c.systemPrompt,
-          modelScope: c.modelScope ?? [],
-          defaultModelId: c.defaultModelId ?? '',
-          temperature: c.temperature,
-          enabledTools: c.enabledTools,
-          maxSteps: c.maxSteps,
-        });
-        activeModelId.value = c.defaultModelId ?? '';
-      }
-    }),
-  ]);
-  cfgLoading.value = false;
+  try {
+    currentConfig.value = await api.getConfig(currentId.value);
+  } catch {
+    currentConfig.value = null;
+  } finally {
+    cfgLoading.value = false;
+  }
+}
+
+async function switchAgent(id: string) {
+  currentId.value = id;
+  messages.value = [];
+  await loadConfig();
+}
+
+async function loadModels() {
+  if (models.value.length) return;
+  try {
+    const ms = await api.listModels();
+    models.value = ms.map((m: any) => ({ id: m.id, displayName: m.displayName }));
+  } catch {
+    models.value = [];
+  }
+}
+
+async function loadObjectTypes() {
+  if (allObjectTypes.value.length) return;
+  try {
+    allObjectTypes.value = await s2.listObjectTypes();
+  } catch {
+    allObjectTypes.value = [];
+  }
+}
+
+async function openNewAgent() {
+  configIsNew.value = true;
+  await loadModels();
+  await loadObjectTypes();
+  if (!allObjectTypes.value.length) {
+    try {
+      allObjectTypes.value = await s2.listObjectTypes();
+    } catch {
+      allObjectTypes.value = [];
+    }
+  }
+  const scope = models.value.map((m) => m.id);
+  form.value = {
+    id: '',
+    displayName: '新智能体',
+    systemPrompt: '你是本 Ontology 平台的智能体，可调用本体函数/动作/规则与探索工具回答用户问题。',
+    enabledTools: ['functions', 'actions', 'rules', 'explore', 'alerts'],
+    objectTypes: [],
+    modelScope: scope,
+    defaultModelId: scope[0] ?? '',
+    temperature: 0.2,
+    maxSteps: 6,
+  };
+  configVisible.value = true;
+}
+
+async function openConfig() {
+  configIsNew.value = false;
+  await loadModels();
+  form.value = { ...currentConfig.value, objectTypes: currentConfig.value?.objectTypes ?? [] } as Partial<AIPAgentConfigDTO>;
+  configVisible.value = true;
 }
 
 async function saveConfig() {
-  await tryRequest(async () => {
-    if (form.modelScope.length && !form.modelScope.includes(form.defaultModelId)) {
-      form.defaultModelId = form.modelScope[0];
+  try {
+    if (configIsNew.value) {
+      if (!form.value.id) return ElMessage.error('Agent ID 必填');
+      const cfg = await api.createAgent(form.value);
+      ElMessage.success('已新建：' + cfg.displayName);
+      await loadAgents();
+      currentId.value = cfg.id;
+    } else {
+      await api.saveConfig(currentId.value, form.value);
+      ElMessage.success('已保存');
+      await loadConfig();
     }
-    const saved = await aip.saveConfig(CONFIG_ID, {
-      displayName: form.displayName,
-      systemPrompt: form.systemPrompt,
-      modelScope: form.modelScope,
-      defaultModelId: form.defaultModelId,
-      temperature: form.temperature,
-      enabledTools: form.enabledTools,
-      maxSteps: form.maxSteps,
-    });
-    cfg.value = saved;
-    activeModelId.value = saved.defaultModelId ?? '';
-    ElMessage.success('Agent 配置已保存');
-    dialogVisible.value = false;
-  });
-}
-
-function openConfig() {
-  if (cfg.value) {
-    Object.assign(form, {
-      displayName: cfg.value.displayName,
-      systemPrompt: cfg.value.systemPrompt,
-      modelScope: cfg.value.modelScope ?? [],
-      defaultModelId: cfg.value.defaultModelId ?? '',
-      temperature: cfg.value.temperature,
-      enabledTools: cfg.value.enabledTools,
-      maxSteps: cfg.value.maxSteps,
-    });
+    configVisible.value = false;
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || e.message || '保存失败');
   }
-  dialogVisible.value = true;
 }
 
-async function send() {
-  const text = input.value.trim();
-  if (!text || sending.value) return;
-  messages.value.push({ role: 'user', text, calls: [], thoughts: [], steps: [], reply: '', renderedReply: '', streaming: false });
-  input.value = '';
-  await scrollToBottom();
-
-  const assistant: ChatMsg = { role: 'assistant', calls: [], thoughts: [], steps: [], reply: '', renderedReply: '', streaming: true };
-  startRenderThrottle(assistant);
-  messages.value.push(assistant);
-  sending.value = true;
-  stopFlag.value = false;
-  const controller = new AbortController();
-  abortCtrl = controller;
-
-  await tryRequest(async () => {
-    await aip.streamRun(CONFIG_ID, text, (ev: AgentStreamEvent) => {
-      switch (ev.type) {
-        case 'call':
-          assistant.calls.push({ step: ev.step, model: ev.model, status: 'calling' });
-          break;
-        case 'call_status':
-          {
-            const c = assistant.calls.find((x) => x.step === ev.step);
-            if (c) { c.status = ev.ok ? 'ok' : 'failed'; c.message = ev.message; }
-            else assistant.calls.push({ step: ev.step, model: '', status: ev.ok ? 'ok' : 'failed', message: ev.message });
-          }
-          break;
-        case 'thought':
-          {
-            let block = assistant.thoughts[0];
-            if (!block) {
-              block = { text: '', collapsed: false, label: '思考过程' };
-              assistant.thoughts.push(block);
-            }
-            block.text += ev.content;
-          }
-          break;
-        case 'reply_chunk':
-          assistant.reply += ev.content;
-          break;
-        case 'action':
-          assistant.steps.push({ id: ev.id, tool: ev.tool, args: ev.args, status: 'running' });
-          break;
-        case 'result':
-          {
-            const s = assistant.steps.find((x) => x.id === ev.id);
-            if (s) { s.result = ev.result; s.ok = ev.ok; s.status = 'done'; }
-          }
-          break;
-        case 'error':
-          assistant.thoughts.push({ text: `⚠️ ${ev.message}`, collapsed: false, label: '' });
-          break;
-        case 'done':
-          if (!assistant.reply) assistant.reply = ev.reply;
-          break;
-      }
-      // 强制触发 Vue 响应式更新，确保高频 SSE 事件下 UI 能实时渲染
-      triggerRef(messages);
-      scrollToBottom();
-    }, [], activeModelId.value || undefined, controller.signal);
-  });
-
-  assistant.streaming = false;
-  sending.value = false;
-  stopRenderThrottle();
-  // 最终完整渲染一次（确保 markdown 表格等复杂结构正确）
-  assistant.renderedReply = renderMarkdown(assistant.reply);
-  await scrollToBottom();
-}
-
-function stop() {
-  stopFlag.value = true;
-  sending.value = false;
-  abortCtrl?.abort();
-  abortCtrl = null;
+async function confirmDelete(a: AIPAgentConfigDTO) {
+  if (a.id === CONFIG_ID) return ElMessage.warning('默认 Agent 不可删除');
+  await ElMessageBox.confirm(`确认删除智能体「${a.displayName}」（${a.id}）？`, '删除确认', { type: 'warning' })
+    .then(async () => {
+      await api.deleteAgent(a.id);
+      ElMessage.success('已删除');
+      if (currentId.value === a.id) currentId.value = CONFIG_ID;
+      await loadAgents();
+    })
+    .catch(() => {});
 }
 
 function quickAsk(t: string) {
@@ -237,241 +321,182 @@ function quickAsk(t: string) {
   send();
 }
 
-const quickPrompts = [
-  '现在哪些员工离职风险较高？', '列出所有对象类型', '统计各部门人数', '运行一次全部规则', '查看当前告警',
-];
+async function send() {
+  const text = input.value.trim();
+  if (!text || streaming.value) return;
+  messages.value.push({ role: 'user', content: text });
+  input.value = '';
+  await nextTick();
+  scrollDown();
 
-const enabledToolLabels = computed(() =>
-  (cfg.value?.enabledTools ?? []).map((t) => TOOL_OPTIONS.find((o) => o.value === t)?.label ?? t),
-);
+  const aiMsg = reactive({ role: 'ai' as const, content: '', steps: [] as any[], thinking: '' });
+  messages.value.push(aiMsg);
+  streaming.value = true;
 
-const switchableModels = computed(() => models.value.filter((m) => form.modelScope.includes(m.id)));
+  const assistant: { id?: string; tool: string; args: unknown; result: unknown }[] = [];
+  let thinking = '';
+  let reply = '';
+  abortCtl = new AbortController();
 
-onMounted(loadAll);
+  try {
+    await api.streamRun(
+      currentId.value,
+      text,
+      (ev: any) => {
+        if (ev.type === 'thought') {
+          // 多次思考累计合并（去掉每个 token 强制换行，避免一行一 token）
+          thinking += ev.content;
+          aiMsg.thinking = thinking;
+        } else if (ev.type === 'action') {
+          assistant.push({ id: ev.id, tool: ev.tool, args: ev.args, result: undefined });
+          aiMsg.steps = [...assistant];
+        } else if (ev.type === 'result') {
+          const step = assistant.find((s) => s.id === ev.id) || assistant[assistant.length - 1];
+          if (step) step.result = ev.result;
+          aiMsg.steps = [...assistant];
+        } else if (ev.type === 'reply_chunk') {
+          reply += ev.content;
+          aiMsg.content = reply;
+        } else if (ev.type === 'done') {
+          aiMsg.content = reply || ev.reply || '';
+        } else if (ev.type === 'error') {
+          aiMsg.content = '⚠️ ' + ev.message;
+        }
+        scrollDown();
+      },
+      [],
+      undefined,
+      abortCtl.signal,
+    );
+  } catch (e: any) {
+    aiMsg.content = '⚠️ ' + (e.message || '对话失败');
+  } finally {
+    streaming.value = false;
+    abortCtl = null;
+  }
+}
+
+function stopStream() {
+  abortCtl?.abort();
+}
+
+function clearChat() {
+  messages.value = [];
+}
+
+function scrollDown() {
+  nextTick(() => {
+    if (scrollRef.value) scrollRef.value.scrollTop = scrollRef.value.scrollHeight;
+  });
+}
+
+function pretty(v: unknown): string {
+  try {
+    return typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
+}
+
+onMounted(async () => {
+  try {
+    await loadAgents();
+  } catch {
+    agents.value = [];
+  }
+  try {
+    allObjectTypes.value = await s2.listObjectTypes();
+  } catch {
+    allObjectTypes.value = [];
+  }
+  try {
+    const ms = await api.listModels();
+    models.value = ms.map((m: any) => ({ id: m.id, displayName: m.displayName }));
+  } catch {
+    models.value = [];
+  }
+});
 </script>
 
-<template>
-  <div class="aip">
-    <header class="page-head">
-      <div>
-        <h2 class="page-title"><ElIcon><Cpu /></ElIcon> AIP · 统一智能体</h2>
-        <p class="page-sub">
-          一个 Agent 通过工具调用承载本体的全部能力
-          <template v-if="cfg">
-            （已启用：<ElTag v-for="l in enabledToolLabels" :key="l" size="small" style="margin-left:4px">{{ l }}</ElTag>）
-          </template>
-        </p>
-      </div>
-      <div class="page-actions">
-        <ElButton :loading="cfgLoading" @click="loadAll"><ElIcon><Refresh /></ElIcon> 刷新配置</ElButton>
-        <ElButton type="primary" @click="openConfig"><ElIcon><Setting /></ElIcon> 配置 Agent</ElButton>
-      </div>
-    </header>
-
-    <ElCard class="chat-card" shadow="never">
-      <div ref="chatBox" class="chat-box">
-        <div v-if="messages.length === 0" class="chat-empty">
-          <p>👋 我是 Ontology 智能体，可以帮你查询数据、评估风险、运行规则。</p>
-          <div class="quick">
-            <ElButton v-for="q in quickPrompts" :key="q" size="small" @click="quickAsk(q)">{{ q }}</ElButton>
-          </div>
-        </div>
-
-        <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
-          <div class="msg-role">{{ m.role === 'user' ? '你' : 'Agent' }}</div>
-          <div class="msg-content">
-            <p v-if="m.role === 'user'" class="reply">{{ m.text }}</p>
-            <template v-else>
-              <!-- LLM 调用状态时间线：清楚体现每次交互在做什么、成功还是失败 -->
-              <div v-if="m.calls.length" class="calls">
-                <div v-for="(c, ci) in m.calls" :key="'c' + ci" class="call" :class="c.status">
-                  <span class="call-ico">
-                    <template v-if="c.status === 'calling'">⏳</template>
-                    <template v-else-if="c.status === 'ok'">✅</template>
-                    <template v-else>❌</template>
-                  </span>
-                  <span class="call-text">
-                    <template v-if="c.status === 'calling'">正在调用模型{{ c.model ? ` ${c.model}` : '' }}…</template>
-                    <template v-else-if="c.status === 'ok'">已调用模型{{ c.model ? ` ${c.model}` : '' }}（成功）</template>
-                    <template v-else>调用模型{{ c.model ? ` ${c.model}` : '' }} 失败：{{ c.message }}</template>
-                  </span>
-                </div>
-              </div>
-
-              <!-- 思考/推理：一行提示，可折叠展开 -->
-              <div v-for="(t, ti) in m.thoughts" :key="'t' + ti" class="thought" :class="{ error: !t.label }">
-                <div class="thought-toggle" @click="t.collapsed = !t.collapsed">
-                  <ElIcon class="thought-ico"><ChatDotRound /></ElIcon>
-                  <span class="thought-label">{{ t.label || '发生错误' }}</span>
-                  <span class="thought-caret">{{ t.collapsed ? '▸' : '▾' }}</span>
-                </div>
-                <div v-show="!t.collapsed" class="thought-body">{{ t.text }}</div>
-              </div>
-
-              <!-- 工具调用（函数/动作/规则/探索/告警）及返回 -->
-              <div v-if="m.steps.length" class="steps">
-                <div v-for="(s, j) in m.steps" :key="'s' + j" class="step" :class="s.ok === false ? 'fail' : ''">
-                  <div class="step-head">
-                    <ElTag size="small" :type="s.status === 'running' ? 'info' : (s.ok === false ? 'danger' : 'warning')">
-                      {{ s.status === 'running' ? '⏳' : (s.ok === false ? '❌' : '🔧') }} {{ s.tool }}
-                    </ElTag>
-                    <span v-if="s.status === 'running'" class="step-running">执行中…</span>
-                    <span v-else-if="s.ok === false" class="step-failed">失败</span>
-                    <span v-else class="step-ok">成功</span>
-                  </div>
-                  <div class="step-args mono">入参：{{ JSON.stringify(s.args) }}</div>
-                  <div v-if="s.status === 'done'" class="step-result mono">返回：{{ JSON.stringify(s.result).slice(0, 800) }}</div>
-                </div>
-              </div>
-
-              <!-- 最终答复（流式累积，支持 markdown） -->
-              <div v-if="m.renderedReply || m.reply" class="reply md" v-html="m.renderedReply || m.reply"></div>
-              <p v-else-if="m.streaming" class="typing">▋ 正在生成…</p>
-            </template>
-          </div>
-        </div>
-      </div>
-
-      <div class="chat-input">
-        <div class="model-switch">
-          <span class="model-label">模型</span>
-          <ElSelect v-model="activeModelId" placeholder="选择模型" size="default" style="width:240px">
-            <ElOption v-for="m in switchableModels" :key="m.id" :label="m.displayName" :value="m.id">
-              <span>{{ m.displayName }}</span>
-              <small v-if="m.isReasoning" style="color:var(--el-color-warning)"> · 推理</small>
-            </ElOption>
-          </ElSelect>
-        </div>
-        <ElInput
-          v-model="input"
-          type="textarea"
-          :rows="2"
-          placeholder="输入任务，如：哪些员工离职风险高？请运行规则并汇总"
-          @keydown.ctrl.enter="send"
-        />
-        <ElButton v-if="!sending" type="primary" :disabled="!activeModelId" @click="send"><ElIcon><ChatDotRound /></ElIcon> 发送</ElButton>
-        <ElButton v-else type="danger" @click="stop"><ElIcon><ChatDotRound /></ElIcon> 停止</ElButton>
-      </div>
-    </ElCard>
-
-    <ElDialog v-model="dialogVisible" title="配置 AIP Agent" width="680px">
-      <ElForm label-width="120px">
-        <ElFormItem label="显示名称">
-          <ElInput v-model="form.displayName" />
-        </ElFormItem>
-        <ElFormItem label="模型范围">
-          <ElSelect v-model="form.modelScope" multiple placeholder="选择可用模型（在 Provider 页添加）" style="width:100%">
-            <ElOption v-for="m in models" :key="m.id" :label="m.displayName" :value="m.id" />
-          </ElSelect>
-          <div class="hint">用户对话时只能在所选模型范围内切换。</div>
-        </ElFormItem>
-        <ElFormItem label="默认模型">
-          <ElSelect v-model="form.defaultModelId" placeholder="选择默认模型" style="width:100%">
-            <ElOption v-for="m in models.filter(x => form.modelScope.includes(x.id))" :key="m.id" :label="m.displayName" :value="m.id" />
-          </ElSelect>
-        </ElFormItem>
-        <ElFormItem label="温度">
-          <ElInput v-model.number="form.temperature" type="number" :min="0" :max="2" :step="0.1" style="width:160px" />
-        </ElFormItem>
-        <ElFormItem label="最大步数">
-          <ElInput v-model.number="form.maxSteps" type="number" :min="1" :max="20" style="width:160px" />
-          <div class="hint">单轮对话中 Agent 最多工具调用次数，防止死循环。</div>
-        </ElFormItem>
-        <ElFormItem label="启用能力">
-          <ElCheckboxGroup v-model="form.enabledTools">
-            <ElCheckbox v-for="o in TOOL_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</ElCheckbox>
-          </ElCheckboxGroup>
-        </ElFormItem>
-        <ElFormItem label="系统提示词">
-          <ElInput v-model="form.systemPrompt" type="textarea" :rows="6" placeholder="留空则使用平台默认提示词" />
-        </ElFormItem>
-      </ElForm>
-      <template #footer>
-        <ElButton @click="dialogVisible = false">取消</ElButton>
-        <ElButton type="primary" :loading="cfgLoading" @click="saveConfig">保存</ElButton>
-      </template>
-    </ElDialog>
-  </div>
-</template>
-
 <style scoped>
-.aip { display: flex; flex-direction: column; height: calc(100vh - 92px); min-height: 0; max-width: 1000px; margin: 0 auto; width: 100%; }
-.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-4); flex-shrink: 0; }
-.page-title { display: flex; align-items: center; gap: var(--space-2); font-size: 1.4rem; margin: 0; }
-.page-sub { color: var(--text-muted); margin: 4px 0 0; font-size: 0.9rem; }
-.page-actions { display: flex; gap: var(--space-2); }
-.chat-card { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.chat-box { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-3); }
-.chat-empty { text-align: center; color: var(--text-muted); padding-top: 40px; }
-.quick { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px; }
-.msg { display: flex; gap: 10px; margin-bottom: var(--space-4); }
-.msg.user { flex-direction: row-reverse; }
-.msg-role { font-size: 0.75rem; color: var(--text-muted); min-width: 36px; text-align: center; padding-top: 4px; }
-.msg-content { max-width: 78%; padding: 10px 14px; border-radius: 10px; background: var(--bg-elevated); }
-.msg.user .msg-content { background: var(--el-color-primary-light-9); }
-.msg-content p { margin: 0; white-space: pre-wrap; line-height: 1.6; }
-.calls { margin: 4px 0; border-left: 2px solid var(--border); padding-left: 8px; }
-.call { display: flex; gap: 6px; align-items: center; font-size: 0.82rem; padding: 2px 0; line-height: 1.5; }
-.call-ico { flex-shrink: 0; }
-.call-text { color: var(--text-muted); }
-.call.ok .call-text { color: var(--el-color-success); }
-.call.failed .call-text { color: var(--el-color-danger); }
-.thought { margin: 6px 0; padding: 6px 10px; border-radius: 8px; background: var(--bg); border: 1px dashed var(--border); }
-.thought.error { border-color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
-.thought-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
-.thought-ico { color: var(--el-color-primary); flex-shrink: 0; }
-.thought-label { font-size: 0.82rem; color: var(--text-muted); }
-.thought-caret { margin-left: auto; color: var(--text-muted); font-size: 0.75rem; }
-.thought-body { margin-top: 6px; font-size: 0.85rem; color: var(--text-secondary); white-space: pre-wrap; line-height: 1.6; max-height: 320px; overflow: auto; }
-.steps { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; }
-.step { margin-bottom: 8px; padding: 8px 10px; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); }
-.step.fail { border-color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
-.step-head { display: flex; align-items: center; gap: 8px; }
-.step-running { font-size: 0.75rem; color: var(--el-color-info); }
-.step-ok { font-size: 0.75rem; color: var(--el-color-success); }
-.step-failed { font-size: 0.75rem; color: var(--el-color-danger); }
-.step-args { font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; }
-.step-result { font-size: 0.74rem; color: var(--text-muted); background: var(--bg); border-radius: 6px; padding: 6px; margin-top: 4px; max-height: 160px; overflow: auto; word-break: break-all; }
-.reply { margin: 8px 0 0; white-space: pre-wrap; line-height: 1.7; font-size: 0.95rem; }
-.msg.user .msg-content .reply { margin: 0; }
-.typing { color: var(--text-muted); font-style: italic; margin: 4px 0 0 !important; }
+.aip-layout { display: flex; height: calc(100vh - 120px); }
+.aip-sidebar { width: 240px; border-right: 1px solid #ebeef5; padding: 12px; overflow-y: auto; }
+.sidebar-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.sidebar-title { font-weight: 600; }
+.agent-list { list-style: none; padding: 0; margin: 0; }
+.agent-item { position: relative; padding: 10px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 6px; border: 1px solid transparent; }
+.agent-item.active { background: #ecf5ff; border-color: #409eff; }
+.agent-name { font-weight: 600; }
+.agent-id { font-size: 12px; color: #909399; }
+.agent-del { position: absolute; top: 6px; right: 6px; }
 
-/* Markdown 渲染样式（:deep 确保 v-html 注入内容也能命中） */
-.md { margin: 8px 0 0; line-height: 1.7; font-size: 0.95rem; word-break: break-word; }
-.md > :first-child { margin-top: 0; }
-.md > :last-child { margin-bottom: 0; }
-.md :deep(p) { margin: 8px 0; line-height: 1.7; }
-.md :deep(h1), .md :deep(h2), .md :deep(h3), .md :deep(h4) { margin: 14px 0 8px; line-height: 1.3; font-weight: 600; }
-.md :deep(h1) { font-size: 1.4rem; }
-.md :deep(h2) { font-size: 1.2rem; }
-.md :deep(h3) { font-size: 1.05rem; }
-.md :deep(ul), .md :deep(ol) { margin: 8px 0; padding-left: 1.5em; }
-.md :deep(li) { margin: 4px 0; }
-.md :deep(a) { color: var(--el-color-primary); text-decoration: none; }
-.md :deep(a):hover { text-decoration: underline; }
-.md :deep(strong) { font-weight: 600; }
-.md :deep(blockquote) { margin: 8px 0; padding: 4px 12px; border-left: 3px solid var(--el-color-primary); background: var(--bg); color: var(--text-muted); }
-.md :deep(code) { font-family: var(--font-mono); font-size: 0.85em; background: var(--bg); padding: 2px 5px; border-radius: 4px; }
-.md :deep(pre) { background: #1e1e2e; color: #e4e4e7; padding: 12px 14px; border-radius: 8px; overflow: auto; margin: 8px 0; }
-.md :deep(pre code) { background: transparent; color: inherit; padding: 0; font-size: 0.85em; }
-.md :deep(table) { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 0.88rem; border: 1px solid #d1d5db; }
-.md :deep(th), .md :deep(td) { border: 1px solid #d1d5db; padding: 6px 10px; text-align: left; }
-.md :deep(thead th) { background: #f9fafb; font-weight: 600; }
-.md :deep(tbody tr:nth-child(even)) { background: var(--bg); }
-.md :deep(hr) { border: none; border-top: 1px solid #d1d5db; margin: 12px 0; }
-.md :deep(img) { max-width: 100%; border-radius: 6px; }
-.chat-input {
-  display: flex;
-  gap: 10px;
-  padding: var(--space-3);
-  border-top: 1px solid var(--border);
-  align-items: flex-end;
-  flex-shrink: 0;
-  background: var(--bg-elevated);
-}
-.chat-input .el-button { flex-shrink: 0; }
-.model-switch { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.model-label { font-size: 0.85rem; color: var(--text-muted); }
-.hint { color: var(--text-muted); font-size: 0.78rem; margin-top: 4px; line-height: 1.4; }
-.mono { font-family: var(--font-mono); }
+.aip-main { flex: 1; display: flex; flex-direction: column; padding: 12px 16px; min-width: 0; }
+.main-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 12px; flex-wrap: wrap; }
+.head-info { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tool-tags { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.tool-tag { margin-left: 0; }
+.head-actions { display: flex; gap: 8px; }
+
+.chat { flex: 1; overflow-y: auto; border: 1px solid #ebeef5; border-radius: 8px; padding: 16px; background: #fafafa; }
+.chat-empty { text-align: center; color: #909399; padding-top: 48px; }
+.chat-empty .quick { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px; }
+
+.msg { display: flex; gap: 10px; margin-bottom: 18px; align-items: flex-start; }
+.msg.user { flex-direction: row-reverse; }
+.msg-role { font-size: 12px; color: #909399; min-width: 36px; text-align: center; padding-top: 6px; flex-shrink: 0; }
+.msg-body { min-width: 0; display: flex; flex-direction: column; }
+.msg.user .msg-body { align-items: flex-end; max-width: 70%; }
+
+.bubble { padding: 10px 14px; border-radius: 10px; line-height: 1.6; white-space: normal; word-wrap: break-word; overflow-wrap: break-word; }
+.bubble.user { background: #409eff; color: #fff; border-radius: 10px 10px 2px 10px; }
+.bubble.ai { background: #fff; border: 1px solid #ebeef5; border-radius: 10px 10px 10px 2px; width: 100%; box-sizing: border-box; }
+.bubble.ai :deep(pre) { background: #f4f4f5; padding: 8px; border-radius: 6px; overflow-x: auto; margin: 8px 0 0; }
+/* markdown 渲染样式 */
+.bubble.ai :deep(h1),
+.bubble.ai :deep(h2),
+.bubble.ai :deep(h3),
+.bubble.ai :deep(h4) { margin: 10px 0 6px; line-height: 1.3; }
+.bubble.ai :deep(h1) { font-size: 18px; }
+.bubble.ai :deep(h2) { font-size: 16px; }
+.bubble.ai :deep(h3) { font-size: 15px; }
+.bubble.ai :deep(p) { margin: 6px 0; }
+.bubble.ai :deep(ul),
+.bubble.ai :deep(ol) { padding-left: 22px; margin: 6px 0; }
+.bubble.ai :deep(li) { margin: 2px 0; }
+.bubble.ai :deep(code):not(pre code) { background: #f4f4f5; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+.bubble.ai :deep(table) { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
+.bubble.ai :deep(th),
+.bubble.ai :deep(td) { border: 1px solid #dcdfe6; padding: 6px 10px; text-align: left; }
+.bubble.ai :deep(th) { background: #f5f7fa; font-weight: 600; }
+.bubble.ai :deep(tr:nth-child(even) td) { background: #fafafa; }
+.bubble.ai :deep(blockquote) { border-left: 3px solid #dcdfe6; margin: 8px 0; padding: 2px 12px; color: #606266; }
+.bubble.ai :deep(a) { color: #409eff; }
+
+/* 折叠面板：去边框/底色，直接在聊天背景上 */
+.think-collapse, .steps-collapse { margin-bottom: 8px; border: none; background: transparent; }
+.think-collapse :deep(.el-collapse-item__header),
+.steps-collapse :deep(.el-collapse-item__header),
+.think-collapse :deep(.el-collapse-item__wrap),
+.steps-collapse :deep(.el-collapse-item__wrap) { background: transparent; border: none; }
+.collapse-title { font-size: 13px; color: #606266; }
+
+/* 思考链：无底色，直接在背景上，字号比回复小一号 */
+.thinking { color: #909399; white-space: pre-wrap; word-break: break-word; font-size: 13px; padding: 2px 0; background: transparent; line-height: 1.7; max-height: 300px; overflow-y: auto; }
+
+/* 工具步骤：无底色，直接在背景上，字号比回复小一号 */
+.steps-collapse :deep(.el-collapse-item__content) { background: transparent; padding-bottom: 0; }
+.step { margin-bottom: 12px; padding: 6px 0; border-bottom: 1px solid #ebeef5; background: transparent; }
+.step:last-child { border-bottom: none; }
+.step-header { margin-bottom: 4px; }
+.step-detail { margin-top: 4px; cursor: pointer; }
+.step-detail summary { font-size: 12px; color: #909399; outline: none; user-select: none; }
+.step-detail summary:hover { color: #409eff; }
+.step-args, .step-result { margin: 4px 0 0; white-space: pre-wrap; word-break: break-all; font-size: 13px; color: #606266; background: transparent; }
+.step-result { border-radius: 6px; padding: 4px 0; max-height: 200px; overflow: auto; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.composer { margin-top: 10px; }
+.composer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.muted { color: #909399; }
+.small { font-size: 12px; }
 </style>
