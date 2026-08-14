@@ -19,8 +19,9 @@ import {
 } from '@ontology/enterprise-biz';
 import { RuleScheduler } from '@ontology/ontology-core';
 import { AIPAgent } from '@ontology/ai-orchestration';
-import type { AgentRuntime } from '@ontology/ai-orchestration';
-import type { AIPAgentConfig } from '@ontology/ontology-core';
+import type { AgentRuntime, ActiveModelRef } from '@ontology/ai-orchestration';
+import { OpenAICompatibleLLM, heuristicIsReasoning } from '@ontology/ai-orchestration';
+import type { AIPAgentConfig, AIPProvider, AIPModel } from '@ontology/ontology-core';
 
 const META_URL =
   process.env.META_DATABASE_URL ||
@@ -687,7 +688,7 @@ app.get('/api/s2/explore/:objectType/histogram', async (req, res) => {
   }
 });
 
-// ---------- AIP 配置平台：单一多能力 Agent ----------
+// ---------- AIP 配置平台：Provider / Model / Agent 三层体系 ----------
 // 进程内运行时：把本体能力（函数/动作/规则/探索/告警）桥接给 Agent 工具调用。
 const agentRuntime: AgentRuntime = {
   listFunctions: () => repo.listFunctions(),
@@ -736,18 +737,193 @@ const agentRuntime: AgentRuntime = {
   histogram: (objectType, property, buckets) => repo.histogramByProperty(objectType, property, buckets ?? 20),
 };
 
-// Agent 配置 CRUD
-app.get('/api/aip/config/:id', async (req, res) => {
+// ---------- Provider CRUD ----------
+app.get('/api/aip/providers', async (_req, res) => {
+  try {
+    const list = await repo.listAIPProviders();
+    res.json(list);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/aip/providers/:id', async (req, res) => {
+  try {
+    const p = await repo.getAIPProvider(req.params.id);
+    if (!p) return res.status(404).json({ error: 'Provider 不存在' });
+    res.json(p);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/aip/providers', async (req, res) => {
+  try {
+    const b = req.body ?? {};
+    if (!b?.id || !b?.name || !b?.baseUrl) {
+      return res.status(400).json({ error: 'id/name/baseUrl 必填' });
+    }
+    const provider = {
+      id: b.id,
+      name: b.name,
+      baseUrl: b.baseUrl,
+      apiKey: b.apiKey ?? '',
+      protocol: b.protocol ?? 'openai-compatible',
+      isDefault: b.isDefault ?? false,
+    };
+    if (provider.isDefault) {
+      // 取消其他默认
+      const all = await repo.listAIPProviders();
+      for (const o of all) if (o.isDefault) await repo.upsertAIPProvider({ ...o, isDefault: false });
+    }
+    await repo.upsertAIPProvider(provider);
+    res.status(201).json({ ok: true, provider });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.put('/api/aip/providers/:id', async (req, res) => {
+  try {
+    const existing = await repo.getAIPProvider(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Provider 不存在' });
+    const b = req.body ?? {};
+    const provider = {
+      id: req.params.id,
+      name: b.name ?? existing.name,
+      baseUrl: b.baseUrl ?? existing.baseUrl,
+      apiKey: b.apiKey ?? existing.apiKey,
+      protocol: b.protocol ?? existing.protocol,
+      isDefault: b.isDefault ?? existing.isDefault ?? false,
+    };
+    if (provider.isDefault) {
+      const all = await repo.listAIPProviders();
+      for (const o of all) if (o.id !== provider.id && o.isDefault) await repo.upsertAIPProvider({ ...o, isDefault: false });
+    }
+    await repo.upsertAIPProvider(provider);
+    res.json({ ok: true, provider });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/aip/providers/:id', async (req, res) => {
+  try {
+    await repo.deleteAIPProvider(req.params.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 探测 provider 下的模型列表（GET /v1/models），带启发式推理判断
+app.post('/api/aip/providers/probe', async (req, res) => {
+  try {
+    const { baseUrl, apiKey } = req.body ?? {};
+    if (!baseUrl) return res.status(400).json({ error: 'baseUrl 必填' });
+    const client = new OpenAICompatibleLLM({ baseURL: baseUrl, apiKey: apiKey || undefined, timeoutMs: 15_000 });
+    const models = await client.listModels();
+    res.json({ ok: true, models: models.map((m) => ({ ...m, isReasoning: heuristicIsReasoning(m.id) })) });
+  } catch (e: any) {
+    res.json({ ok: false, error: e.message, models: [] });
+  }
+});
+
+// ---------- Model CRUD ----------
+app.get('/api/aip/models', async (req, res) => {
+  try {
+    const list = await repo.listAIPModels(req.query.providerId as string | undefined);
+    res.json(list);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/aip/models', async (req, res) => {
+  try {
+    const b = req.body ?? {};
+    if (!b?.id || !b?.providerId || !b?.apiName) {
+      return res.status(400).json({ error: 'id/providerId/apiName 必填' });
+    }
+    const model = {
+      id: b.id,
+      providerId: b.providerId,
+      apiName: b.apiName,
+      displayName: b.displayName ?? b.apiName,
+      isReasoning: b.isReasoning ?? false,
+      contextWindow: b.contextWindow ?? undefined,
+      maxTokens: b.maxTokens ?? undefined,
+      extra: b.extra ?? undefined,
+    };
+    await repo.upsertAIPModel(model);
+    res.status(201).json({ ok: true, model });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.put('/api/aip/models/:id', async (req, res) => {
+  try {
+    const existing = await repo.getAIPModel(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Model 不存在' });
+    const b = req.body ?? {};
+    const model = {
+      id: req.params.id,
+      providerId: b.providerId ?? existing.providerId,
+      apiName: b.apiName ?? existing.apiName,
+      displayName: b.displayName ?? existing.displayName,
+      isReasoning: b.isReasoning ?? existing.isReasoning ?? false,
+      contextWindow: b.contextWindow ?? existing.contextWindow,
+      maxTokens: b.maxTokens ?? existing.maxTokens,
+      extra: b.extra ?? existing.extra,
+    };
+    await repo.upsertAIPModel(model);
+    res.json({ ok: true, model });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/aip/models/:id', async (req, res) => {
+  try {
+    await repo.deleteAIPModel(req.params.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------- Agent CRUD ----------
+app.get('/api/aip/agents', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT * FROM aip_agent ORDER BY created_at ASC`);
+    res.json(rows.map((r: any) => ({
+      id: r.id,
+      displayName: r.display_name,
+      systemPrompt: r.system_prompt,
+      modelScope: r.model_scope ?? [],
+      defaultModelId: r.default_model_id,
+      temperature: r.temperature,
+      enabledTools: r.enabled_tools ?? [],
+      maxSteps: r.max_steps,
+      version: r.version,
+    })));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/aip/agents/:id', async (req, res) => {
   try {
     const cfg = await repo.getAIPAgentConfig(req.params.id);
-    if (!cfg) return res.status(404).json({ error: '配置不存在' });
+    if (!cfg) return res.status(404).json({ error: 'Agent 不存在' });
     res.json(cfg);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.put('/api/aip/config/:id', async (req, res) => {
+app.put('/api/aip/agents/:id', async (req, res) => {
   try {
     const body = req.body as Partial<AIPAgentConfig>;
     const existing = await repo.getAIPAgentConfig(req.params.id);
@@ -755,14 +931,16 @@ app.put('/api/aip/config/:id', async (req, res) => {
       id: req.params.id,
       displayName: body.displayName ?? existing?.displayName ?? 'Ontology Agent',
       systemPrompt: body.systemPrompt ?? existing?.systemPrompt ?? DEFAULT_AGENT_PROMPT,
-      model: body.model ?? existing?.model ?? 'local-model',
-      baseUrl: body.baseUrl ?? existing?.baseUrl ?? 'http://localhost:1234/v1',
-      apiKey: body.apiKey ?? existing?.apiKey ?? '',
+      modelScope: body.modelScope ?? existing?.modelScope ?? [],
+      defaultModelId: body.defaultModelId ?? existing?.defaultModelId ?? '',
       temperature: body.temperature ?? existing?.temperature ?? 0.2,
       enabledTools: body.enabledTools ?? existing?.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts'],
       maxSteps: body.maxSteps ?? existing?.maxSteps ?? 6,
       version: existing?.version,
     };
+    if (cfg.modelScope.length && !cfg.modelScope.includes(cfg.defaultModelId)) {
+      cfg.defaultModelId = cfg.modelScope[0];
+    }
     await repo.upsertAIPAgentConfig(cfg);
     res.json({ ok: true, config: cfg });
   } catch (e: any) {
@@ -770,7 +948,26 @@ app.put('/api/aip/config/:id', async (req, res) => {
   }
 });
 
-// Agent 对话入口：一个 Agent 承载本体全部能力
+// 根据 modelId 解析出激活的模型引用（含 provider 接入点）
+async function resolveActiveModel(modelId: string): Promise<{ ref: ActiveModelRef; model: any; provider: any } | null> {
+  const model = await repo.getAIPModel(modelId);
+  if (!model) return null;
+  const provider = await repo.getAIPProvider(model.providerId);
+  if (!provider) return null;
+  return {
+    model,
+    provider,
+    ref: {
+      apiName: model.apiName,
+      baseUrl: provider.baseUrl,
+      apiKey: provider.apiKey || undefined,
+      isReasoning: model.isReasoning,
+      maxTokens: model.maxTokens,
+    },
+  };
+}
+
+// Agent 对话入口（非流式，保留兼容）
 app.post('/api/aip/agent/:id/run', async (req, res) => {
   try {
     const cfg = await repo.getAIPAgentConfig(req.params.id);
@@ -780,9 +977,49 @@ app.post('/api/aip/agent/:id/run', async (req, res) => {
       return res.status(400).json({ error: 'message 必填' });
     }
     const history = Array.isArray(req.body?.history) ? req.body.history : [];
-    const agent = new AIPAgent(cfg, agentRuntime);
+    // 模型选择：前端可传 modelId 覆盖默认
+    const wantModelId = req.body?.modelId || cfg.defaultModelId;
+    const resolved = wantModelId ? await resolveActiveModel(wantModelId) : null;
+    const active = resolved?.ref;
+    const agent = new AIPAgent(cfg, agentRuntime, active ?? undefined);
     const result = await agent.run(message, history);
     res.json({ ok: true, ...result });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Agent 流式对话入口（SSE）：逐步推送思考/动作/结果，前端实时展示
+app.post('/api/aip/agent/:id/stream', async (req, res) => {
+  try {
+    const cfg = await repo.getAIPAgentConfig(req.params.id);
+    if (!cfg) return res.status(404).json({ error: 'Agent 配置不存在，请先保存配置' });
+    const message = req.body?.message;
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ error: 'message 必填' });
+    }
+    const history = Array.isArray(req.body?.history) ? req.body.history : [];
+    // 模型选择：前端可传 modelId 覆盖默认（用户对话时切换模型）
+    const wantModelId = req.body?.modelId || cfg.defaultModelId;
+    const resolved = wantModelId ? await resolveActiveModel(wantModelId) : null;
+    const active = resolved?.ref;
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    const agent = new AIPAgent(cfg, agentRuntime, active ?? undefined);
+    const send = (event: unknown) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    try {
+      for await (const ev of agent.runStream(message, history)) {
+        send(ev);
+      }
+    } catch (e: any) {
+      send({ type: 'error', message: e.message });
+    }
+    res.write('event: end\ndata: {}\n\n');
+    res.end();
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

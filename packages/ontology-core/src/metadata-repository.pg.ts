@@ -14,6 +14,8 @@ import {
   parseDerivedSpec,
   AutomationRule,
   AIPAgentConfig,
+  AIPProvider,
+  AIPModel,
   FunctionSandbox,
 } from './types';
 import { Pool } from 'pg';
@@ -841,47 +843,125 @@ export class PostgresMetadataRepository implements MetadataRepository {
     await this.pool.query(`DELETE FROM rule WHERE api_name = $1`, [apiName]);
   }
 
-  // ---------- AIP Agent 配置 ----------
+  // ---------- AIP Provider / Model / Agent 三层 ----------
+  async upsertAIPProvider(p: AIPProvider): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO aip_provider (id, name, base_url, api_key, protocol, is_default, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6, now(), now())
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name, base_url = EXCLUDED.base_url, api_key = EXCLUDED.api_key,
+         protocol = EXCLUDED.protocol, is_default = EXCLUDED.is_default, updated_at = now()`,
+      [p.id, p.name, p.baseUrl, p.apiKey, p.protocol, p.isDefault ?? false],
+    );
+  }
+  async getAIPProvider(id: string): Promise<AIPProvider | null> {
+    const { rows } = await this.pool.query(`SELECT * FROM aip_provider WHERE id = $1`, [id]);
+    return rows[0] ? rowToAIPProvider(rows[0]) : null;
+  }
+  async listAIPProviders(): Promise<AIPProvider[]> {
+    const { rows } = await this.pool.query(`SELECT * FROM aip_provider ORDER BY created_at ASC`);
+    return rows.map(rowToAIPProvider);
+  }
+  async deleteAIPProvider(id: string): Promise<void> {
+    await this.pool.query(`DELETE FROM aip_provider WHERE id = $1`, [id]);
+  }
+
+  async upsertAIPModel(m: AIPModel): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO aip_model
+        (id, provider_id, api_name, display_name, is_reasoning, context_window, max_tokens, extra, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now(), now())
+       ON CONFLICT (id) DO UPDATE SET
+         provider_id = EXCLUDED.provider_id, api_name = EXCLUDED.api_name,
+         display_name = EXCLUDED.display_name, is_reasoning = EXCLUDED.is_reasoning,
+         context_window = EXCLUDED.context_window, max_tokens = EXCLUDED.max_tokens,
+         extra = EXCLUDED.extra, updated_at = now()`,
+      [m.id, m.providerId, m.apiName, m.displayName, m.isReasoning ?? false,
+        m.contextWindow ?? null, m.maxTokens ?? null,
+        m.extra ? JSON.stringify(m.extra) : null],
+    );
+  }
+  async getAIPModel(id: string): Promise<AIPModel | null> {
+    const { rows } = await this.pool.query(`SELECT * FROM aip_model WHERE id = $1`, [id]);
+    return rows[0] ? rowToAIPModel(rows[0]) : null;
+  }
+  async listAIPModels(providerId?: string): Promise<AIPModel[]> {
+    const { rows } = providerId
+      ? await this.pool.query(`SELECT * FROM aip_model WHERE provider_id = $1 ORDER BY created_at ASC`, [providerId])
+      : await this.pool.query(`SELECT * FROM aip_model ORDER BY created_at ASC`);
+    return rows.map(rowToAIPModel);
+  }
+  async deleteAIPModel(id: string): Promise<void> {
+    await this.pool.query(`DELETE FROM aip_model WHERE id = $1`, [id]);
+  }
+
   async upsertAIPAgentConfig(cfg: AIPAgentConfig): Promise<void> {
     await this.pool.query(
-      `INSERT INTO aip_agent_config
-        (id, display_name, system_prompt, model, base_url, api_key, temperature, enabled_tools, max_steps, version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       ON CONFLICT (id) DO UPDATE SET
-         display_name = EXCLUDED.display_name,
-         system_prompt = EXCLUDED.system_prompt,
-         model = EXCLUDED.model,
-         base_url = EXCLUDED.base_url,
-         api_key = EXCLUDED.api_key,
-         temperature = EXCLUDED.temperature,
-         enabled_tools = EXCLUDED.enabled_tools,
-         max_steps = EXCLUDED.max_steps,
-         version = aip_agent_config.version + 1,
-         updated_at = now()`,
-      [cfg.id, cfg.displayName, cfg.systemPrompt, cfg.model, cfg.baseUrl, cfg.apiKey,
-        cfg.temperature, JSON.stringify(cfg.enabledTools ?? []), cfg.maxSteps, (cfg.version ?? 1)],
+      `INSERT INTO aip_agent
+        (id, display_name, system_prompt, model_scope, default_model_id, temperature, enabled_tools, max_steps, version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (id) DO UPDATE
+       SET display_name = EXCLUDED.display_name,
+           system_prompt = EXCLUDED.system_prompt,
+           model_scope = EXCLUDED.model_scope,
+           default_model_id = EXCLUDED.default_model_id,
+           temperature = EXCLUDED.temperature,
+           enabled_tools = EXCLUDED.enabled_tools,
+           max_steps = EXCLUDED.max_steps,
+           version = aip_agent.version + 1,
+           updated_at = now()`,
+      [cfg.id, cfg.displayName, cfg.systemPrompt, JSON.stringify(cfg.modelScope ?? []),
+        cfg.defaultModelId, cfg.temperature, JSON.stringify(cfg.enabledTools ?? []),
+        cfg.maxSteps, (cfg.version ?? 1)],
     );
   }
 
   async getAIPAgentConfig(id: string): Promise<AIPAgentConfig | null> {
-    const { rows } = await this.pool.query(`SELECT * FROM aip_agent_config WHERE id = $1`, [id]);
+    const { rows } = await this.pool.query(`SELECT * FROM aip_agent WHERE id = $1`, [id]);
     if (rows.length === 0) return null;
     return rowToAIPAgentConfig(rows[0]);
   }
 }
 
+function rowToAIPProvider(r: any): AIPProvider {
+  return {
+    id: r.id,
+    name: r.name,
+    baseUrl: r.base_url,
+    apiKey: r.api_key,
+    protocol: r.protocol,
+    isDefault: r.is_default,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+function rowToAIPModel(r: any): AIPModel {
+  return {
+    id: r.id,
+    providerId: r.provider_id,
+    apiName: r.api_name,
+    displayName: r.display_name,
+    isReasoning: r.is_reasoning,
+    contextWindow: r.context_window ?? undefined,
+    maxTokens: r.max_tokens ?? undefined,
+    extra: r.extra ?? undefined,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
 function rowToAIPAgentConfig(r: any): AIPAgentConfig {
   return {
     id: r.id,
     displayName: r.display_name,
     systemPrompt: r.system_prompt,
-    model: r.model,
-    baseUrl: r.base_url,
-    apiKey: r.api_key,
+    modelScope: r.model_scope ?? [],
+    defaultModelId: r.default_model_id,
     temperature: r.temperature,
     enabledTools: r.enabled_tools ?? [],
     maxSteps: r.max_steps,
     version: r.version,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
   };
 }
 

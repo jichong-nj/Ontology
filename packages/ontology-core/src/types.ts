@@ -280,19 +280,55 @@ export interface AutomationRule {
   version: number;
 }
 
-// ---------- AIP 配置平台：单一多能力 Agent 配置 ----------
+// ---------- AIP Provider / Model / Agent 三层体系 ----------
+// 模型供应商（接入点）。一个 provider 下可挂多个 model。
+export interface AIPProvider {
+  id: string;
+  name: string;                 // 显示名，如 "本地 LM Studio"
+  baseUrl: string;              // OpenAI 兼容端点，如 http://localhost:1234/v1（运行时由用户配置）
+  apiKey: string;               // 可能为空（本地）
+  protocol: string;             // 'openai-compatible' 等
+  isDefault?: boolean;          // 默认供应商
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// 模型：归属某个 provider，参数可探测后修改。
+export interface AIPModel {
+  id: string;
+  providerId: string;           // 外键 → aip_provider.id
+  apiName: string;              // 调用 API 时用的模型名，如 qwen3.6-35b-a3b
+  displayName: string;
+  isReasoning?: boolean;        // 是否推理模型（带 reasoning_content），探测启发式 + 可改
+  contextWindow?: number;       // 上下文窗口
+  maxTokens?: number;           // 单次最大生成 token（推理模型需较大值）
+  extra?: Record<string, unknown>; // 探测返回的其他字段
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// Agent：绑定 model 子集（模型范围），默认用其中一个；对话时可切换子集内模型。
 export interface AIPAgentConfig {
   id: string;
   displayName: string;
   systemPrompt: string;
-  model: string;
-  baseUrl: string;
-  apiKey: string;
+  modelScope: string[];         // 可用模型 id 列表（模型范围）
+  defaultModelId: string;       // 默认模型 id（必须 ∈ modelScope）
   temperature: number;
   // 启用能力集合（对应本体工具分组）
   enabledTools: string[]; // 可选值: 'functions' | 'actions' | 'rules' | 'explore' | 'alerts'
   maxSteps: number;
   version?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// 探测返回的模型条目（来自 /v1/models）
+export interface ProbeModelItem {
+  id: string;                   // 模型名（API 用）
+  owned_by?: string;
+  created?: number;
+  isReasoning?: boolean;        // 启发式推断
 }
 
 // ---- 接口方法运行时引擎契约 ----

@@ -273,16 +273,41 @@ export const s2explore = {
     http.get<{ bucket: number; min: number; max: number; count: number }[]>(`/s2/explore/${objectType}/histogram`, { params: { property, buckets } }).then((r) => r.data),
 };
 
-// ---------- AIP 配置平台（单一多能力 Agent）----------
+// ---------- AIP 配置平台（Provider / Model / Agent 三层体系）----------
+export interface AIPProviderDTO {
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  protocol: string;
+  isDefault?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+export interface ProbeModelDTO {
+  id: string;
+  owned_by?: string;
+  created?: number;
+  isReasoning?: boolean;
+}
+export interface AIPModelDTO {
+  id: string;
+  providerId: string;
+  apiName: string;
+  displayName: string;
+  isReasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  extra?: Record<string, unknown>;
+}
 export interface AIPAgentConfigDTO {
   id: string;
   displayName: string;
   systemPrompt: string;
-  model: string;
-  baseUrl: string;
-  apiKey: string;
+  modelScope: string[];      // 可用模型 id 列表（模型范围）
+  defaultModelId: string;    // 默认模型 id（∈ modelScope）
   temperature: number;
-  enabledTools: string[]; // 'functions' | 'actions' | 'rules' | 'explore' | 'alerts'
+  enabledTools: string[];    // 'functions' | 'actions' | 'rules' | 'explore' | 'alerts'
   maxSteps: number;
   version?: number;
 }
@@ -301,12 +326,79 @@ export interface AgentRunResult {
 }
 
 export const aip = {
+  // ---- Provider ----
+  listProviders: () => http.get<AIPProviderDTO[]>('/aip/providers').then((r) => r.data),
+  getProvider: (id: string) => http.get<AIPProviderDTO>(`/aip/providers/${id}`).then((r) => r.data),
+  createProvider: (p: AIPProviderDTO) => http.post('/aip/providers', p).then((r) => r.data),
+  updateProvider: (id: string, p: Partial<AIPProviderDTO>) => http.put(`/aip/providers/${id}`, p).then((r) => r.data),
+  deleteProvider: (id: string) => http.delete(`/aip/providers/${id}`).then((r) => r.data),
+  // 探测 provider 下的模型列表
+  probeProvider: (baseUrl: string, apiKey = '') =>
+    http.post<{ ok: boolean; error?: string; models: ProbeModelDTO[] }>('/aip/providers/probe', { baseUrl, apiKey }).then((r) => r.data),
+
+  // ---- Model ----
+  listModels: (providerId?: string) =>
+    http.get<AIPModelDTO[]>('/aip/models', { params: providerId ? { providerId } : {} }).then((r) => r.data),
+  createModel: (m: AIPModelDTO) => http.post('/aip/models', m).then((r) => r.data),
+  updateModel: (id: string, m: Partial<AIPModelDTO>) => http.put(`/aip/models/${id}`, m).then((r) => r.data),
+  deleteModel: (id: string) => http.delete(`/aip/models/${id}`).then((r) => r.data),
+
+  // ---- Agent ----
+  listAgents: () => http.get<AIPAgentConfigDTO[]>('/aip/agents').then((r) => r.data),
   getConfig: (id: string) =>
-    http.get<AIPAgentConfigDTO>(`/aip/config/${id}`).then((r) => r.data).catch(() => null),
+    http.get<AIPAgentConfigDTO>(`/aip/agents/${id}`).then((r) => r.data).catch(() => null),
   saveConfig: (id: string, cfg: Partial<AIPAgentConfigDTO>) =>
-    http.put<AIPAgentConfigDTO>(`/aip/config/${id}`, cfg).then((r) => r.data),
-  run: (id: string, message: string, history: unknown[] = []) =>
-    http.post<AgentRunResult>(`/aip/agent/${id}/run`, { message, history }).then((r) => r.data),
+    http.put<AIPAgentConfigDTO>(`/aip/agents/${id}`, cfg).then((r) => r.data),
+
+  // 流式对话：通过 fetch + ReadableStream 解析 SSE，逐事件回调；支持 modelId 切换模型与中断
+  streamRun: async (
+    id: string,
+    message: string,
+    onEvent: (ev: AgentStreamEvent) => void,
+    history: unknown[] = [],
+    modelId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    const res = await fetch(`/api/aip/agent/${id}/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, history, modelId }),
+      signal,
+    });
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`流式请求失败 ${res.status}: ${text.slice(0, 200)}`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop() ?? '';
+      for (const part of parts) {
+        const line = part.split('\n').find((l) => l.startsWith('data: '));
+        if (!line) continue;
+        const json = line.slice(6).trim();
+        if (!json) continue;
+        try {
+          onEvent(JSON.parse(json) as AgentStreamEvent);
+        } catch { /* 忽略非 JSON 帧 */ }
+      }
+    }
+  },
 };
+
+export type AgentStreamEvent =
+  | { type: 'call'; step: number; model: string }
+  | { type: 'call_status'; step: number; ok: boolean; message?: string }
+  | { type: 'thought'; content: string; collapsed?: boolean }
+  | { type: 'reply_chunk'; content: string }
+  | { type: 'action'; id: string; step: number; tool: string; args: unknown }
+  | { type: 'result'; id: string; step: number; tool: string; ok: boolean; result: unknown }
+  | { type: 'error'; message: string }
+  | { type: 'done'; reply: string };
 
 export default http;

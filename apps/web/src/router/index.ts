@@ -11,11 +11,13 @@ import S2Actions from '@/pages/s2/Actions.vue';
 import S2SharedProperties from '@/pages/s2/SharedProperties.vue';
 import AlertsPage from '@/pages/AlertsPage.vue';
 import AIPPage from '@/pages/AIPPage.vue';
+import ProviderPage from '@/pages/ProviderPage.vue';
 
 const routes = [
   { path: '/', component: Overview, meta: { title: 'Ontology Manager' } },
   { path: '/alerts', component: AlertsPage, meta: { title: 'Alerts' } },
-  { path: '/aip', component: AIPPage, meta: { title: 'AIP' } },
+  { path: '/aip', component: AIPPage, meta: { title: 'AIP Chat' } },
+  { path: '/aip/providers', component: ProviderPage, meta: { title: 'Provider' } },
   {
     path: '/s1',
     redirect: '/s1/connections',

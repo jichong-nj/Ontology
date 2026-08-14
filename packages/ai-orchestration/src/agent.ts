@@ -5,6 +5,16 @@
 import { OpenAICompatibleLLM, type ChatMessage, type ToolSpec, type ToolCall } from './llm-gateway';
 import type { AIPAgentConfig } from '@ontology/ontology-core';
 
+// 运行时激活的模型引用：包含模型名与其所属 provider 的接入点
+export interface ActiveModelRef {
+  apiName: string;       // 调用 API 用的模型名
+  baseUrl: string;       // provider 的 base_url
+  apiKey?: string;
+  accessToken?: string;  // 预留：部分 provider 用 Bearer
+  isReasoning?: boolean;
+  maxTokens?: number;
+}
+
 // 进程内能力执行器（由 server 注入，避免 Agent 自己拼 SQL）
 export interface AgentRuntime {
   listFunctions(): Promise<Array<{ apiName: string; displayName: string; description?: string; inputs: unknown }>>;
@@ -25,6 +35,17 @@ export interface AgentRunResult {
   reply: string;
   steps: Array<{ tool: string; args: unknown; result: unknown }>;
 }
+
+// 流式事件：让前端逐步展示「调用模型 → 思考 → 查询 → 动作 → 完成」
+export type AgentEvent =
+  | { type: 'call'; step: number; model: string }          // 即将向某模型发起第 step 次调用
+  | { type: 'call_status'; step: number; ok: boolean; message?: string } // 该次调用成功/失败
+  | { type: 'thought'; content: string; collapsed?: boolean } // 思考/思维链（可折叠查看）
+  | { type: 'reply_chunk'; content: string }               // 最终答复的增量片段（流式）
+  | { type: 'action'; id: string; step: number; tool: string; args: unknown } // 即将调用工具
+  | { type: 'result'; id: string; step: number; tool: string; ok: boolean; result: unknown } // 工具返回
+  | { type: 'error'; message: string }
+  | { type: 'done'; reply: string }; // 最终答复（兜底，增量已通过 reply_chunk 推送）
 
 const TOOL_GROUPS: Record<string, string[]> = {
   functions: ['invoke_function', 'list_functions'],
@@ -211,18 +232,37 @@ function safeStringify(v: unknown): string {
 }
 
 export class AIPAgent {
-  private llm: OpenAICompatibleLLM;
   private rt: AgentRuntime;
   private cfg: AIPAgentConfig;
+  private active: ActiveModelRef | null = null;
+  private llm: OpenAICompatibleLLM;
 
-  constructor(cfg: AIPAgentConfig, rt: AgentRuntime) {
+  constructor(cfg: AIPAgentConfig, rt: AgentRuntime, active?: ActiveModelRef) {
     this.cfg = cfg;
     this.rt = rt;
+    if (!active) {
+      throw new Error('未指定模型，请在 Agent 配置中选择模型（modelScope/defaultModelId）');
+    }
+    this.active = active;
     this.llm = new OpenAICompatibleLLM({
-      baseURL: cfg.baseUrl,
-      apiKey: cfg.apiKey || undefined,
+      baseURL: active.baseUrl,
+      apiKey: active.apiKey || undefined,
       timeoutMs: 180_000,
     });
+  }
+
+  // 运行时切换模型（用户在前端下拉切换）。同时重建 LLM 接入点。
+  setActiveModel(ref: ActiveModelRef): void {
+    this.active = ref;
+    this.llm = new OpenAICompatibleLLM({
+      baseURL: ref.baseUrl,
+      apiKey: ref.apiKey || undefined,
+      timeoutMs: 180_000,
+    });
+  }
+
+  private currentModelName(): string {
+    return this.active?.apiName ?? 'local-model';
   }
 
   async run(message: string, history: ChatMessage[] = []): Promise<AgentRunResult> {
@@ -240,7 +280,7 @@ export class AIPAgent {
       let resp;
       try {
         resp = await this.llm.chat({
-          model: this.cfg.model,
+          model: this.currentModelName(),
           messages,
           temperature: this.cfg.temperature,
           tools,
@@ -251,7 +291,7 @@ export class AIPAgent {
 
       // 没有工具调用 → 直接返回最终答复
       if (!resp.toolCalls || resp.toolCalls.length === 0) {
-        return { reply: resp.content ?? '(模型未返回内容)', steps };
+        return { reply: resp.content ?? resp.reasoningContent ?? '(模型未返回内容)', steps };
       }
 
       // 记录 assistant 的工具调用请求
@@ -286,12 +326,130 @@ export class AIPAgent {
 
     // 达到步数上限仍未产出纯文本：再请求一次让模型总结
     const final = await this.llm.chat({
-      model: this.cfg.model,
+      model: this.currentModelName(),
       messages,
       temperature: this.cfg.temperature,
       tools: [], // 最后一步不再允许调用工具，强制产出总结
     });
     return { reply: final.content ?? '(已达到最大步数，未能总结)', steps };
+  }
+
+  // 流式运行：逐步 yield 事件（调用状态/思考/动作/结果/答复增量），用于前端实时展示
+  async *runStream(message: string, history: ChatMessage[] = []): AsyncGenerator<AgentEvent> {
+    const tools = selectTools(this.cfg.enabledTools);
+    const messages: ChatMessage[] = [
+      { role: 'system', content: this.cfg.systemPrompt },
+      ...history,
+      { role: 'user', content: message },
+    ];
+
+    const toolMap = buildToolMap(this.rt);
+
+    for (let step = 0; step < this.cfg.maxSteps; step++) {
+      const modelName = this.currentModelName();
+      yield { type: 'call', step, model: modelName };
+      let resp;
+      let gotReplyChunk = false;
+      try {
+        // 第一次流式：用于探测工具调用 + 流式输出思考/推理
+        let accThought = '';
+        let accContent = '';
+        let toolCalls: ToolCall[] = [];
+        for await (const chunk of this.llm.chatStream({
+          model: modelName,
+          messages,
+          temperature: this.cfg.temperature,
+          tools,
+        })) {
+          if (chunk.delta.reasoningContent) {
+            accThought += chunk.delta.reasoningContent;
+            if (accThought.trim()) {
+              yield { type: 'thought', content: chunk.delta.reasoningContent, collapsed: true };
+            }
+          }
+          if (chunk.delta.content) {
+            accContent += chunk.delta.content;
+            gotReplyChunk = true;
+            yield { type: 'reply_chunk', content: chunk.delta.content };
+          }
+          if (chunk.finished) {
+            toolCalls = chunk.toolCalls;
+          }
+        }
+        resp = {
+          content: accContent || null,
+          reasoningContent: accThought || undefined,
+          toolCalls,
+        };
+        yield { type: 'call_status', step, ok: true };
+      } catch (e: any) {
+        yield { type: 'call_status', step, ok: false, message: e.message };
+        yield { type: 'error', message: `调用模型失败：${e.message}` };
+        return;
+      }
+
+      // 没有工具调用 → 视作最终答复（增量已通过 reply_chunk 推送）
+      if (!resp.toolCalls || resp.toolCalls.length === 0) {
+        const finalReply = resp.content ?? resp.reasoningContent ?? '(模型未返回内容)';
+        if (!gotReplyChunk) {
+          yield { type: 'reply_chunk', content: finalReply };
+        }
+        yield { type: 'done', reply: finalReply };
+        return;
+      }
+
+      messages.push({
+        role: 'assistant',
+        content: resp.content,
+        tool_calls: resp.toolCalls.map((tc: ToolCall) => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.function.name, arguments: tc.function.arguments },
+        })),
+      });
+
+      for (const tc of resp.toolCalls) {
+        const fn = toolMap[tc.function.name];
+        const args = safeParseArgs(tc.function.arguments);
+        yield { type: 'action', id: tc.id, step, tool: tc.function.name, args };
+        let result: unknown;
+        let ok = true;
+        try {
+          result = fn ? await fn(args) : { error: `未知工具: ${tc.function.name}` };
+        } catch (e: any) {
+          result = { error: e.message };
+          ok = false;
+        }
+        yield { type: 'result', id: tc.id, step, tool: tc.function.name, ok, result };
+        messages.push({
+          role: 'tool',
+          content: safeStringify(result),
+          tool_call_id: tc.id,
+        });
+      }
+    }
+
+    // 达到步数上限：强制让模型总结（流式）
+    yield { type: 'call', step: this.cfg.maxSteps, model: this.currentModelName() };
+    let finalText = '';
+    try {
+      for await (const chunk of this.llm.chatStream({
+        model: this.currentModelName(),
+        messages,
+        temperature: this.cfg.temperature,
+        tools: [],
+      })) {
+        if (chunk.delta.content) {
+          finalText += chunk.delta.content;
+          yield { type: 'reply_chunk', content: chunk.delta.content };
+        }
+      }
+      yield { type: 'call_status', step: this.cfg.maxSteps, ok: true };
+    } catch (e: any) {
+      yield { type: 'call_status', step: this.cfg.maxSteps, ok: false, message: e.message };
+      finalText = '(已达到最大步数，未能总结)';
+    }
+    yield { type: 'done', reply: finalText };
   }
 }
 

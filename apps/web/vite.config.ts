@@ -16,6 +16,18 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:4000',
         changeOrigin: true,
+        // 关键：禁用 http-proxy 对响应的缓冲，否则 SSE 流会被攒齐后一次性转发到前端
+        buffer: false,
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            const contentType = proxyRes.headers['content-type'] || '';
+            if (contentType.includes('text/event-stream')) {
+              proxyRes.headers['cache-control'] = 'no-cache, no-transform';
+              proxyRes.headers['x-accel-buffering'] = 'no';
+              proxyRes.headers['content-encoding'] = '';
+            }
+          });
+        },
       },
     },
   },

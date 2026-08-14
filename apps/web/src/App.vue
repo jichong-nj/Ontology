@@ -55,6 +55,14 @@ const panelSections = computed<MenuSection[]>(() => {
       ]},
     ];
   }
+  if (path.startsWith('/aip')) {
+    return [
+      { title: 'AIP', items: [
+        { key: 'aip-chat', label: 'AIP Chat', to: '/aip', icon: '💬' },
+        { key: 'aip-providers', label: 'Provider', to: '/aip/providers', icon: '🧩' },
+      ]},
+    ];
+  }
   // Home
   return [
     { title: 'Overview', items: [
@@ -136,7 +144,7 @@ function navigateTo(item: { to: string }) {
           <div class="section-title">{{ section.title }}</div>
           <div class="menu-items">
             <button v-for="item in section.items" :key="item.key"
-              class="menu-item" :class="{ active: route.path === item.to || (item.to !== '/' && route.path.startsWith(item.to)) }"
+              class="menu-item" :class="{ active: route.path === item.to || (item.to === '/s2/object-types' && route.path.startsWith('/s2/object-types/')) }"
               @click="navigateTo(item)">
               <span v-if="item.icon" class="mi-icon">{{ item.icon }}</span>
               <span class="mi-label">{{ item.label }}</span>

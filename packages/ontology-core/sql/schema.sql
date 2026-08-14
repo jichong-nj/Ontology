@@ -133,18 +133,44 @@ CREATE TABLE alert_rule (
   version           INT NOT NULL DEFAULT 1
 );
 
--- ---------- AIP 配置平台（单一多能力 Agent 配置） ----------
-CREATE TABLE aip_agent_config (
+-- ---------- AIP 三层体系：Provider / Model / Agent ----------
+-- Provider：模型供应商接入点（一个 provider 下可挂多个 model）
+CREATE TABLE aip_provider (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  base_url     TEXT NOT NULL DEFAULT '',
+  api_key      TEXT NOT NULL DEFAULT '',
+  protocol     TEXT NOT NULL DEFAULT 'openai-compatible',
+  is_default   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Model：归属某个 provider；参数可探测后手工修改
+CREATE TABLE aip_model (
+  id              TEXT PRIMARY KEY,
+  provider_id     TEXT NOT NULL REFERENCES aip_provider(id) ON DELETE CASCADE,
+  api_name        TEXT NOT NULL,              -- 调用 API 时用的模型名
+  display_name    TEXT NOT NULL,
+  is_reasoning    BOOLEAN NOT NULL DEFAULT FALSE,
+  context_window  INT,
+  max_tokens      INT,
+  extra           JSONB,                       -- 探测返回的其他字段
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Agent：绑定 model 子集（模型范围），默认其中一个；对话时可在子集内切换
+CREATE TABLE aip_agent (
   id              TEXT PRIMARY KEY,            -- 配置标识（如 'default'）
   display_name    TEXT NOT NULL,
-  system_prompt   TEXT NOT NULL,               -- 系统提示词：定义 Agent 角色与可用能力边界
-  model           TEXT NOT NULL DEFAULT 'local-model',
-  base_url        TEXT NOT NULL DEFAULT 'http://localhost:1234/v1',
-  api_key         TEXT NOT NULL DEFAULT '',    -- 本地模型通常留空
+  system_prompt   TEXT NOT NULL,
+  model_scope     JSONB NOT NULL DEFAULT '[]'::jsonb,   -- 可用模型 id 列表
+  default_model_id TEXT NOT NULL DEFAULT '',             -- 默认模型 id（∈ model_scope）
   temperature     DOUBLE PRECISION NOT NULL DEFAULT 0.2,
-  -- 启用能力集合：从本体工具清单中勾选（functions / actions / rules / explore / alerts）
+  -- 启用能力集合：functions / actions / rules / explore / alerts
   enabled_tools   JSONB NOT NULL DEFAULT '["functions","actions","rules","explore","alerts"]'::jsonb,
-  max_steps       INT NOT NULL DEFAULT 6,      -- Agent 单轮最多工具调用步数（防循环）
+  max_steps       INT NOT NULL DEFAULT 6,
   version         INT NOT NULL DEFAULT 1,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
