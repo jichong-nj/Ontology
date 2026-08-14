@@ -57,34 +57,33 @@
           <div class="msg-body">
             <!-- 用户消息 -->
             <div v-if="m.role === 'user'" class="bubble user">{{ m.content }}</div>
-            <!-- AI 消息：思考(可折叠) → 工具调用(可折叠) → 回复正文(最后) -->
+            <!-- AI 消息：按时间顺序依次展示思考 / 工具调用，回复正文在最后 -->
             <template v-else>
-              <!-- 思考链（单次合并，可折叠） -->
-              <el-collapse v-if="m.thinking" class="think-collapse">
-                <el-collapse-item name="t">
-                  <template #title><span class="collapse-title">💭 思考过程</span></template>
-                  <div class="thinking">{{ m.thinking }}</div>
-                </el-collapse-item>
-              </el-collapse>
-              <!-- 工具调用（可折叠，工具名正确） -->
-              <el-collapse v-if="m.steps?.length" class="steps-collapse">
-                <el-collapse-item name="s">
-                  <template #title><span class="collapse-title">🔧 工具调用 ({{ m.steps.length }})</span></template>
-                  <div v-for="(s, j) in m.steps" :key="j" class="step">
-                    <div class="step-header">
-                      <el-tag size="small" type="warning">🔧 {{ s.tool || '未知工具' }}</el-tag>
+              <template v-for="(t, k) in m.timeline" :key="k">
+                <!-- 思考框（每个思考段落独立） -->
+                <el-collapse v-if="t.kind === 'thought'" class="think-collapse">
+                  <el-collapse-item>
+                    <template #title><span class="collapse-title">💭 思考 {{ thinkIndex(m.timeline, k) }}</span></template>
+                    <div class="thinking">{{ t.content }}</div>
+                  </el-collapse-item>
+                </el-collapse>
+                <!-- 工具调用（独立折叠块，工具名正确） -->
+                <el-collapse v-else-if="t.kind === 'action'" class="steps-collapse">
+                  <el-collapse-item>
+                    <template #title><span class="collapse-title">🔧 {{ t.step.tool || '未知工具' }}</span></template>
+                    <div class="step">
+                      <details open class="step-detail">
+                        <summary>参数</summary>
+                        <pre class="step-args mono">{{ pretty(t.step.args) }}</pre>
+                      </details>
+                      <details open class="step-detail">
+                        <summary>返回</summary>
+                        <pre class="step-result mono">{{ pretty(t.step.result) }}</pre>
+                      </details>
                     </div>
-                    <details open class="step-detail">
-                      <summary>参数</summary>
-                      <pre class="step-args mono">{{ pretty(s.args) }}</pre>
-                    </details>
-                    <details open class="step-detail">
-                      <summary>返回</summary>
-                      <pre class="step-result mono">{{ pretty(s.result) }}</pre>
-                    </details>
-                  </div>
-                </el-collapse-item>
-              </el-collapse>
+                  </el-collapse-item>
+                </el-collapse>
+              </template>
               <!-- 回复正文（始终在最后） -->
               <div v-if="m.content" class="bubble ai" v-html="renderMd(m.content)"></div>
             </template>
@@ -183,7 +182,7 @@ const currentConfig = ref<AIPAgentConfigDTO | null>(null);
 const allObjectTypes = ref<ObjectType[]>([]);
 const models = ref<{ id: string; displayName: string }[]>([]);
 
-const messages = ref<{ role: 'user' | 'ai'; content: string; steps?: any[]; thinking?: string }[]>([]);
+const messages = ref<{ role: 'user' | 'ai'; content: string; timeline?: any[]; curThink?: string }[]>([]);
 const input = ref('');
 const streaming = ref(false);
 let abortCtl: AbortController | null = null;
@@ -329,14 +328,21 @@ async function send() {
   await nextTick();
   scrollDown();
 
-  const aiMsg = reactive({ role: 'ai' as const, content: '', steps: [] as any[], thinking: '' });
+  const aiMsg = reactive({ role: 'ai' as const, content: '', timeline: [] as any[], curThink: '' });
   messages.value.push(aiMsg);
   streaming.value = true;
 
   const assistant: { id?: string; tool: string; args: unknown; result: unknown }[] = [];
-  let thinking = '';
   let reply = '';
   abortCtl = new AbortController();
+
+  // 将当前累积的思考段落收尾为一个独立 think 框（按时间顺序插入 timeline）
+  const flushThink = () => {
+    if (aiMsg.curThink.trim()) {
+      aiMsg.timeline.push({ kind: 'thought', content: aiMsg.curThink });
+      aiMsg.curThink = '';
+    }
+  };
 
   try {
     await api.streamRun(
@@ -344,22 +350,34 @@ async function send() {
       text,
       (ev: any) => {
         if (ev.type === 'thought') {
-          // 多次思考累计合并（去掉每个 token 强制换行，避免一行一 token）
-          thinking += ev.content;
-          aiMsg.thinking = thinking;
+          // 逐 token 累积到当前思考段落（不强制换行）
+          aiMsg.curThink += ev.content;
         } else if (ev.type === 'action') {
-          assistant.push({ id: ev.id, tool: ev.tool, args: ev.args, result: undefined });
-          aiMsg.steps = [...assistant];
+          // 思考被工具调用打断 → 收尾当前 think 框，再插入工具调用（保持时间顺序）
+          flushThink();
+          const step = { id: ev.id, tool: ev.tool, args: ev.args, result: undefined };
+          assistant.push(step);
+          aiMsg.timeline.push({ kind: 'action', step });
         } else if (ev.type === 'result') {
           const step = assistant.find((s) => s.id === ev.id) || assistant[assistant.length - 1];
           if (step) step.result = ev.result;
-          aiMsg.steps = [...assistant];
+          // 回填 timeline 中对应 action 条目的结果
+          for (let k = aiMsg.timeline.length - 1; k >= 0; k--) {
+            if (aiMsg.timeline[k].kind === 'action' && aiMsg.timeline[k].step.id === ev.id) {
+              aiMsg.timeline[k].step.result = ev.result;
+              break;
+            }
+          }
         } else if (ev.type === 'reply_chunk') {
+          // 思考被最终回复打断 → 收尾当前 think 框
+          flushThink();
           reply += ev.content;
           aiMsg.content = reply;
         } else if (ev.type === 'done') {
+          flushThink();
           aiMsg.content = reply || ev.reply || '';
         } else if (ev.type === 'error') {
+          flushThink();
           aiMsg.content = '⚠️ ' + ev.message;
         }
         scrollDown();
@@ -396,6 +414,13 @@ function pretty(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+// 计算当前时间线条目之前共有几次思考，用于「思考 N」序号
+function thinkIndex(timeline: any[], cur: number): number {
+  let n = 0;
+  for (let k = 0; k <= cur; k++) if (timeline[k]?.kind === 'thought') n++;
+  return n;
 }
 
 onMounted(async () => {
@@ -444,12 +469,12 @@ onMounted(async () => {
 .msg { display: flex; gap: 10px; margin-bottom: 18px; align-items: flex-start; }
 .msg.user { flex-direction: row-reverse; }
 .msg-role { font-size: 12px; color: #909399; min-width: 36px; text-align: center; padding-top: 6px; flex-shrink: 0; }
-.msg-body { min-width: 0; display: flex; flex-direction: column; }
+.msg-body { min-width: 0; max-width: 100%; display: flex; flex-direction: column; align-items: flex-start; }
 .msg.user .msg-body { align-items: flex-end; max-width: 70%; }
 
 .bubble { padding: 10px 14px; border-radius: 10px; line-height: 1.6; white-space: normal; word-wrap: break-word; overflow-wrap: break-word; }
 .bubble.user { background: #409eff; color: #fff; border-radius: 10px 10px 2px 10px; }
-.bubble.ai { background: #fff; border: 1px solid #ebeef5; border-radius: 10px 10px 10px 2px; width: 100%; box-sizing: border-box; }
+.bubble.ai { background: #fff; border: 1px solid #ebeef5; border-radius: 10px 10px 10px 2px; width: fit-content; max-width: 100%; box-sizing: border-box; }
 .bubble.ai :deep(pre) { background: #f4f4f5; padding: 8px; border-radius: 6px; overflow-x: auto; margin: 8px 0 0; }
 /* markdown 渲染样式 */
 .bubble.ai :deep(h1),
@@ -472,27 +497,64 @@ onMounted(async () => {
 .bubble.ai :deep(blockquote) { border-left: 3px solid #dcdfe6; margin: 8px 0; padding: 2px 12px; color: #606266; }
 .bubble.ai :deep(a) { color: #409eff; }
 
-/* 折叠面板：去边框/底色，直接在聊天背景上 */
-.think-collapse, .steps-collapse { margin-bottom: 8px; border: none; background: transparent; }
+/* 折叠面板：参考终端风格（▸ 箭头左侧 + 粗体标题 + 深色代码块）——紧凑间距 */
+.think-collapse, .steps-collapse { margin-bottom: 1px; border: none; background: transparent; }
 .think-collapse :deep(.el-collapse-item__header),
-.steps-collapse :deep(.el-collapse-item__header),
+.steps-collapse :deep(.el-collapse-item__header) {
+  background: transparent;
+  border: none;
+  height: auto;
+  line-height: 1.4;
+  padding: 1px 0;
+  display: flex;
+  align-items: center;
+}
 .think-collapse :deep(.el-collapse-item__wrap),
 .steps-collapse :deep(.el-collapse-item__wrap) { background: transparent; border: none; }
-.collapse-title { font-size: 13px; color: #606266; }
+.think-collapse :deep(.el-collapse-item__content),
+.steps-collapse :deep(.el-collapse-item__content) { padding: 0 0 1px; }
+/* 标题文字：粗体、深色 */
+.collapse-title { font-size: 13px; font-weight: 600; color: #303133; }
+/* 箭头强制放到左侧 */
+.think-collapse :deep(.el-collapse-item__arrow),
+.steps-collapse :deep(.el-collapse-item__arrow) {
+  margin-left: 0;
+  margin-right: 5px;
+  order: -1;
+  font-size: 12px;
+  color: #606266;
+}
+/* 确保 header 是 flex 且方向正常 */
+.think-collapse :deep(.el-collapse-item__header),
+.steps-collapse :deep(.el-collapse-item__header) {
+  display: flex !important;
+  align-items: center;
+  flex-direction: row;
+}
 
-/* 思考链：无底色，直接在背景上，字号比回复小一号 */
-.thinking { color: #909399; white-space: pre-wrap; word-break: break-word; font-size: 13px; padding: 2px 0; background: transparent; line-height: 1.7; max-height: 300px; overflow-y: auto; }
+/* 思考链：浅灰字，直接显示 */
+.thinking { color: #909399; white-space: pre-wrap; word-break: break-word; font-size: 13px; padding: 0; background: transparent; line-height: 1.55; max-height: 300px; overflow-y: auto; }
 
-/* 工具步骤：无底色，直接在背景上，字号比回复小一号 */
+/* 工具步骤：参数/返回值用深色代码块背景 —— 紧凑间距 */
 .steps-collapse :deep(.el-collapse-item__content) { background: transparent; padding-bottom: 0; }
-.step { margin-bottom: 12px; padding: 6px 0; border-bottom: 1px solid #ebeef5; background: transparent; }
-.step:last-child { border-bottom: none; }
-.step-header { margin-bottom: 4px; }
-.step-detail { margin-top: 4px; cursor: pointer; }
-.step-detail summary { font-size: 12px; color: #909399; outline: none; user-select: none; }
+.step { margin-bottom: 1px; padding: 0; background: transparent; }
+.step:last-child { margin-bottom: 0; }
+.step-detail { margin-top: 1px; cursor: pointer; }
+.step-detail summary { font-size: 12px; font-weight: 600; color: #303133; outline: none; user-select: none; }
 .step-detail summary:hover { color: #409eff; }
-.step-args, .step-result { margin: 4px 0 0; white-space: pre-wrap; word-break: break-all; font-size: 13px; color: #606266; background: transparent; }
-.step-result { border-radius: 6px; padding: 4px 0; max-height: 200px; overflow: auto; }
+.step-args, .step-result {
+  margin: 1px 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12px;
+  color: #e0e0e0;
+  background: #282c34;
+  border-radius: 4px;
+  padding: 4px 8px;
+  max-height: 200px;
+  overflow: auto;
+}
+.step-result { border-radius: 6px; padding: 2px 0; max-height: 200px; overflow: auto; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .composer { margin-top: 10px; }
