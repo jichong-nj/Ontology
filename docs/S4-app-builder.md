@@ -118,3 +118,11 @@ export interface Dashboard {
 | Foundry Rules / 复杂工作流 | ⚠️ 裁剪：仅触发 S2 Action，不做 BPM 编排 |
 
 > 应用层保留"配置即应用"，去掉"代码级自定义"与"重型工作流引擎"。
+
+## 6. 实现状态
+
+**S4 应用构建未实现**。当前仅停留在 `packages/app-builder/src/contracts.ts` 的**接口契约层**（`Application` / `ObjectView` / `Dashboard` / `AppComponent`），无后端路由、无数据库表、无前端页面。
+
+- 低代码应用、对象视图配置、看板/仪表盘均属规划能力。
+- 分析展示能力目前由 S3 的 `Overview.vue` / `AlertsPage.vue`（对象检索、聚合直方图、关系图谱）部分覆盖，但未抽象为可配置的应用构件。
+- 后端无 `/api/s4/*` 路由（参见 `apps/server/src/index.ts`）。

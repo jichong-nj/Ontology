@@ -35,6 +35,9 @@ packages/ontology-core/
 | 方法多态 | `bindInterfaceMethod(obj, iface, method, fn)` / `resolveInterfaceMethod(obj, iface, method): string\|null` | 绑定/解析实现函数 |
 | 影响分析 | `getObjectsImplementing(interfaceApi): string[]` | 查实现某接口的所有对象 |
 | 动作/函数 | `createAction(def)` / `createFunction(def)` / `getFunction(apiName)` | 落库 + 按名取函数（含语言） |
+| 规则/调度 | `createRule(def)` / `updateRule(def)` / `listRules()` / `getRule(apiName)` | 通用「满足条件→执行动作」规则（`AutomationRule`），落 `rule` 表 |
+| 派生属性 | `computeDerived(objectType, property, objectRid?, opts?)` | 实时聚合 `link_instance` 计算 `countLinks`/`avgLinks`/`sumLinks` 等（不落库） |
+| 调度器 | `RuleScheduler`（`ruleScheduler.startScheduler()` / `stopScheduler()`） | 后台周期运行规则：跑条件函数 → 命中列表 → 触发动作；可配置周期（如离职预警 `alert_rule`） |
 
 **初始化**
 ```ts
@@ -84,3 +87,17 @@ sandbox.register('Person.greet', (args) => `hi ${args.name}`);
 
 ## 7. 建表
 DDL：`packages/ontology-core/sql/schema.sql`（执行：`npm run db:init`，需 `DATABASE_URL`）。
+
+## 8. 实现状态
+
+S2 Ontology 内核已完整实现（schema + `PostgresMetadataRepository` + TS 沙箱 + `RuleScheduler`）：
+
+- 对象/关系建模：`object_type` / `link_type` 全 CRUD；字段内嵌 S1 映射；共享属性（提升/复用）。
+- 函数：`OntologyFunction` 的 TS 函数体存库后可在线编辑，`TypeScriptFunctionSandbox` 以 `new Function` 运行时编译注册（python 仅占位，未实现）。
+- 动作：`ActionType.effect: { kind:'function' | 'write' }`；手动执行 + 规则触发均已实现。
+- 规则：通用 `AutomationRule`（非告警专属），`RuleScheduler` 后台周期运行，参考 `docs/RULE-ENGINE-DESIGN.md`。
+- 派生属性：`computeDerived` 实时聚合 `link_instance`，不落库。
+- 后端路由：`apps/server/src/index.ts` 的 `/api/s2/*`（object-types / link-types / functions / actions / rules / explore / derived）。
+- 前端页面：`apps/web/src/pages/s2/` 下 ObjectTypePage / LinkTypePage / FunctionPage / ActionPage / RulePage / DerivedPage 等。
+
+注意：原文档中 `Application` / `ObjectView` / `Dashboard` 等 S4 应用构件未实现——S4 仅停留在 `packages/app-builder` 接口契约层，无后端路由与前端页面。AI 相关接口（Provider/Model/Agent/流式对话）已拆分为 S5，路由前缀为 `/api/aip/*`。

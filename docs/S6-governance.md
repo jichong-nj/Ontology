@@ -128,3 +128,14 @@ export interface AuthzService {
 | 密钥/证书全生命周期管理 | ⚠️ 依赖基础设施层，本层只做凭据引用 |
 
 > 治理是平台地基，保留核心鉴权/审计；仅对"物理多租户/密钥全生命周期"做裁剪或下沉。
+
+## 6. 实现状态
+
+**S6 权限与治理未实现**。当前仅停留在 `packages/governance/src/contracts.ts` 的**接口契约层**（`Role` / `Permission` / `Policy` / `ReviewRequest` / `AuditLog` / `AuthzService`），无后端路由、无数据库表、无前端页面。
+
+- RBAC、对象级授权（`Policy.expression`）、定义评审迁移、审计日志均属规划能力。
+- 后端无 `/api/s6/*` 路由（参见 `apps/server/src/index.ts`）。
+- S5 AI 动作当前未接入审计约束（文档 §2 上游依赖中的"S6 权限与审计"约束尚未落地）。
+- 物理多租户隔离按设计裁剪为逻辑权限隔离。
+
+> 说明：本平台当前所有数据访问以单租户、内部可信假设运行，权限治理为后续迭代项。

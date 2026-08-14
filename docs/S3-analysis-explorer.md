@@ -102,6 +102,18 @@ export interface GraphExploreSpec {
 // POST /api/s3/graph/explore        图谱探索
 ```
 
+## 5. 实现状态（实际路由）
+
+S3 分析与探索**已实现**（`apps/server/src/index.ts` 的 `/api/s2/explore/*` + 前端 `Overview.vue` / `AlertsPage.vue`，图表用 ECharts），设计文档中的 `/api/s3/*` 示意路径已被 `/api/s2/explore/*` 取代：
+
+- **对象浏览/搜索**：`GET /api/s2/explore/objects/:type`（实例列表 + 过滤）、`GET /api/s2/explore/object/:type/:rid`（单实例详情）。
+- **图谱探索**：`GET /api/s2/explore/links/:type/:rid`（对象关联关系，按 `link_instance` 双向遍历，限制跳数防爆）。
+- **聚合/直方图**：`GET /api/s2/explore/aggregate`（属性聚合 count/avg/sum）、`GET /api/s2/explore/histogram`（数值属性直方图，ECharts 渲染）。
+- **派生属性**：`GET /api/s2/object-types/:t/derived/:p`（`computeDerived` 实时聚合 `link_instance`）。
+- **前端**：`Overview.vue` 提供对象检索与属性聚合视图；`AlertsPage.vue` 展示告警对象与离职风险分布（人事域示例）。
+
+> 注：对象集对比、自由画布式分析（Quiver）未实现；地图（Map）按设计确认暂不做。
+
 ## 5. 对比 Palantir 的裁剪说明
 
 | Palantir 能力 | 本系统处理 |

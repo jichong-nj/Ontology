@@ -117,6 +117,19 @@ export interface OntologySchemaInject {
 // POST /api/s5/nl2query           自然语言问数
 ```
 
+## 5. 实现状态（实际路由）
+
+S5 AI 决策编排**已实现**（`packages/ai-orchestration` + `apps/server/src/index.ts` 的 `/api/aip/*`），设计文档中的 `/api/s5/*` 示意路径已被 `/api/aip/*` 取代：
+
+- **配置三层**：`/api/aip/providers`（Provider CRUD，含 `base_url` 默认空串，移除 localhost 硬编码）、`/api/aip/models`（Model CRUD，可调 `maxTokens`/`contextWindow`/`isReasoning`）、`/api/aip/agents`（Agent 配置，绑定可用工具：functions / actions / rules / explore / alerts）。
+- **对话执行**：
+  - `POST /api/aip/agent/:id/stream` —— **流式对话（SSE）**，逐帧推送事件：`call` / `thought` / `reply_chunk` / `action` / `result` / `done` / `error`。
+  - `POST /api/aip/agent/:id/run` —— 非流式（兼容）。
+- **工具调用**：`AIPAgent` 基于本体语义注入 + 工具声明，多步串联 S2 函数/动作/规则/探索完成复杂任务；前端 `AIPPage.vue` 实时渲染思考过程与回复（markdown）。
+- **LLM 网关**：`llm-gateway.ts` 抽象 `LLMProvider`（OpenAI 兼容协议），支持本地 qwen 等推理服务；`chatStream` 支持 token 级流式。
+
+> 注：语义搜索（RAG）/NL2Query 在当前实现中以"智能体工具调用"形式落地（explore / functions 工具），未单列独立 REST 端点。
+
 ## 5. 对比 Palantir 的裁剪说明
 
 | Palantir 能力 | 本系统处理 |

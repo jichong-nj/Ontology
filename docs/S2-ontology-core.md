@@ -293,9 +293,9 @@ export interface InterfaceMethodEngine {
 // POST   /api/s2/functions
 // GET    /api/s2/object-types/:apiName/derived/:propApiName?rid=
 // POST   /api/s2/functions/:fnApiName/invoke
-// GET    /api/s2/alert-rules
-// POST   /api/s2/alert-rules/run
-// GET    /api/s2/alerts
+// GET    /api/s2/rules                通用自动化规则（AutomationRule）
+// POST   /api/s2/rules/:apiName/run   手动触发某规则
+// GET    /api/s2/alerts               离职预警等告警对象（由规则动作生成）
 ```
 
 ## 5. 对比 Palantir 的裁剪说明
