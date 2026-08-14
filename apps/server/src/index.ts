@@ -709,7 +709,7 @@ const agentRuntime: AgentRuntime = {
   listFunctions: () => repo.listFunctions(),
   listActions: () => repo.listActions(),
   listRules: () => repo.listRules(),
-  listObjectTypes: () => repo.listObjectTypes(),
+  listObjectTypes: (opts) => repo.listObjectTypes(opts),
   invokeFunction: async (name, args) => {
     const sb = await getSandbox();
     await registerDbFunctions(repo, sb);
@@ -909,6 +909,47 @@ app.delete('/api/aip/models/:id', async (req, res) => {
 });
 
 // ---------- Agent CRUD ----------
+// 新建 Agent（前端"新建"按钮调用）
+app.post('/api/aip/agents', async (req, res) => {
+  try {
+    const body = req.body as Partial<AIPAgentConfig>;
+    if (!body.id || !/^[A-Za-z0-9_-]+$/.test(body.id)) {
+      return res.status(400).json({ error: 'Agent id 必填，且只能含字母数字/_/-' });
+    }
+    const existing = await repo.getAIPAgentConfig(body.id);
+    if (existing) return res.status(409).json({ error: 'Agent id 已存在' });
+    const cfg: AIPAgentConfig = {
+      id: body.id,
+      displayName: body.displayName ?? '新 Agent',
+      systemPrompt: body.systemPrompt ?? DEFAULT_AGENT_PROMPT,
+      modelScope: body.modelScope ?? [],
+      defaultModelId: body.defaultModelId ?? '',
+      temperature: body.temperature ?? 0.2,
+      enabledTools: body.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts'],
+      objectTypes: body.objectTypes ?? [],
+      maxSteps: body.maxSteps ?? 6,
+      version: 1,
+    };
+    await repo.upsertAIPAgentConfig(cfg);
+    res.json({ ok: true, config: cfg });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 删除 Agent（默认 Agent 'default' 不可删）
+app.delete('/api/aip/agents/:id', async (req, res) => {
+  try {
+    if (req.params.id === 'default') return res.status(400).json({ error: '默认 Agent 不可删除' });
+    const existing = await repo.getAIPAgentConfig(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Agent 不存在' });
+    await repo.deleteAIPAgentConfig(req.params.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/aip/agents', async (_req, res) => {
   try {
     const { rows } = await pool.query(`SELECT * FROM aip_agent ORDER BY created_at ASC`);
@@ -920,6 +961,7 @@ app.get('/api/aip/agents', async (_req, res) => {
       defaultModelId: r.default_model_id,
       temperature: r.temperature,
       enabledTools: r.enabled_tools ?? [],
+      objectTypes: r.object_types ?? [],
       maxSteps: r.max_steps,
       version: r.version,
     })));
@@ -950,6 +992,7 @@ app.put('/api/aip/agents/:id', async (req, res) => {
       defaultModelId: body.defaultModelId ?? existing?.defaultModelId ?? '',
       temperature: body.temperature ?? existing?.temperature ?? 0.2,
       enabledTools: body.enabledTools ?? existing?.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts'],
+      objectTypes: body.objectTypes ?? existing?.objectTypes ?? [],
       maxSteps: body.maxSteps ?? existing?.maxSteps ?? 6,
       version: existing?.version,
     };
@@ -960,6 +1003,32 @@ app.put('/api/aip/agents/:id', async (req, res) => {
     res.json({ ok: true, config: cfg });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
+  }
+});
+
+// 删除 Agent（默认 Agent 'default' 不可删）
+app.delete('/api/aip/agents/:id', async (req, res) => {
+  try {
+    if (req.params.id === 'default') return res.status(400).json({ error: '默认 Agent 不可删除' });
+    const existing = await repo.getAIPAgentConfig(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Agent 不存在' });
+    await repo.deleteAIPAgentConfig(req.params.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 删除 Agent（默认 Agent 'default' 不可删）
+app.delete('/api/aip/agents/:id', async (req, res) => {
+  try {
+    if (req.params.id === 'default') return res.status(400).json({ error: '默认 Agent 不可删除' });
+    const existing = await repo.getAIPAgentConfig(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Agent 不存在' });
+    await repo.deleteAIPAgentConfig(req.params.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 

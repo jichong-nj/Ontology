@@ -308,6 +308,7 @@ export interface AIPAgentConfigDTO {
   defaultModelId: string;    // 默认模型 id（∈ modelScope）
   temperature: number;
   enabledTools: string[];    // 'functions' | 'actions' | 'rules' | 'explore' | 'alerts'
+  objectTypes: string[];      // 可访问的对象类型白名单（空 = 不限制）
   maxSteps: number;
   version?: number;
 }
@@ -347,8 +348,11 @@ export const aip = {
   listAgents: () => http.get<AIPAgentConfigDTO[]>('/aip/agents').then((r) => r.data),
   getConfig: (id: string) =>
     http.get<AIPAgentConfigDTO>(`/aip/agents/${id}`).then((r) => r.data).catch(() => null),
+  createAgent: (cfg: Partial<AIPAgentConfigDTO>) =>
+    http.post<AIPAgentConfigDTO>('/aip/agents', cfg).then((r) => r.data),
   saveConfig: (id: string, cfg: Partial<AIPAgentConfigDTO>) =>
     http.put<AIPAgentConfigDTO>(`/aip/agents/${id}`, cfg).then((r) => r.data),
+  deleteAgent: (id: string) => http.delete(`/aip/agents/${id}`).then((r) => r.data),
 
   // 流式对话：通过 fetch + ReadableStream 解析 SSE，逐事件回调；支持 modelId 切换模型与中断
   streamRun: async (

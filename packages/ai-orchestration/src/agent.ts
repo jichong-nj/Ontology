@@ -20,7 +20,7 @@ export interface AgentRuntime {
   listFunctions(): Promise<Array<{ apiName: string; displayName: string; description?: string; inputs: unknown }>>;
   listActions(): Promise<Array<{ apiName: string; displayName: string; effect?: unknown }>>;
   listRules(): Promise<Array<{ apiName: string; displayName: string; enabled: boolean }>>;
-  listObjectTypes(): Promise<Array<{ apiName: string; displayName: string; description?: string }>>;
+  listObjectTypes(opts?: { objectTypes?: string[] }): Promise<Array<{ apiName: string; displayName: string; description?: string }>>;
   invokeFunction(name: string, args: Record<string, unknown>): Promise<unknown>;
   triggerAction(name: string, args: Record<string, unknown>): Promise<unknown>;
   runRules(): Promise<unknown>;
@@ -123,7 +123,7 @@ function allToolSpecs(): ToolSpec[] {
       type: 'function',
       function: {
         name: 'list_object_types',
-        description: '列出本体中所有对象类型（返回完整列表）。只依据本工具真实返回的类型作答，不得臆测或补充未出现的类型。',
+        description: '列出定本体中所有对象类型（返回完整列表）。只依据本工具真实返回的类型作答，不得臆测或补充未出现的类型。',
         parameters: { type: 'object', properties: {}, required: [] },
       },
     },
@@ -216,7 +216,12 @@ function allToolSpecs(): ToolSpec[] {
   ];
 }
 
-function buildToolMap(rt: AgentRuntime) {
+function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
+  const allowed = cfg.objectTypes ?? [];
+  const deny = (objectType: string) =>
+    allowed.length > 0 && !allowed.includes(objectType)
+      ? { error: `该 Agent 无权访问对象类型 "${objectType}"（白名单：${allowed.join(', ')}）` }
+      : null;
   return {
     list_functions: async () => rt.listFunctions(),
     invoke_function: async (a: any) => rt.invokeFunction(a.name, a.args ?? {}),
@@ -224,15 +229,31 @@ function buildToolMap(rt: AgentRuntime) {
     trigger_action: async (a: any) => rt.triggerAction(a.name, a.args ?? {}),
     list_rules: async () => rt.listRules(),
     run_rules: async () => rt.runRules(),
-    list_object_types: async () => rt.listObjectTypes(),
-    get_instances: async (a: any) => rt.getInstances(a.objectType, {
-      filter: a.filter,
-      pageSize: a.pageSize,
-      pageToken: a.pageToken,
-    }),
-    get_object_links: async (a: any) => rt.getObjectLinks(a.objectType, a.objectRid),
-    aggregate: async (a: any) => rt.aggregate(a.objectType, a.property, a.topN),
-    histogram: async (a: any) => rt.histogram(a.objectType, a.property, a.buckets),
+    list_object_types: async () => rt.listObjectTypes({ objectTypes: allowed }),
+    get_instances: async (a: any) => {
+      const err = deny(a.objectType);
+      if (err) return err;
+      return rt.getInstances(a.objectType, {
+        filter: a.filter,
+        pageSize: a.pageSize,
+        pageToken: a.pageToken,
+      });
+    },
+    get_object_links: async (a: any) => {
+      const err = deny(a.objectType);
+      if (err) return err;
+      return rt.getObjectLinks(a.objectType, a.objectRid);
+    },
+    aggregate: async (a: any) => {
+      const err = deny(a.objectType);
+      if (err) return err;
+      return rt.aggregate(a.objectType, a.property, a.topN);
+    },
+    histogram: async (a: any) => {
+      const err = deny(a.objectType);
+      if (err) return err;
+      return rt.histogram(a.objectType, a.property, a.buckets);
+    },
     list_alerts: async () => rt.listAlerts(),
   } as Record<string, (args: any) => Promise<unknown>>;
 }
@@ -296,7 +317,7 @@ export class AIPAgent {
       { role: 'user', content: message },
     ];
 
-    const toolMap = buildToolMap(this.rt);
+    const toolMap = buildToolMap(this.rt, this.cfg);
     const steps: AgentRunResult['steps'] = [];
 
     for (let step = 0; step < this.cfg.maxSteps; step++) {
@@ -368,7 +389,7 @@ export class AIPAgent {
       { role: 'user', content: message },
     ];
 
-    const toolMap = buildToolMap(this.rt);
+    const toolMap = buildToolMap(this.rt, this.cfg);
 
     for (let step = 0; step < this.cfg.maxSteps; step++) {
       const modelName = this.currentModelName();

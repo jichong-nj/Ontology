@@ -200,7 +200,7 @@ export interface OntologyFunction {
 // 内核只依赖此接口，不写具体 SQL；当前实现为 PostgreSQL 邻接表（见 docs/S0-storage-design.md）。
 export interface MetadataRepository {
   // 对象类型
-  listObjectTypes(): Promise<ObjectType[]>;
+  listObjectTypes(opts?: { objectTypes?: string[] }): Promise<ObjectType[]>;
   getObjectType(apiName: string): Promise<ObjectType | null>;
   createObjectType(def: ObjectType): Promise<void>;
   updateObjectType(apiName: string, def: ObjectType): Promise<void>;
@@ -338,6 +338,9 @@ export interface AIPAgentConfig {
   temperature: number;
   // 启用能力集合（对应本体工具分组）
   enabledTools: string[]; // 可选值: 'functions' | 'actions' | 'rules' | 'explore' | 'alerts'
+  // 可访问的对象类型白名单（空数组 = 不限制，可访问全部）。
+  // 约束 list_object_types / get_instances / get_object_links / aggregate / histogram 等探索工具。
+  objectTypes: string[];
   maxSteps: number;
   version?: number;
   createdAt?: string;

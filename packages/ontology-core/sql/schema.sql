@@ -171,6 +171,8 @@ CREATE TABLE aip_agent (
   -- 启用能力集合：functions / actions / rules / explore / alerts
   enabled_tools   JSONB NOT NULL DEFAULT '["functions","actions","rules","explore","alerts"]'::jsonb,
   max_steps       INT NOT NULL DEFAULT 6,
+  -- 可访问的对象类型白名单（空数组 = 不限制，可访问全部）
+  object_types    JSONB NOT NULL DEFAULT '[]'::jsonb,
   version         INT NOT NULL DEFAULT 1,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()

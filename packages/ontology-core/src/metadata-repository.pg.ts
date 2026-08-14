@@ -23,13 +23,20 @@ import { Pool } from 'pg';
 export class PostgresMetadataRepository implements MetadataRepository {
   constructor(private pool: Pool) {}
 
-  async listObjectTypes(): Promise<ObjectType[]> {
+  async listObjectTypes(opts?: { objectTypes?: string[] }): Promise<ObjectType[]> {
+    const params: unknown[] = [];
+    let where = '';
+    if (opts?.objectTypes && opts.objectTypes.length > 0) {
+      params.push(opts.objectTypes);
+      where = `WHERE api_name = ANY($${params.length})`;
+    }
     const { rows } = await this.pool.query(
       `SELECT api_name, display_name, description, properties, source_connection_id, source_table, title_property,
               version, created_at, updated_at,
               COALESCE((SELECT array_agg(interface_api_name)
                         FROM object_interface WHERE object_api_name = o.api_name), ARRAY[]::text[]) AS implements_interfaces
-       FROM object_type o ORDER BY api_name`,
+       FROM object_type o ${where} ORDER BY api_name`,
+      params,
     );
     return rows.map((r: any) => ({
       apiName: r.api_name,
@@ -983,8 +990,8 @@ export class PostgresMetadataRepository implements MetadataRepository {
   async upsertAIPAgentConfig(cfg: AIPAgentConfig): Promise<void> {
     await this.pool.query(
       `INSERT INTO aip_agent
-        (id, display_name, system_prompt, model_scope, default_model_id, temperature, enabled_tools, max_steps, version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        (id, display_name, system_prompt, model_scope, default_model_id, temperature, enabled_tools, object_types, max_steps, version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT (id) DO UPDATE
        SET display_name = EXCLUDED.display_name,
            system_prompt = EXCLUDED.system_prompt,
@@ -992,13 +999,19 @@ export class PostgresMetadataRepository implements MetadataRepository {
            default_model_id = EXCLUDED.default_model_id,
            temperature = EXCLUDED.temperature,
            enabled_tools = EXCLUDED.enabled_tools,
+           object_types = EXCLUDED.object_types,
            max_steps = EXCLUDED.max_steps,
            version = aip_agent.version + 1,
            updated_at = now()`,
       [cfg.id, cfg.displayName, cfg.systemPrompt, JSON.stringify(cfg.modelScope ?? []),
         cfg.defaultModelId, cfg.temperature, JSON.stringify(cfg.enabledTools ?? []),
+        JSON.stringify(cfg.objectTypes ?? []),
         cfg.maxSteps, (cfg.version ?? 1)],
     );
+  }
+
+  async deleteAIPAgentConfig(id: string): Promise<void> {
+    await this.pool.query(`DELETE FROM aip_agent WHERE id = $1`, [id]);
   }
 
   async getAIPAgentConfig(id: string): Promise<AIPAgentConfig | null> {
@@ -1043,6 +1056,7 @@ function rowToAIPAgentConfig(r: any): AIPAgentConfig {
     defaultModelId: r.default_model_id,
     temperature: r.temperature,
     enabledTools: r.enabled_tools ?? [],
+    objectTypes: r.object_types ?? [],
     maxSteps: r.max_steps,
     version: r.version,
     createdAt: r.created_at,
