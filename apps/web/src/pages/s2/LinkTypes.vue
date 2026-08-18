@@ -5,7 +5,7 @@ import {
   ElInput, ElSelect, ElOption, ElRadioGroup, ElRadioButton, ElMessageBox,
   ElIcon, ElDivider, ElCheckbox, ElTable, ElTableColumn,
 } from 'element-plus';
-import { Plus } from '@element-plus/icons-vue';
+import { Plus, Search } from '@element-plus/icons-vue';
 import type { ObjectType, LinkType } from '@/api';
 import { s2, s2link } from '@/api';
 import { tryRequest } from '@/utils/error';
@@ -16,6 +16,23 @@ const loading = ref(false);
 const dialogVisible = ref(false);
 const isEdit = ref(false);
 
+// 搜索关键词：按 apiName / displayName / 源·目标对象名过滤
+const keyword = ref('');
+const filteredLinks = computed(() => {
+  const kw = keyword.value.trim().toLowerCase();
+  if (!kw) return links.value;
+  return links.value.filter((lt) => {
+    const src = objName(lt.sourceType).toLowerCase();
+    const tgt = objName(lt.targetType).toLowerCase();
+    return (
+      lt.apiName.toLowerCase().includes(kw) ||
+      (lt.displayName || '').toLowerCase().includes(kw) ||
+      src.includes(kw) ||
+      tgt.includes(kw)
+    );
+  });
+});
+
 // 列表选择状态
 const selectedLinks = ref<Set<string>>(new Set());
 function toggleSelect(apiName: string, val: boolean) {
@@ -23,7 +40,7 @@ function toggleSelect(apiName: string, val: boolean) {
   else selectedLinks.value.delete(apiName);
 }
 function toggleSelectAll(val: boolean) {
-  if (val) selectedLinks.value = new Set(links.value.map((l) => l.apiName));
+  if (val) selectedLinks.value = new Set(filteredLinks.value.map((l) => l.apiName));
   else selectedLinks.value.clear();
 }
 
@@ -188,14 +205,24 @@ onMounted(load);
     <div class="lt-list-bar">
       <div class="lt-list-bar__left">
         <ElCheckbox
-          :model-value="selectedLinks.size === links.length && links.length > 0"
-          :indeterminate="selectedLinks.size > 0 && selectedLinks.size < links.length"
+          :model-value="selectedLinks.size === filteredLinks.length && filteredLinks.length > 0"
+          :indeterminate="selectedLinks.size > 0 && selectedLinks.size < filteredLinks.length"
           @change="(v: any) => toggleSelectAll(v)"
         />
         <span class="lt-list-bar__title">关系类型</span>
-        <span class="lt-list-bar__count">{{ links.length }}</span>
+        <span class="lt-list-bar__count">
+          <template v-if="keyword">搜索到 {{ filteredLinks.length }} / {{ links.length }}</template>
+          <template v-else>{{ links.length }}</template>
+        </span>
       </div>
       <div class="lt-list-bar__right">
+        <ElInput
+          v-model="keyword"
+          placeholder="搜索名称 / API / 对象类型"
+          clearable
+          class="lt-list-bar__search"
+          :prefix-icon="Search"
+        />
         <ElButton type="primary" :icon="Plus" @click="openCreate">新建关系类型</ElButton>
         <ElButton text><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2z"/></svg></ElButton>
       </div>
@@ -216,7 +243,7 @@ onMounted(load);
         </thead>
         <tbody>
           <tr
-            v-for="lt in links"
+            v-for="lt in filteredLinks"
             :key="lt.apiName"
             class="lt-row"
             :class="{ 'lt-row--selected': selectedLinks.has(lt.apiName) }"
@@ -253,7 +280,10 @@ onMounted(load);
         </tbody>
       </table>
 
-      <div v-if="!loading && links.length === 0" class="empty-hint">
+      <div v-if="!loading && filteredLinks.length === 0 && keyword" class="empty-hint">
+        未找到匹配「{{ keyword }}」的关系类型，换个关键词试试。
+      </div>
+      <div v-else-if="!loading && links.length === 0" class="empty-hint">
         暂无关系类型，点击右上角「新建关系类型」创建。
       </div>
     </div>
@@ -477,6 +507,9 @@ onMounted(load);
   display: flex;
   align-items: center;
   gap: 6px;
+}
+.lt-list-bar__search {
+  width: 240px;
 }
 
 /* ====== 表格列表 ===== */

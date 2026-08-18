@@ -7,6 +7,7 @@ import S2LinkTypes from '@/pages/s2/LinkTypes.vue';
 import S2Rules from '@/pages/s2/Alerts.vue';
 import S2Explore from '@/pages/s2/Explore.vue';
 import S2Functions from '@/pages/s2/Functions.vue';
+import S2FunctionHelp from '@/pages/s2/FunctionHelp.vue';
 import S2Actions from '@/pages/s2/Actions.vue';
 import S2SharedProperties from '@/pages/s2/SharedProperties.vue';
 import AlertsPage from '@/pages/AlertsPage.vue';
@@ -46,6 +47,7 @@ const routes = [
       { path: 'link-types', component: S2LinkTypes, meta: { title: 'Link Types' } },
       { path: 'rules', component: S2Rules, meta: { title: 'Rules' } },
       { path: 'functions', component: S2Functions, meta: { title: 'Functions' } },
+      { path: 'functions/help', component: S2FunctionHelp, meta: { title: '函数编写指南' } },
       { path: 'actions', component: S2Actions, meta: { title: 'Actions' } },
       { path: 'shared-properties', component: S2SharedProperties, meta: { title: 'Shared Properties' } },
       { path: 'explore/:objectType?', component: S2Explore, meta: { title: '探索' } },

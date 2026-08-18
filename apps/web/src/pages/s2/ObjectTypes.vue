@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue';
+import { onMounted, reactive, ref, watch, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
   ElButton, ElCard, ElMessage, ElTag, ElDialog, ElForm, ElFormItem,
   ElInput, ElSelect, ElOption, ElSteps, ElStep, ElCheckbox, ElRadio, ElDescriptions, ElDescriptionsItem, ElMessageBox,
   ElIcon, ElTooltip,
 } from 'element-plus';
-import { ArrowLeft, ArrowRight, Check, Plus, Delete, Compass, Loading } from '@element-plus/icons-vue';
+import { ArrowLeft, ArrowRight, Check, Plus, Delete, Compass, Loading, Search } from '@element-plus/icons-vue';
 import { s2, s2link, s1 } from '@/api';
 import type { ObjectType, SourceConnection, ProbeTable, ProbeColumn, OntologyProperty } from '@/api';
 import { tryRequest } from '@/utils/error';
@@ -38,14 +38,36 @@ const loadedCount = ref(0); // 已展开渲染的卡片数
 const loadingMore = ref(false); // 是否正在加载下一页
 const listBodyRef = ref<HTMLElement | null>(null);
 
-const hasMore = () => loadedCount.value < allTypes.value.length;
+// 搜索关键词：按 displayName / apiName 匹配过滤
+const keyword = ref('');
+
+// 过滤后的对象类型（全量），搜索时动态变化
+const filteredTypes = computed(() => {
+  const kw = keyword.value.trim().toLowerCase();
+  if (!kw) return allTypes.value;
+  return allTypes.value.filter(
+    (o) =>
+      o.displayName.toLowerCase().includes(kw) ||
+      o.apiName.toLowerCase().includes(kw),
+  );
+});
+
+const hasMore = () => loadedCount.value < filteredTypes.value.length;
+// 搜索词变化时重置分页并从顶部渲染
+watch(keyword, () => {
+  loadedCount.value = 0;
+  loadingMore.value = false;
+  const el = listBodyRef.value;
+  if (el) el.scrollTop = 0;
+  loadMore();
+});
 function loadMore() {
   if (loadingMore.value || !hasMore()) return;
   loadingMore.value = true;
   // 模拟分页请求的微任务节奏，避免长列表一次性渲染卡顿
   setTimeout(() => {
-    const next = Math.min(loadedCount.value + PAGE_SIZE, allTypes.value.length);
-    types.value = allTypes.value.slice(0, next);
+    const next = Math.min(loadedCount.value + PAGE_SIZE, filteredTypes.value.length);
+    types.value = filteredTypes.value.slice(0, next);
     loadedCount.value = next;
     loadingMore.value = false;
   }, 0);
@@ -350,11 +372,21 @@ onMounted(load);
         <div>
           <h2 class="section-title">Object Types</h2>
           <p class="section-sub">
-            <template v-if="allTypes.length">已加载 {{ loadedCount }} / 共 {{ allTypes.length }} 个类型</template>
+            <template v-if="keyword">搜索「{{ keyword }}」共 {{ filteredTypes.length }} 个</template>
+            <template v-else-if="allTypes.length">已加载 {{ loadedCount }} / 共 {{ allTypes.length }} 个类型</template>
             <template v-else>{{ types.length }} 个类型</template>
           </p>
         </div>
-        <ElButton type="primary" @click="openWizard">新建对象类型</ElButton>
+        <div class="types-list__tools">
+          <ElInput
+            v-model="keyword"
+            placeholder="搜索名称或 API 名"
+            clearable
+            class="types-list__search"
+            :prefix-icon="Search"
+          />
+          <ElButton type="primary" @click="openWizard">新建对象类型</ElButton>
+        </div>
       </header>
 
       <div ref="listBodyRef" v-loading="loading" class="types-list__body" @scroll="onListScroll">
@@ -387,7 +419,10 @@ onMounted(load);
           </div>
         </ElCard>
 
-        <div v-if="!loading && types.length === 0" class="empty-hint">
+        <div v-if="!loading && types.length === 0 && keyword" class="empty-hint">
+          未找到匹配「{{ keyword }}」的对象类型，换个关键词试试。
+        </div>
+        <div v-else-if="!loading && types.length === 0" class="empty-hint">
           暂无对象类型，点击右上角「新建对象类型」。
         </div>
 
@@ -396,8 +431,8 @@ onMounted(load);
           <ElIcon class="is-loading"><Loading /></ElIcon>
           <span>加载更多…</span>
         </div>
-        <div v-else-if="allTypes.length && !hasMore()" class="list-footer list-footer--end">
-          已加载全部 {{ allTypes.length }} 个类型
+        <div v-else-if="filteredTypes.length && !hasMore()" class="list-footer list-footer--end">
+          已加载全部 {{ filteredTypes.length }} 个类型
         </div>
       </div>
     </section>
@@ -648,7 +683,16 @@ onMounted(load);
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
+  gap: var(--space-3);
   margin-bottom: var(--space-3);
+}
+.types-list__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.types-list__search {
+  width: 240px;
 }
 .types-list__body {
   display: flex;

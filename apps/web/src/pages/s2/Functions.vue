@@ -1,20 +1,28 @@
 <script setup lang="ts">
 import { onMounted, ref, reactive } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   ElButton, ElCard, ElMessage, ElTag, ElDialog, ElForm, ElFormItem,
-  ElInput, ElSelect, ElOption,
+  ElInput, ElSelect, ElOption, ElTooltip,
 } from 'element-plus';
-import { Plus, Cpu, Delete } from '@element-plus/icons-vue';
+import { Plus, Cpu, Delete, QuestionFilled } from '@element-plus/icons-vue';
 import { s2functions } from '@/api';
 import type { OntologyFunction, FunctionInput, FunctionLanguage } from '@/api';
 import { tryRequest } from '@/utils/error';
 
+const router = useRouter();
 const list = ref<OntologyFunction[]>([]);
 const loading = ref(false);
 const dialogVisible = ref(false);
 const viewVisible = ref(false);     // 只读查看（seed 注入函数）
 const saving = ref(false);
 const editing = ref<string | null>(null); // apiName 或 null(新建)
+
+// 跳转到函数编写帮助页（在弹窗中保留原表单，新标签页打开，避免丢失已填内容）
+function goToHelp() {
+  const route = router.resolve({ path: '/s2/functions/help' });
+  window.open(route.href, '_blank');
+}
 
 const form = reactive<OntologyFunction>({
   apiName: '', displayName: '', language: 'typescript', entry: 'main',
@@ -138,7 +146,19 @@ onMounted(load);
       </ElTable>
     </ElCard>
 
-    <ElDialog v-model="dialogVisible" :title="editing ? '编辑函数' : '新建函数'" width="820px" top="4vh" class="edit-fn-dialog">
+    <ElDialog
+      v-model="dialogVisible"
+      :title="editing ? '编辑函数' : '新建函数'"
+      width="820px" top="4vh" class="edit-fn-dialog"
+    >
+      <template #header>
+        <div class="edit-fn-title">
+          <span>{{ editing ? '编辑函数' : '新建函数' }}</span>
+          <ElTooltip content="查看函数编写指南" placement="top">
+            <ElButton text circle :icon="QuestionFilled" class="help-btn" @click="goToHelp" />
+          </ElTooltip>
+        </div>
+      </template>
       <ElForm label-width="110px">
         <ElFormItem label="显示名" required><ElInput v-model="form.displayName" /></ElFormItem>
         <ElFormItem label="API 名称" required>
@@ -189,6 +209,14 @@ onMounted(load);
         </ElFormItem>
 
         <ElFormItem label="函数体">
+          <template #label>
+            <span class="fn-body-label">
+              函数体
+              <ElTooltip content="点击查看函数编写方法" placement="top">
+                <ElButton text circle :icon="QuestionFilled" class="help-btn help-btn--sm" @click="goToHelp" />
+              </ElTooltip>
+            </span>
+          </template>
           <ElInput v-model="form.body" type="textarea" :rows="14" spellcheck="false"
             placeholder="返回 (args, ctx) => { ... }" style="font-family:monospace" />
         </ElFormItem>
@@ -226,4 +254,27 @@ onMounted(load);
 .toolbar h2 { display: flex; align-items: center; gap: 6px; margin: 0; }
 .io-list { display: flex; flex-direction: column; gap: 8px; }
 .io-row { display: flex; gap: 8px; align-items: center; }
+
+.edit-fn-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.help-btn {
+  color: #909399;
+  font-size: 16px;
+}
+.help-btn:hover {
+  color: #409eff;
+}
+.help-btn--sm {
+  font-size: 13px;
+  width: 20px;
+  height: 20px;
+}
+.fn-body-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
 </style>
