@@ -26,6 +26,27 @@
       </ul>
     </aside>
 
+    <!-- 中间：会话列表 -->
+    <aside class="conv-sidebar">
+      <div class="sidebar-head">
+        <span class="sidebar-title">会话</span>
+        <el-button size="small" type="primary" plain @click="newConversation">+ 新建</el-button>
+      </div>
+      <ul class="conv-list" v-if="conversations.length">
+        <li
+          v-for="c in conversations"
+          :key="c.id"
+          :class="['conv-item', { active: c.id === currentConvId }]"
+          @click="switchConversation(c.id)"
+        >
+          <div class="conv-title">{{ c.title }}</div>
+          <div class="conv-time muted">{{ fmtTime(c.updatedAt) }}</div>
+          <el-button size="small" text class="conv-del" @click.stop="confirmDeleteConv(c)" title="删除">🗑</el-button>
+        </li>
+      </ul>
+      <div v-else class="conv-empty muted">暂无会话<br />点击下方「+ 新建」</div>
+    </aside>
+
     <!-- 右侧：对话区（参考早期 chat 版本的气泡布局） -->
     <section class="aip-main">
       <div class="main-head">
@@ -39,7 +60,7 @@
         <div class="head-actions">
           <el-button size="small" :loading="cfgLoading" @click="loadConfig">刷新配置</el-button>
           <el-button size="small" @click="openConfig">配置</el-button>
-          <el-button size="small" type="danger" plain @click="clearChat">清空对话</el-button>
+          <el-button size="small" type="danger" plain @click="newConversation">新会话</el-button>
         </div>
       </div>
 
@@ -166,7 +187,7 @@
 import { ref, reactive, onMounted, nextTick, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
-import { aip as api, AIPAgentConfigDTO } from '../api';
+import { aip as api, AIPAgentConfigDTO, AIPConversationDTO, AIPMessageDTO } from '../api';
 import { s2 } from '../api';
 import type { ObjectType } from '../api';
 
@@ -179,6 +200,8 @@ const CONFIG_ID = 'default';
 const currentId = ref(CONFIG_ID);
 const agents = ref<AIPAgentConfigDTO[]>([]);
 const currentConfig = ref<AIPAgentConfigDTO | null>(null);
+const conversations = ref<AIPConversationDTO[]>([]);
+const currentConvId = ref<string | null>(null);
 const allObjectTypes = ref<ObjectType[]>([]);
 const models = ref<{ id: string; displayName: string }[]>([]);
 
@@ -213,6 +236,7 @@ async function loadAgents() {
     currentId.value = agents.value[0]?.id ?? CONFIG_ID;
   }
   await loadConfig();
+  await loadConversations();
 }
 
 async function loadConfig() {
@@ -229,7 +253,76 @@ async function loadConfig() {
 async function switchAgent(id: string) {
   currentId.value = id;
   messages.value = [];
+  currentConvId.value = null;
   await loadConfig();
+  await loadConversations();
+}
+
+// ---------- 会话管理 ----------
+async function loadConversations() {
+  try {
+    conversations.value = await api.listConversations(currentId.value);
+    // 自动选中最近一个会话
+    if (conversations.value.length) {
+      await switchConversation(conversations.value[0].id);
+    } else {
+      currentConvId.value = null;
+      messages.value = [];
+    }
+  } catch {
+    conversations.value = [];
+  }
+}
+
+async function switchConversation(cid: string) {
+  currentConvId.value = cid;
+  messages.value = [];
+  try {
+    const msgs = await api.listMessages(cid);
+    messages.value = msgs.map((m: AIPMessageDTO) => ({
+      role: m.role,
+      content: m.content,
+      timeline: m.timeline ?? [],
+    }));
+  } catch {
+    messages.value = [];
+  }
+  await nextTick();
+  scrollDown();
+}
+
+async function newConversation() {
+  try {
+    const conv = await api.createConversation(currentId.value, '新会话');
+    conversations.value.unshift(conv);
+    currentConvId.value = conv.id;
+    messages.value = [];
+  } catch (e: any) {
+    ElMessage.error(e?.message || '新建会话失败');
+  }
+}
+
+async function confirmDeleteConv(c: AIPConversationDTO) {
+  await ElMessageBox.confirm(`确认删除会话「${c.title}」？`, '删除确认', { type: 'warning' })
+    .then(async () => {
+      await api.deleteConversation(c.id);
+      conversations.value = conversations.value.filter((x) => x.id !== c.id);
+      if (currentConvId.value === c.id) {
+        currentConvId.value = null;
+        messages.value = [];
+        if (conversations.value.length) await switchConversation(conversations.value[0].id);
+      }
+      ElMessage.success('已删除');
+    })
+    .catch(() => {});
+}
+
+function fmtTime(t?: string): string {
+  if (!t) return '';
+  const d = new Date(t);
+  if (isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 async function loadModels() {
@@ -323,6 +416,21 @@ function quickAsk(t: string) {
 async function send() {
   const text = input.value.trim();
   if (!text || streaming.value) return;
+
+  // 首条消息：若无当前会话则自动新建
+  let convId = currentConvId.value;
+  if (!convId) {
+    try {
+      const conv = await api.createConversation(currentId.value, deriveTitle(text));
+      conversations.value.unshift(conv);
+      currentConvId.value = conv.id;
+      convId = conv.id;
+    } catch (e: any) {
+      ElMessage.error(e?.message || '创建会话失败');
+      return;
+    }
+  }
+
   messages.value.push({ role: 'user', content: text });
   input.value = '';
   await nextTick();
@@ -385,6 +493,7 @@ async function send() {
       [],
       undefined,
       abortCtl.signal,
+      convId ?? undefined,
     );
   } catch (e: any) {
     aiMsg.content = '⚠️ ' + (e.message || '对话失败');
@@ -394,12 +503,19 @@ async function send() {
   }
 }
 
+// 由首条消息推导会话标题（取前 20 个非换行字符）
+function deriveTitle(text: string): string {
+  const t = text.replace(/\s+/g, ' ').trim().slice(0, 20);
+  return t || '新会话';
+}
+
 function stopStream() {
   abortCtl?.abort();
 }
 
+// 清空对话 = 新建会话（旧会话仍保留在列表中）
 function clearChat() {
-  messages.value = [];
+  newConversation();
 }
 
 function scrollDown() {
@@ -454,6 +570,16 @@ onMounted(async () => {
 .agent-name { font-weight: 600; }
 .agent-id { font-size: 12px; color: #909399; }
 .agent-del { position: absolute; top: 6px; right: 6px; }
+
+/* 中间会话栏 */
+.conv-sidebar { width: 260px; border-right: 1px solid #ebeef5; padding: 12px; overflow-y: auto; }
+.conv-list { list-style: none; padding: 0; margin: 0; }
+.conv-item { position: relative; padding: 8px 10px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; border: 1px solid transparent; }
+.conv-item.active { background: #ecf5ff; border-color: #409eff; }
+.conv-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 22px; }
+.conv-time { font-size: 12px; }
+.conv-del { position: absolute; top: 6px; right: 6px; }
+.conv-empty { text-align: center; font-size: 13px; padding-top: 40px; line-height: 1.8; }
 
 .aip-main { flex: 1; display: flex; flex-direction: column; padding: 12px 16px; min-width: 0; }
 .main-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 12px; flex-wrap: wrap; }

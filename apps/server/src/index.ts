@@ -1019,14 +1019,57 @@ app.delete('/api/aip/agents/:id', async (req, res) => {
   }
 });
 
-// 删除 Agent（默认 Agent 'default' 不可删）
-app.delete('/api/aip/agents/:id', async (req, res) => {
+// ---------- AIP 会话管理 ----------
+// 列出某 Agent 下的会话
+app.get('/api/aip/agents/:id/conversations', async (req, res) => {
   try {
-    if (req.params.id === 'default') return res.status(400).json({ error: '默认 Agent 不可删除' });
-    const existing = await repo.getAIPAgentConfig(req.params.id);
-    if (!existing) return res.status(404).json({ error: 'Agent 不存在' });
-    await repo.deleteAIPAgentConfig(req.params.id);
+    const convs = await repo.listConversations(req.params.id);
+    res.json(convs);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 新建会话（归属某 Agent）
+app.post('/api/aip/agents/:id/conversations', async (req, res) => {
+  try {
+    const agent = await repo.getAIPAgentConfig(req.params.id);
+    if (!agent) return res.status(404).json({ error: 'Agent 不存在' });
+    const conv = { id: crypto.randomUUID(), agentId: req.params.id, title: req.body?.title || '新会话' };
+    await repo.createConversation(conv);
+    res.json({ ok: true, conversation: conv });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 重命名会话
+app.put('/api/aip/conversations/:cid', async (req, res) => {
+  try {
+    const title = req.body?.title;
+    if (!title) return res.status(400).json({ error: 'title 必填' });
+    await repo.renameConversation(req.params.cid, title);
     res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 删除会话（连带消息）
+app.delete('/api/aip/conversations/:cid', async (req, res) => {
+  try {
+    await repo.deleteConversation(req.params.cid);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 读取会话消息历史
+app.get('/api/aip/conversations/:cid/messages', async (req, res) => {
+  try {
+    const msgs = await repo.listMessages(req.params.cid);
+    res.json(msgs);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1083,6 +1126,7 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
       return res.status(400).json({ error: 'message 必填' });
     }
     const history = Array.isArray(req.body?.history) ? req.body.history : [];
+    const conversationId = req.body?.conversationId || null;
     // 模型选择：前端可传 modelId 覆盖默认（用户对话时切换模型）
     const wantModelId = req.body?.modelId || cfg.defaultModelId;
     const resolved = wantModelId ? await resolveActiveModel(wantModelId) : null;
@@ -1095,15 +1139,43 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
 
     const agent = new AIPAgent(cfg, agentRuntime, active ?? undefined);
     const send = (event: unknown) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    // 收集结构化过程（思考/工具）用于落库
+    const timeline: unknown[] = [];
+    let finalReply = '';
+    let firstThought = true;
     try {
       for await (const ev of agent.runStream(message, history)) {
         send(ev);
+        if (ev.type === 'thought') {
+          // 把逐 token 思考合并为一个条目（落库用）
+          if (firstThought) { timeline.push({ kind: 'thought', content: ev.content }); firstThought = false; }
+          else (timeline[timeline.length - 1] as any).content += ev.content;
+        } else if (ev.type === 'action') {
+          timeline.push({ kind: 'action', tool: ev.tool, args: ev.args });
+        } else if (ev.type === 'result') {
+          const lastAction = [...timeline].reverse().find((t: any) => t.kind === 'action' && !('result' in t));
+          if (lastAction) (lastAction as any).result = ev.result;
+        } else if (ev.type === 'reply_chunk') {
+          finalReply += ev.content;
+        } else if (ev.type === 'done') {
+          finalReply = finalReply || ev.reply || '';
+        }
       }
     } catch (e: any) {
       send({ type: 'error', message: e.message });
     }
     res.write('event: end\ndata: {}\n\n');
     res.end();
+
+    // 落库（会话存在时记录 user + assistant）
+    if (conversationId) {
+      try {
+        await repo.appendMessage({ id: crypto.randomUUID(), conversationId, role: 'user', content: message, timeline: [] });
+        await repo.appendMessage({ id: crypto.randomUUID(), conversationId, role: 'ai', content: finalReply, timeline });
+      } catch (e: any) {
+        console.error('[aip] 会话落库失败', e.message);
+      }
+    }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

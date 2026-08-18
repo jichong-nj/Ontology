@@ -355,6 +355,26 @@ export interface ProbeModelItem {
   isReasoning?: boolean;        // 启发式推断
 }
 
+// ---------- AIP 会话管理（无 memory：仅持久化多轮对话历史） ----------
+// 会话：归属某个 Agent
+export interface AIPConversation {
+  id: string;
+  agentId: string;
+  title: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// 消息：归属某个会话；timeline 保存结构化过程（思考/工具调用）
+export interface AIPMessage {
+  id: string;
+  conversationId: string;
+  role: 'user' | 'ai';
+  content: string;
+  timeline?: unknown[];     // 思考/工具调用等过程条目（仅 ai）
+  createdAt?: string;
+}
+
 // ---- 接口方法运行时引擎契约 ----
 // 执行上下文：调用某个对象实例的接口方法
 export interface MethodInvocationContext {

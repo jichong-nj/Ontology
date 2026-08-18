@@ -16,6 +16,8 @@ import {
   AIPAgentConfig,
   AIPProvider,
   AIPModel,
+  AIPConversation,
+  AIPMessage,
   FunctionSandbox,
 } from './types';
 import { Pool } from 'pg';
@@ -315,7 +317,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       `INSERT INTO link_type (api_name, display_name, source_type, target_type, cardinality, instance_source, version)
        VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (api_name) DO NOTHING`,
-      [def.apiName, def.displayName, def.sourceType, def.targetType, def.cardinality, def.instanceSource, def.version],
+      [def.apiName, def.displayName, def.sourceType, def.targetType, def.cardinality, def.instanceSource, def.version ?? 1],
     );
   }
 
@@ -759,7 +761,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       `INSERT INTO action_type (api_name, display_name, parameters, validation_rules, preconditions, effect, version)
        VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (api_name) DO NOTHING`,
-      [def.apiName, def.displayName, JSON.stringify(def.parameters), JSON.stringify(validationRules), JSON.stringify(preconditions), JSON.stringify(def.effect), def.version],
+      [def.apiName, def.displayName, JSON.stringify(def.parameters ?? []), JSON.stringify(validationRules), JSON.stringify(preconditions), JSON.stringify(def.effect), def.version ?? 1],
     );
   }
 
@@ -809,7 +811,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       `INSERT INTO ontology_function (api_name, display_name, language, entry, inputs, outputs, description, body, version)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (api_name) DO NOTHING`,
-      [def.apiName, def.displayName, def.language, def.entry, JSON.stringify(def.inputs), JSON.stringify(def.outputs), def.description ?? null, def.body ?? null, def.version],
+      [def.apiName, def.displayName, def.language, def.entry, JSON.stringify(def.inputs), JSON.stringify(def.outputs), def.description ?? null, def.body ?? null, def.version ?? 1],
     );
   }
 
@@ -1019,6 +1021,61 @@ export class PostgresMetadataRepository implements MetadataRepository {
     if (rows.length === 0) return null;
     return rowToAIPAgentConfig(rows[0]);
   }
+
+  // ---------- AIP 会话管理 ----------
+  async listConversations(agentId: string): Promise<AIPConversation[]> {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM aip_conversation WHERE agent_id = $1 ORDER BY updated_at DESC`,
+      [agentId],
+    );
+    return rows.map(rowToAIPConversation);
+  }
+
+  async getConversation(id: string): Promise<AIPConversation | null> {
+    const { rows } = await this.pool.query(`SELECT * FROM aip_conversation WHERE id = $1`, [id]);
+    if (rows.length === 0) return null;
+    return rowToAIPConversation(rows[0]);
+  }
+
+  async createConversation(conv: AIPConversation): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO aip_conversation (id, agent_id, title, created_at, updated_at)
+       VALUES ($1,$2,$3,now(),now())`,
+      [conv.id, conv.agentId, conv.title || '新会话'],
+    );
+  }
+
+  async renameConversation(id: string, title: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE aip_conversation SET title = $2, updated_at = now() WHERE id = $1`,
+      [id, title],
+    );
+  }
+
+  async touchConversation(id: string): Promise<void> {
+    await this.pool.query(`UPDATE aip_conversation SET updated_at = now() WHERE id = $1`, [id]);
+  }
+
+  async deleteConversation(id: string): Promise<void> {
+    await this.pool.query(`DELETE FROM aip_conversation WHERE id = $1`, [id]);
+  }
+
+  async listMessages(conversationId: string): Promise<AIPMessage[]> {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM aip_message WHERE conversation_id = $1 ORDER BY created_at ASC`,
+      [conversationId],
+    );
+    return rows.map(rowToAIPMessage);
+  }
+
+  async appendMessage(msg: AIPMessage): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO aip_message (id, conversation_id, role, content, timeline, created_at)
+       VALUES ($1,$2,$3,$4,$5,now())`,
+      [msg.id, msg.conversationId, msg.role, msg.content, JSON.stringify(msg.timeline ?? [])],
+    );
+    await this.touchConversation(msg.conversationId);
+  }
 }
 
 function rowToAIPProvider(r: any): AIPProvider {
@@ -1061,6 +1118,29 @@ function rowToAIPAgentConfig(r: any): AIPAgentConfig {
     version: r.version,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+  };
+}
+function rowToAIPConversation(r: any): AIPConversation {
+  return {
+    id: r.id,
+    agentId: r.agent_id,
+    title: r.title,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+function rowToAIPMessage(r: any): AIPMessage {
+  let timeline: unknown[] = [];
+  try {
+    timeline = typeof r.timeline === 'string' ? JSON.parse(r.timeline) : (r.timeline ?? []);
+  } catch { /* 容错 */ }
+  return {
+    id: r.id,
+    conversationId: r.conversation_id,
+    role: r.role,
+    content: r.content,
+    timeline,
+    createdAt: r.created_at,
   };
 }
 

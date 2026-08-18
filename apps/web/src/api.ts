@@ -313,6 +313,23 @@ export interface AIPAgentConfigDTO {
   version?: number;
 }
 
+export interface AIPConversationDTO {
+  id: string;
+  agentId: string;
+  title: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AIPMessageDTO {
+  id: string;
+  conversationId: string;
+  role: 'user' | 'ai';
+  content: string;
+  timeline?: unknown[];
+  createdAt?: string;
+}
+
 export interface AgentStep {
   tool: string;
   args: unknown;
@@ -327,6 +344,18 @@ export interface AgentRunResult {
 }
 
 export const aip = {
+  // ---- 会话管理 ----
+  listConversations: (agentId: string) =>
+    http.get<AIPConversationDTO[]>('/aip/agents/' + agentId + '/conversations').then((r) => r.data),
+  createConversation: (agentId: string, title?: string) =>
+    http.post<{ ok: boolean; conversation: AIPConversationDTO }>('/aip/agents/' + agentId + '/conversations', { title }).then((r) => r.data.conversation),
+  renameConversation: (cid: string, title: string) =>
+    http.put('/aip/conversations/' + cid, { title }).then((r) => r.data),
+  deleteConversation: (cid: string) =>
+    http.delete('/aip/conversations/' + cid).then((r) => r.data),
+  listMessages: (cid: string) =>
+    http.get<AIPMessageDTO[]>('/aip/conversations/' + cid + '/messages').then((r) => r.data),
+
   // ---- Provider ----
   listProviders: () => http.get<AIPProviderDTO[]>('/aip/providers').then((r) => r.data),
   getProvider: (id: string) => http.get<AIPProviderDTO>(`/aip/providers/${id}`).then((r) => r.data),
@@ -362,11 +391,12 @@ export const aip = {
     history: unknown[] = [],
     modelId?: string,
     signal?: AbortSignal,
+    conversationId?: string,
   ): Promise<void> => {
     const res = await fetch(`/api/aip/agent/${id}/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, history, modelId }),
+      body: JSON.stringify({ message, history, modelId, conversationId }),
       signal,
     });
     if (!res.ok || !res.body) {

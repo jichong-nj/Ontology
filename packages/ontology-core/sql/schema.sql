@@ -178,6 +178,27 @@ CREATE TABLE aip_agent (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ---------- AIP 会话管理（无 memory：仅持久化多轮对话历史） ----------
+-- Conversation：归属某个 Agent；一个 Agent 可含多个会话
+CREATE TABLE aip_conversation (
+  id              TEXT PRIMARY KEY,                       -- 会话标识（uuid）
+  agent_id        TEXT NOT NULL REFERENCES aip_agent(id) ON DELETE CASCADE,
+  title           TEXT NOT NULL DEFAULT '新会话',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Message：归属某个会话；按 created_at 顺序即对话顺序
+CREATE TABLE aip_message (
+  id              TEXT PRIMARY KEY,                       -- 消息标识（uuid）
+  conversation_id TEXT NOT NULL REFERENCES aip_conversation(id) ON DELETE CASCADE,
+  role            TEXT NOT NULL CHECK (role IN ('user','ai')),
+  content         TEXT NOT NULL DEFAULT '',               -- 文本（用户问题 / 最终回复）
+  timeline        JSONB NOT NULL DEFAULT '[]'::jsonb,     -- 结构化过程：思考/工具调用（仅 ai 用）
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_aip_message_conv ON aip_message(conversation_id, created_at);
+
 -- ---------- S1 映射配置（只读接入 + 对象↔源映射） ----------
 
 CREATE TABLE source_connection (
