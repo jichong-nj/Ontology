@@ -59,6 +59,7 @@ const panelSections = computed<MenuSection[]>(() => {
     return [
       { title: 'AIP', items: [
         { key: 'aip-chat', label: 'AIP Chat', to: '/aip', icon: '💬' },
+        { key: 'aip-agents', label: 'Agent Management', to: '/aip/agents', icon: '🤖' },
         { key: 'aip-providers', label: 'Provider', to: '/aip/providers', icon: '🧩' },
       ]},
     ];
