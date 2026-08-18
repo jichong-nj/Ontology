@@ -6,7 +6,7 @@ import {
   ElInput, ElSelect, ElOption, ElSteps, ElStep, ElCheckbox, ElRadio, ElDescriptions, ElDescriptionsItem, ElMessageBox,
   ElIcon, ElTooltip,
 } from 'element-plus';
-import { ArrowLeft, ArrowRight, Check, Plus, Delete, Compass } from '@element-plus/icons-vue';
+import { ArrowLeft, ArrowRight, Check, Plus, Delete, Compass, Loading } from '@element-plus/icons-vue';
 import { s2, s2link, s1 } from '@/api';
 import type { ObjectType, SourceConnection, ProbeTable, ProbeColumn, OntologyProperty } from '@/api';
 import { tryRequest } from '@/utils/error';
@@ -30,6 +30,32 @@ const router = useRouter();
 const route = useRoute();
 const types = ref<ObjectType[]>([]);
 const loading = ref(false);
+
+/* ============ 分页懒加载（列表可滚动翻页） ============ */
+const PAGE_SIZE = 30; // 每页渲染的卡片数
+const allTypes = ref<ObjectType[]>([]); // 全量数据（来自后端）
+const loadedCount = ref(0); // 已展开渲染的卡片数
+const loadingMore = ref(false); // 是否正在加载下一页
+const listBodyRef = ref<HTMLElement | null>(null);
+
+const hasMore = () => loadedCount.value < allTypes.value.length;
+function loadMore() {
+  if (loadingMore.value || !hasMore()) return;
+  loadingMore.value = true;
+  // 模拟分页请求的微任务节奏，避免长列表一次性渲染卡顿
+  setTimeout(() => {
+    const next = Math.min(loadedCount.value + PAGE_SIZE, allTypes.value.length);
+    types.value = allTypes.value.slice(0, next);
+    loadedCount.value = next;
+    loadingMore.value = false;
+  }, 0);
+}
+function onListScroll() {
+  const el = listBodyRef.value;
+  if (!el) return;
+  // 距底部 40px 内即触发下一页加载
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) loadMore();
+}
 
 /* ============ 向导式新建 ============ */
 const wizardVisible = ref(false);
@@ -280,7 +306,9 @@ async function load() {
   loading.value = true;
   await tryRequest(async () => {
     const data = await s2.listObjectTypes();
-    types.value = data.sort((a: ObjectType, b: ObjectType) => a.displayName.localeCompare(b.displayName));
+    allTypes.value = data.slice().sort((a: ObjectType, b: ObjectType) => a.displayName.localeCompare(b.displayName));
+    loadedCount.value = Math.min(PAGE_SIZE, allTypes.value.length);
+    types.value = allTypes.value.slice(0, loadedCount.value);
   });
   loading.value = false;
 }
@@ -321,12 +349,15 @@ onMounted(load);
       <header class="types-list__head">
         <div>
           <h2 class="section-title">Object Types</h2>
-          <p class="section-sub">{{ types.length }} 个类型</p>
+          <p class="section-sub">
+            <template v-if="allTypes.length">已加载 {{ loadedCount }} / 共 {{ allTypes.length }} 个类型</template>
+            <template v-else>{{ types.length }} 个类型</template>
+          </p>
         </div>
         <ElButton type="primary" @click="openWizard">新建对象类型</ElButton>
       </header>
 
-      <div v-loading="loading" class="types-list__body">
+      <div ref="listBodyRef" v-loading="loading" class="types-list__body" @scroll="onListScroll">
         <ElCard
           v-for="t in types"
           :key="t.apiName"
@@ -358,6 +389,15 @@ onMounted(load);
 
         <div v-if="!loading && types.length === 0" class="empty-hint">
           暂无对象类型，点击右上角「新建对象类型」。
+        </div>
+
+        <!-- 滚动分页加载提示 -->
+        <div v-if="loadingMore" class="list-footer">
+          <ElIcon class="is-loading"><Loading /></ElIcon>
+          <span>加载更多…</span>
+        </div>
+        <div v-else-if="allTypes.length && !hasMore()" class="list-footer list-footer--end">
+          已加载全部 {{ allTypes.length }} 个类型
         </div>
       </div>
     </section>
@@ -624,6 +664,7 @@ onMounted(load);
   cursor: pointer;
   transition: border-color 0.15s, box-shadow 0.15s;
   height: 120px;              /* 固定高度，不出现滚动条 */
+  flex-shrink: 0;             /* 关键：在竖向滚动容器内保持固定高度，不被压缩 */
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -710,6 +751,20 @@ onMounted(load);
   text-align: center;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+.list-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  color: var(--text-muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.list-footer--end {
+  opacity: 0.7;
 }
 
 /* ===== 向导 ===== */

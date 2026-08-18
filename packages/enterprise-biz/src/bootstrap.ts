@@ -9,7 +9,10 @@ import {
   MappingService,
 } from '@ontology/data-integration';
 import { objectTypes, linkTypes, functions, actions, alertRules } from './definitions';
+import { EXT_OBJECT_TYPES } from './definitions-ext';
 import { sourceConnection, objectTypeMappings } from './mappings';
+
+const SRC_CONN_ID_EXT = 'src_enterprise_biz'; // 与 generate-ot.mjs / mappings.ts 中扩展域源连接一致
 import { registerDimissionRisk } from './dimission-risk';
 import { TypeScriptFunctionSandbox, RuleScheduler } from '@ontology/ontology-core';
 
@@ -414,6 +417,131 @@ export async function seedBusinessObjectInstances(repo: PostgresMetadataReposito
   await srcPool.end();
 }
 
+// S3：把 220 张扩展域表（hr/erp/crm/wms/am/pm/pd/ar/fin/sec）全量镜像为本体可写侧实例，
+// 并写入对应的外键关系实例（RID 统一为 ext_<sourceTable>_<id>）。
+// 完全数据驱动：依据对象类型 properties[].sourceMapping.column 把源行映射到属性；
+// 依据扩展 linkType(sourceProperty/targetObjectType) 写外键关系实例。
+// 幂等：每次先清空再全量写入（与现有 seed 函数一致）。
+const EXT_PREFIXES = ['hr_', 'erp_', 'crm_', 'wms_', 'am_', 'pm_', 'pd_', 'ar_', 'fin_', 'sec_'];
+
+// 清理历史残留的扩展对象类型/链接类型：源连接为扩展域、但其 source_table 已不在当前定义中的
+// 元数据（例如早期生成器漂移产生的多余类型）。删除前先清掉对应实例与关系实例，避免孤儿数据。
+export async function cleanupStaleExtensionMetadata(repo: PostgresMetadataRepository): Promise<void> {
+  const validTables = new Set(EXT_OBJECT_TYPES.map((o) => o.sourceTable).filter(Boolean) as string[]);
+  const { rows } = await repo.pool.query<{ api_name: string; source_table: string | null }>(
+    `SELECT api_name, source_table FROM object_type WHERE source_connection_id=$1`,
+    [SRC_CONN_ID_EXT],
+  );
+  // 只清理「扩展前缀表」的残留：source_table 以扩展前缀开头，且不在当前扩展定义中。
+  // 核心对象类型（Department/Employee/Product 等，source_table 无扩展前缀）一律保留，避免误删。
+  const stale = rows.filter(
+    (r) => r.source_table && EXT_PREFIXES.some((p) => r.source_table!.startsWith(p)) && !validTables.has(r.source_table),
+  );
+  if (!stale.length) return;
+  console.log(`[S3] 清理 ${stale.length} 个残留扩展对象类型`);
+  for (const r of stale) {
+    try {
+      await repo.clearObjectWrites(r.api_name);
+    } catch {
+      /* ignore */
+    }
+    try {
+      const lts = await repo.pool.query<{ api_name: string }>(
+        `SELECT api_name FROM link_type WHERE source_type=$1 OR target_type=$1`,
+        [r.api_name],
+      );
+      for (const lt of lts.rows) await repo.clearLinkInstances(lt.api_name);
+    } catch {
+      /* ignore */
+    }
+    await repo.deleteObjectType(r.api_name);
+  }
+}
+
+export async function seedExtensionInstances(repo: PostgresMetadataRepository): Promise<void> {
+  await cleanupStaleExtensionMetadata(repo);
+  const extOts = objectTypes.filter(
+    (o) => o.sourceTable && EXT_PREFIXES.some((p) => o.sourceTable!.startsWith(p)),
+  );
+  const extOtNames = new Set(extOts.map((o) => o.apiName));
+  const extLts = linkTypes.filter((lt) => extOtNames.has(lt.sourceType));
+
+  for (const lt of extLts) {
+    try {
+      await repo.clearLinkInstances(lt.apiName);
+    } catch {
+      /* 表/关系不存在则忽略 */
+    }
+  }
+  for (const ot of extOts) {
+    try {
+      await repo.clearObjectWrites(ot.apiName);
+    } catch {
+      /* 对象类型尚未注册则忽略 */
+    }
+  }
+  console.log(`[S3] 扩展域对象类型 ${extOts.length} 个，关系类型 ${extLts.length} 个，开始下推实例`);
+
+  const srcPool = new Pool({
+    connectionString:
+      process.env.ENTERPRISE_BIZ_URL ||
+      'postgresql://ontology:ontology@localhost:5432/enterprise_biz',
+  });
+
+  // Employee RID = emp_code（与 seedEmployeeInstances 对齐），其余核心对象 RID = 源表 id
+  const empIdToCode: Record<number, string> = {};
+  {
+    const { rows } = await srcPool.query('SELECT id, emp_code FROM employee');
+    for (const r of rows) empIdToCode[r.id] = r.emp_code;
+  }
+
+  let total = 0;
+  let totalLinks = 0;
+  for (const ot of extOts) {
+    const table = ot.sourceTable!;
+    const propCols = ot.properties
+      .filter((p) => p.sourceMapping?.column)
+      .map((p) => ({ apiName: p.apiName, column: p.sourceMapping!.column, dataType: p.dataType }));
+    const { rows } = await srcPool.query(`SELECT * FROM "${table}" ORDER BY id`);
+
+    for (const r of rows) {
+      const rid = `ext_${table}_${r.id}`;
+      const patch: Record<string, unknown> = {};
+      for (const pc of propCols) {
+        let v = r[pc.column];
+        if (v != null) {
+          if (pc.dataType === 'NUMBER' || pc.dataType === 'INTEGER') v = Number(v);
+          else if (pc.dataType === 'BOOLEAN') v = !!v;
+          else if (pc.dataType === 'DATE' || pc.dataType === 'TIMESTAMP') v = String(v);
+        } else {
+          v = null;
+        }
+        patch[pc.apiName] = v;
+      }
+      await repo.writeObjectPatch(ot.apiName, rid, patch, 'bootstrap:seed');
+    }
+    total += rows.length;
+
+    // 外键关系实例
+    const ltsForOt = extLts.filter((lt) => lt.sourceType === ot.apiName);
+    for (const lt of ltsForOt) {
+      const fkCol = lt.primaryKey; // 源表外键列，如 dept_id
+      for (const r of rows) {
+        const fkVal = r[fkCol];
+        if (fkVal == null) continue;
+        const targetRid =
+          lt.targetType === 'Employee' ? empIdToCode[fkVal] : String(fkVal);
+        if (!targetRid) continue;
+        await repo.createLinkInstance(lt.apiName, `ext_${table}_${r.id}`, targetRid);
+        totalLinks++;
+      }
+    }
+  }
+
+  await srcPool.end();
+  console.log(`[S3] 扩展域已写入 ${total} 条对象实例与 ${totalLinks} 条关系实例`);
+}
+
 // 注册业务函数到沙箱（供运行时 invoke）
 export function buildSandbox(repo: PostgresMetadataRepository): TypeScriptFunctionSandbox {
   const sandbox = new TypeScriptFunctionSandbox();
@@ -467,6 +595,7 @@ async function main() {
   await seedEmployeeInstances(repo);
   await seedLeaveRecordInstances(repo);
   await seedBusinessObjectInstances(repo);
+  await seedExtensionInstances(repo);
   buildSandbox(repo);
   const ots = await repo.listObjectTypes();
   const lts = await repo.listLinkTypes();

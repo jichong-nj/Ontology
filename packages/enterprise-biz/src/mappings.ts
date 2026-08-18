@@ -4,6 +4,7 @@
 // bootstrap 通过 createObjectTypeWithMapping 把来源写进 object_type 并保留 object_mapping 底层记录。
 import type { SourceConnection } from '@ontology/data-integration';
 import type { CreateObjectTypeWithMappingInput } from '@ontology/data-integration';
+import { EXT_OBJECT_TYPE_MAPPINGS } from './mappings-ext';
 
 export const SOURCE_ID = 'src_enterprise_biz';
 
@@ -123,4 +124,6 @@ export const objectTypeMappings: CreateObjectTypeWithMappingInput[] = [
       fm('reason', 'reason'),
     ],
   },
+  // 扩展域：人事/ERP/CRM/WMS/资产管理/项目管理/产品管理/档案管理/财务/网络安全（220 张表）
+  ...EXT_OBJECT_TYPE_MAPPINGS,
 ];

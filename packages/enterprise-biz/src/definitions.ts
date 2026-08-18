@@ -2,10 +2,12 @@
 // 属性 apiName 与 enterprise_biz 源表字段一一对应（见 packages/enterprise-biz/sql/schema.sql）。
 import type { ObjectType, LinkType, OntologyFunction, ActionType, AutomationRule } from '@ontology/ontology-core';
 import { EVALUATE_DIMISSION_RISK_BODY, CREATE_DIMISSION_ALERT_BODY } from './dimission-risk';
+import { EXT_OBJECT_TYPES, EXT_LINK_TYPES } from './definitions-ext';
 
 const V = 1;
 
 export const objectTypes: ObjectType[] = [
+  ...EXT_OBJECT_TYPES,
   {
     apiName: 'Department',
     displayName: '部门',
@@ -177,6 +179,7 @@ export const objectTypes: ObjectType[] = [
 // 关系类型：多数是源端数据中台已存在的关系实例（instanceSource='source'），
 // 由 S1 link 映射下推查询；本平台也可在 link_instance 表内维护补充关联（managed）。
 export const linkTypes: LinkType[] = [
+  ...EXT_LINK_TYPES,
   {
     apiName: 'DepartmentHierarchy',
     displayName: '部门上下级',
