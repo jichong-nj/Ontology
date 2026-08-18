@@ -97,11 +97,32 @@ export interface ObjectType {
   // 字段级映射记录在 properties[].sourceMapping；源实例由 S1 下推（instanceSource='source'）。
   sourceConnectionId?: string;
   sourceTable?: string;
+  // 父子明细映射（对齐 Palantir MDO 的"主表 + 明细表"纵向关联）：
+  // 明细表的行按 parentKey 外键聚合为数组/计数属性，挂到主对象上。
+  // 明细表与主表同连接（复用 sourceConnectionId）。
+  childTableMappings?: ChildTableMapping[];
   // 用于实例展示的"显示名"属性（如人员选 姓名/工号），展示该对象时优先显示此属性值。
   titleProperty?: string;
   version: number;
   createdAt: string;
   updatedAt: string;
+}
+
+// 父子明细映射：明细表某列（childColumn）按 parentKey 外键聚合到主对象的属性。
+// 一个明细表可贡献多个聚合属性（如同时收集成员名列表 + 成员计数）。
+export interface ChildAggregation {
+  property: string;         // 主对象上承载聚合结果的属性 apiName（须已声明在 properties）
+  agg: 'collect' | 'count'; // collect=收集为数组；count=计数（行数）
+  childColumn?: string;     // agg='collect' 时：明细表中被收集的列（如 name）
+  asSet?: boolean;          // collect 是否去重（集合）
+  limit?: number;           // collect 收集条数上限
+}
+
+export interface ChildTableMapping {
+  table: string;            // 明细源表（与主表同一 sourceConnectionId）
+  parentKey: string;        // 明细表中引用主对象的外键列（如 department_id）
+  displayName?: string;     // 明细表显示名
+  aggregations: ChildAggregation[];
 }
 
 export interface LinkType {

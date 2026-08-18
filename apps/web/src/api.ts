@@ -120,6 +120,19 @@ export function parseDerivedSpec(reducer?: string): DerivedSpec | null {
   }
   return null;
 }
+export interface ChildAggregation {
+  property: string;         // 主对象上承载聚合结果的属性 apiName
+  agg: 'collect' | 'count'; // collect=收集为数组；count=计数（行数）
+  childColumn?: string;     // agg='collect' 时：明细表中被收集的列
+  asSet?: boolean;          // collect 是否去重（集合）
+  limit?: number;           // collect 收集条数上限
+}
+export interface ChildTableMapping {
+  table: string;            // 明细源表（与主表同一 sourceConnectionId）
+  parentKey: string;        // 明细表中引用主对象的外键列（如 device_id）
+  displayName?: string;     // 明细表显示名
+  aggregations: ChildAggregation[];
+}
 export interface ObjectType {
   apiName: string;
   displayName: string;
@@ -128,6 +141,8 @@ export interface ObjectType {
   implementsInterfaces?: string[];
   sourceConnectionId?: string;
   sourceTable?: string;
+  // 父子明细映射（主表 + 明细表纵向关联）：明细行按 parentKey 聚合为数组/计数属性挂到主对象
+  childTableMappings?: ChildTableMapping[];
   titleProperty?: string;       // 展示实例时优先显示的属性（如姓名/工号）
 }
 export interface LinkType {
@@ -148,6 +163,7 @@ export interface CreateObjectTypeWithMapping {
   sourceConnectionId?: string;
   sourceTable?: string;
   fieldMappings: FieldMapping[];
+  childTableMappings?: ChildTableMapping[];
 }
 
 // ---------- 函数（Ontology Function）----------

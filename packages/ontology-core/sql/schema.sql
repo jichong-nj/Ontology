@@ -26,6 +26,8 @@ CREATE TABLE object_type (
   -- 字段级映射记录在 properties[].sourceMapping 上，源实例由 S1 下推（instanceSource='source'）。
   source_connection_id TEXT REFERENCES source_connection(id),
   source_table         TEXT,
+  -- 父子明细映射（主表 + 明细表纵向关联）：明细行按外键聚合为数组/计数属性挂到主对象。
+  child_table_mappings JSONB,                               -- ChildTableMapping[]，无则 NULL
   explore_config       JSONB NOT NULL DEFAULT '{}'::jsonb,  -- 探索页配置: { charts: string[] } 每对象类型一套独立图表
   version              INT NOT NULL,
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),

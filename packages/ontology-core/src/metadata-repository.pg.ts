@@ -33,7 +33,8 @@ export class PostgresMetadataRepository implements MetadataRepository {
       where = `WHERE api_name = ANY($${params.length})`;
     }
     const { rows } = await this.pool.query(
-      `SELECT api_name, display_name, description, properties, source_connection_id, source_table, title_property,
+      `SELECT api_name, display_name, description, properties, source_connection_id, source_table,
+              child_table_mappings, title_property,
               version, created_at, updated_at,
               COALESCE((SELECT array_agg(interface_api_name)
                         FROM object_interface WHERE object_api_name = o.api_name), ARRAY[]::text[]) AS implements_interfaces
@@ -48,6 +49,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       implementsInterfaces: r.implements_interfaces,
       sourceConnectionId: r.source_connection_id ?? undefined,
       sourceTable: r.source_table ?? undefined,
+      childTableMappings: r.child_table_mappings ?? undefined,
       titleProperty: r.title_property ?? undefined,
       version: r.version,
       createdAt: r.created_at,
@@ -57,7 +59,8 @@ export class PostgresMetadataRepository implements MetadataRepository {
 
   async getObjectType(apiName: string): Promise<ObjectType | null> {
     const { rows } = await this.pool.query(
-      `SELECT api_name, display_name, description, properties, source_connection_id, source_table, title_property,
+      `SELECT api_name, display_name, description, properties, source_connection_id, source_table,
+              child_table_mappings, title_property,
               version, created_at, updated_at,
               COALESCE((SELECT array_agg(interface_api_name)
                         FROM object_interface WHERE object_api_name = $1), ARRAY[]::text[]) AS implements_interfaces
@@ -74,6 +77,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       implementsInterfaces: r.implements_interfaces,
       sourceConnectionId: r.source_connection_id ?? undefined,
       sourceTable: r.source_table ?? undefined,
+      childTableMappings: r.child_table_mappings ?? undefined,
       titleProperty: r.title_property ?? undefined,
       version: r.version,
       createdAt: r.created_at,
@@ -85,19 +89,22 @@ export class PostgresMetadataRepository implements MetadataRepository {
     // version 是 NOT NULL 字段，调用方（前端/API）可能未传，缺省为 1
     const version = def.version ?? 1;
     await this.pool.query(
-      `INSERT INTO object_type (api_name, display_name, description, properties, source_connection_id, source_table, title_property, version, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now(),now())
+      `INSERT INTO object_type (api_name, display_name, description, properties, source_connection_id, source_table, child_table_mappings, title_property, version, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),now())
        ON CONFLICT (api_name) DO UPDATE SET
          display_name = EXCLUDED.display_name,
          description = EXCLUDED.description,
          properties = EXCLUDED.properties,
          source_connection_id = EXCLUDED.source_connection_id,
          source_table = EXCLUDED.source_table,
+         child_table_mappings = EXCLUDED.child_table_mappings,
          title_property = EXCLUDED.title_property,
          version = EXCLUDED.version,
          updated_at = now()`,
       [def.apiName, def.displayName, def.description ?? null, JSON.stringify(def.properties),
-       def.sourceConnectionId ?? null, def.sourceTable ?? null, def.titleProperty ?? null, version],
+       def.sourceConnectionId ?? null, def.sourceTable ?? null,
+       def.childTableMappings?.length ? JSON.stringify(def.childTableMappings) : null,
+       def.titleProperty ?? null, version],
     );
   }
 
@@ -106,10 +113,13 @@ export class PostgresMetadataRepository implements MetadataRepository {
     const version = def.version ?? 1;
     await this.pool.query(
       `UPDATE object_type
-         SET display_name=$2, description=$3, properties=$4, source_connection_id=$5, source_table=$6, title_property=$7, version=$8, updated_at=now()
+         SET display_name=$2, description=$3, properties=$4, source_connection_id=$5, source_table=$6,
+             child_table_mappings=$7, title_property=$8, version=$9, updated_at=now()
        WHERE api_name=$1`,
       [apiName, def.displayName, def.description ?? null, JSON.stringify(def.properties),
-       def.sourceConnectionId ?? null, def.sourceTable ?? null, def.titleProperty ?? null, version],
+       def.sourceConnectionId ?? null, def.sourceTable ?? null,
+       def.childTableMappings?.length ? JSON.stringify(def.childTableMappings) : null,
+       def.titleProperty ?? null, version],
     );
   }
 

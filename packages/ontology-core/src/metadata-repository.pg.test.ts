@@ -57,6 +57,41 @@ describe('S2 MetadataRepository', () => {
     expect(list.map((o) => o.apiName)).toContain('Person');
   });
 
+  it('对象类型持久化父子明细映射（多表关联），读写往返一致', async () => {
+    const ot: ObjectType = {
+      ...person,
+      apiName: 'Device',
+      displayName: '设备',
+      sourceConnectionId: 'src_enterprise_biz',
+      sourceTable: 'device',
+      childTableMappings: [
+        {
+          table: 'monitor_log',
+          parentKey: 'device_id',
+          displayName: '设备监控日志',
+          aggregations: [
+            { property: 'logCount', agg: 'count' },
+            { property: 'logMetrics', agg: 'collect', childColumn: 'metric', asSet: true, limit: 20 },
+          ],
+        },
+      ],
+      properties: [
+        { apiName: 'name', displayName: '设备名', type: 'string', required: true },
+        { apiName: 'logCount', displayName: '日志条数', type: 'integer', required: false },
+        { apiName: 'logMetrics', displayName: '日志指标', type: 'array', required: false },
+      ],
+    };
+    await repo.createObjectType(ot);
+    const got = await repo.getObjectType('Device');
+    expect(got?.childTableMappings).toEqual(ot.childTableMappings);
+    expect(got?.sourceTable).toBe('device');
+    // update 也应保留 / 可覆盖
+    const updated = { ...ot, childTableMappings: undefined };
+    await repo.updateObjectType('Device', updated as any);
+    const got2 = await repo.getObjectType('Device');
+    expect(got2?.childTableMappings).toBeUndefined();
+  });
+
   it('创建关系类型并维护关系实例（图拓扑）', async () => {
     await repo.createObjectType(person);
     await repo.createLinkType(employer);

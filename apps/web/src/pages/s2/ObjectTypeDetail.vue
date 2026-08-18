@@ -8,7 +8,7 @@ import {
 } from 'element-plus';
 import { Link, Coin, Edit, Connection, Cpu, ArrowDown, Share } from '@element-plus/icons-vue';
 import { s2, s1, s2link, s2functions, s2shared } from '@/api';
-import type { ObjectType, OntologyProperty, SourceConnection, ProbeTable, LinkType, DerivedSpec, OntologyFunction, SharedProperty } from '@/api';
+import type { ObjectType, OntologyProperty, SourceConnection, ProbeTable, ProbeColumn, LinkType, DerivedSpec, OntologyFunction, SharedProperty, ChildTableMapping, ChildAggregation } from '@/api';
 import { parseDerivedSpec } from '@/api';
 import { tryRequest } from '@/utils/error';
 
@@ -212,7 +212,33 @@ const saving = ref(false);
 const editForm = reactive<{
   displayName: string; description: string; sourceConnectionId: string; sourceTable: string; titleProperty: string;
   properties: OntologyProperty[];
-}>({ displayName: '', description: '', sourceConnectionId: '', sourceTable: '', titleProperty: '', properties: [] });
+  childTableMappings: ChildTableMapping[];
+}>({ displayName: '', description: '', sourceConnectionId: '', sourceTable: '', titleProperty: '', properties: [], childTableMappings: [] });
+
+// ---- 父子明细映射（主表 + 明细表纵向关联）----
+function addChildMapping() {
+  editForm.childTableMappings.push({ table: '', parentKey: '', displayName: '', aggregations: [] });
+}
+function removeChildMapping(i: number) {
+  editForm.childTableMappings.splice(i, 1);
+}
+function addChildAgg(m: ChildTableMapping) {
+  m.aggregations.push({ property: '', agg: 'count' });
+}
+function removeChildAgg(m: ChildTableMapping, i: number) {
+  m.aggregations.splice(i, 1);
+}
+// 供聚合属性选择的可选属性：普通（非派生）属性
+function childAggPropOptions(): { apiName: string; displayName: string }[] {
+  return editForm.properties
+    .filter((p) => !p.derived && p.type !== 'array')
+    .map((p) => ({ apiName: p.apiName, displayName: p.displayName }));
+}
+// 明细表列（供选择父键列 / 收集列）
+function childTableColumns(table: string): ProbeColumn[] {
+  if (!table) return [];
+  return tables.value.find((t) => t.table === table)?.columns ?? [];
+}
 
 async function onEditConnectionChange(connId: string) {
   editForm.sourceTable = '';
@@ -220,7 +246,8 @@ async function onEditConnectionChange(connId: string) {
   if (!connId) return;
   tablesLoading.value = true;
   await tryRequest(async () => {
-    tables.value = await s1.probe(connId);
+    const r = await s1.probe(connId);
+    tables.value = r.tables || [];
   });
   tablesLoading.value = false;
 }
@@ -233,13 +260,18 @@ function openEdit() {
   editForm.sourceTable = obj.value.sourceTable ?? '';
   editForm.titleProperty = obj.value.titleProperty ?? '';
   editForm.properties = obj.value.properties.map((p) => ({ ...p }));
+  editForm.childTableMappings = (obj.value.childTableMappings ?? []).map((m) => ({
+    ...m,
+    aggregations: m.aggregations.map((a) => ({ ...a })),
+  }));
   editVisible.value = true;
   tables.value = [];
   tryRequest(async () => { sharedProps.value = await s2shared.list(); });
   if (editForm.sourceConnectionId) {
     tablesLoading.value = true;
     tryRequest(async () => {
-      tables.value = await s1.probe(editForm.sourceConnectionId);
+      const r = await s1.probe(editForm.sourceConnectionId);
+      tables.value = r.tables || [];
     }).finally(() => { tablesLoading.value = false; });
   }
 }
@@ -288,6 +320,18 @@ async function saveEdit() {
         ...(p.derived ? { derived: true, reducer: p.reducer } : {}),
         ...(p.sharedRef ? { sharedRef: p.sharedRef, overridden: !!p.overridden } : {}),
       })),
+      childTableMappings: editForm.childTableMappings.length
+        ? editForm.childTableMappings.map((m) => ({
+            table: m.table, parentKey: m.parentKey,
+            ...(m.displayName ? { displayName: m.displayName } : {}),
+            aggregations: m.aggregations.map((a) => ({
+              property: a.property, agg: a.agg,
+              ...(a.agg === 'collect' ? { childColumn: a.childColumn } : {}),
+              ...(a.asSet ? { asSet: true } : {}),
+              ...(a.limit != null ? { limit: Number(a.limit) } : {}),
+            })),
+          }))
+        : undefined,
     };
     await s2.updateObjectType(obj.value!.apiName, payload);
     ElMessage.success('已保存');
@@ -334,6 +378,14 @@ watch(() => route.params.apiName, load);
             </ElDescriptionsItem>
             <ElDescriptionsItem label="源表">
               <span class="mono">{{ obj.sourceTable || '—' }}</span>
+            </ElDescriptionsItem>
+            <ElDescriptionsItem v-if="obj.childTableMappings?.length" label="父子明细映射">
+              <div class="ds-col">
+                <ElTag v-for="m in obj.childTableMappings" :key="m.table" type="info" effect="plain" class="child-map-tag">
+                  {{ m.table }} ← {{ m.parentKey }}
+                  <span class="child-map-tag__agg">{{ m.aggregations.map((a) => a.agg + '→' + a.property).join(', ') }}</span>
+                </ElTag>
+              </div>
             </ElDescriptionsItem>
           </ElDescriptions>
           <p class="detail__desc">{{ obj.description || '暂无描述' }}</p>
@@ -569,6 +621,56 @@ watch(() => route.params.apiName, load);
             </div>
           </div>
         </template>
+
+        <!-- 父子明细映射（主表 + 明细表纵向关联） -->
+        <div class="wizard-props__head wizard-props__head--derived">
+          <span>父子明细映射（多表关联）</span>
+          <div class="wizard-props__actions">
+            <ElButton size="small" type="primary" plain @click="addChildMapping">添加明细映射</ElButton>
+          </div>
+        </div>
+        <p v-if="!editForm.sourceConnectionId || !editForm.sourceTable" class="ds-hint">
+          需先选择数据源连接与源表，明细表将复用同一连接（parentKey 指向主表主键）。
+        </p>
+        <div v-for="(m, mi) in editForm.childTableMappings" :key="'child-' + mi" class="child-map-card">
+          <div class="child-map-card__head">
+            <span class="child-map-card__title">明细映射 #{{ mi + 1 }}</span>
+            <ElButton text type="danger" size="small" @click="removeChildMapping(mi)">移除</ElButton>
+          </div>
+          <div class="child-map-grid">
+            <ElFormItem label="明细表（同连接）">
+              <ElSelect v-model="m.table" placeholder="选择明细表" filterable clearable style="width: 100%">
+                <ElOption v-for="t in tables" :key="t.table" :label="t.table" :value="t.table" />
+              </ElSelect>
+            </ElFormItem>
+            <ElFormItem label="父键列（外键 → 主表主键）">
+              <ElSelect v-model="m.parentKey" placeholder="明细表中外键列" filterable clearable style="width: 100%">
+                <ElOption v-for="col in childTableColumns(m.table)" :key="col.name" :label="col.name" :value="col.name" />
+              </ElSelect>
+            </ElFormItem>
+            <ElFormItem label="显示名">
+              <ElInput v-model="m.displayName" placeholder="明细表显示名（可选）" />
+            </ElFormItem>
+          </div>
+
+          <div class="child-agg__head">
+            <span class="ds-label">聚合定义</span>
+            <ElButton size="small" text type="primary" @click="addChildAgg(m)">+ 聚合</ElButton>
+          </div>
+          <div v-for="(a, ai) in m.aggregations" :key="'agg-' + ai" class="child-agg-row">
+            <ElSelect v-model="a.agg" style="width: 120px">
+              <ElOption label="计数 count" value="count" />
+              <ElOption label="收集数组 collect" value="collect" />
+            </ElSelect>
+            <ElSelect v-model="a.property" placeholder="目标属性" filterable clearable style="flex: 1">
+              <ElOption v-for="op in childAggPropOptions()" :key="op.apiName" :label="`${op.displayName} (${op.apiName})`" :value="op.apiName" />
+            </ElSelect>
+            <ElInput v-if="a.agg === 'collect'" v-model="a.childColumn" placeholder="明细表收集列" style="width: 150px" />
+            <ElCheckbox v-if="a.agg === 'collect'" v-model="a.asSet">去重</ElCheckbox>
+            <ElInput v-if="a.agg === 'collect'" v-model="a.limit" placeholder="上限" style="width: 80px" />
+            <ElButton text type="danger" @click="removeChildAgg(m, ai)">移除</ElButton>
+          </div>
+        </div>
       </ElForm>
       <template #footer>
         <ElButton @click="editVisible = false">取消</ElButton>
@@ -755,6 +857,43 @@ watch(() => route.params.apiName, load);
   padding-top: var(--space-2);
   border-top: 1px dashed var(--border, #e4e7ed);
 }
+/* 父子明细映射卡片 */
+.ds-col { display: flex; flex-direction: column; gap: 4px; }
+.child-map-tag { justify-content: flex-start; font-size: 12px; }
+.child-map-tag__agg { margin-left: 4px; opacity: 0.75; font-size: 11px; }
+.child-map-card {
+  border: 1px solid var(--border, #e4e7ed);
+  border-radius: var(--radius, 6px);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+  background: #fafbfc;
+}
+.child-map-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+.child-map-card__title { font-weight: 600; font-size: 13px; }
+.child-map-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: var(--space-2);
+}
+@media (max-width: 640px) { .child-map-grid { grid-template-columns: 1fr; } }
+.child-agg__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: var(--space-2) 0 var(--space-1);
+}
+.child-agg-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
 .derived-calc {
   display: flex;
   align-items: center;

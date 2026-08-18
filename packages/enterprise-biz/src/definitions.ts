@@ -131,8 +131,26 @@ export const objectTypes: ObjectType[] = [
       { apiName: 'productId', displayName: '关联产品', type: 'integer', required: false, sourceMapping: 'product_id' },
       { apiName: 'status', displayName: '状态', type: 'string', required: true, sourceMapping: 'status' },
       { apiName: 'purchaseDate', displayName: '采购日期', type: 'date', required: false, sourceMapping: 'purchase_date' },
+      // ---- 父子明细（纵向多表关联）----
+      // 设备运行日志行数（由 monitor_log 明细表 count 聚合而来，下推时写入）
+      { apiName: 'logCount', displayName: '运行日志条数', type: 'integer', required: false },
+      // 最近运行日志指标列表（由 monitor_log 明细表 metric 列 collect 聚合而来）
+      { apiName: 'logMetrics', displayName: '运行日志指标', type: 'array', required: false },
     ],
     implementsInterfaces: [],
+    // 父子明细映射：Device（主表 device）关联明细表 monitor_log（同连接），
+    // 明细行按 device_id 外键聚合为数组/计数属性挂到设备对象。
+    childTableMappings: [
+      {
+        table: 'monitor_log',
+        parentKey: 'device_id',
+        displayName: '设备监控日志',
+        aggregations: [
+          { property: 'logCount', agg: 'count' },
+          { property: 'logMetrics', agg: 'collect', childColumn: 'metric', asSet: true, limit: 20 },
+        ],
+      },
+    ],
     version: V,
     createdAt: '',
     updatedAt: '',

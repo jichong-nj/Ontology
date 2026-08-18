@@ -14,6 +14,7 @@ import {
   seedLeaveRecordInstances,
   seedBusinessObjectInstances,
   seedExtensionInstances,
+  seedChildDetailInstances,
   startScheduler,
   buildSandbox,
   registerDbFunctions,
@@ -55,6 +56,7 @@ async function bootstrapEnterpriseBiz() {
     await seedLeaveRecordInstances(repo);
     await seedBusinessObjectInstances(repo);
     await seedExtensionInstances(repo);
+    await seedChildDetailInstances(repo);
     // 2) 注册函数定义 + TS 实现到沙箱
     for (const fn of functions) {
       await repo.createFunction(fn);

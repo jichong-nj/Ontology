@@ -74,6 +74,33 @@ S1 是 Ontology 平台的数据入口层。它假设原始数据的采集、清�
 - 严重不一致（如主键为空）将 `qualityStatus` 标记为 `failed`，并作为**发布门禁信号**：S2 在对象类型发布到可用状态时校验其映射 `qualityStatus !== 'failed'`，不通过则拦截（责任协同：S1 标记质量，S2 卡发布）。
 - **关系映射**：当 S2 中 `LinkType.instanceSource='source'` 时，需在 S1 额外配置关系映射，使关系实例可从源表查出并经 `link_instance` 缓存/索引，供 S3 图谱探索下推（见 S0）。
 
+### F1.5 父子明细映射（多表关联，对齐 Palantir MDO 的"主表 + 明细表"纵向场景）
+**用户故事**：作为建模师，我希望一个对象类型（主表）能关联若干明细表，把明细行按外键聚合为**数组 / 计数**属性直接挂到主对象上，而不必依赖"关系 + 派生属性"跳转。
+
+**输入**：对象类型上的 `childTableMappings: ChildTableMapping[]`（随对象类型元数据一起持久化，存于 `object_type.child_table_mappings` JSONB）：
+```typescript
+interface ChildTableMapping {
+  table: string;            // 明细源表（与主表同一 sourceConnectionId）
+  parentKey: string;        // 明细表中引用主对象的外键列（如 device_id）
+  displayName?: string;
+  aggregations: ChildAggregation[];
+}
+interface ChildAggregation {
+  property: string;         // 主对象上承载聚合结果的属性 apiName（须已声明在 properties）
+  agg: 'collect' | 'count'; // collect=收集为数组；count=计数（行数）
+  childColumn?: string;     // agg='collect' 时：明细表中被收集的列
+  asSet?: boolean;          // collect 是否去重（集合）
+  limit?: number;           // collect 收集条数上限
+}
+```
+
+**规则**：
+- 明细表与主表**同连接**（复用 `sourceConnectionId`），父 RID 约定为 `String(parentKey 值)`（id 主键型父对象；Employee 等用 emp_code 的场景需额外映射）。
+- S3 下推时按 `parentKey` 分组，`count` 写行数、`collect` 收集 `childColumn` 值（可选去重 / 上限），以 `writeObjectPatch` 合并写入主对象（`patch || EXCLUDED.patch`，幂等）。
+- 聚合目标属性需已声明在主对象 `properties` 上（类型 `integer` / `array`）。
+
+**示例**：Device（主表 `device`）→ 明细表 `monitor_log`（`device_id` 外键）：收集 `metric` 去重得 `logMetrics`，计数得 `logCount`，下推后挂在每个设备对象上。
+
 ### F1.4 数据血缘与目录
 **用户故事**：作为分析师，我想知道"这个对象来自哪张表、哪些字段"，以便理解数据出处。
 

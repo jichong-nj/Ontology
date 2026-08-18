@@ -2,7 +2,7 @@
 // 映射已内嵌到对象类型（S2）：对象类型携带 sourceConnectionId / sourceTable，
 // 字段级映射记录在对象属性 property.sourceMapping 上。
 // 本服务保留的能力：源连接注册、表结构探测、以及“创建对象类型时关联数据源并映射字段”的组合动作。
-import type { MetadataRepository } from '@ontology/ontology-core';
+import type { MetadataRepository, ChildTableMapping } from '@ontology/ontology-core';
 import type { PostgresMappingStore } from './mapping-store.pg';
 import type { ObjectMapping, SourceConnection, TestResult } from './mapping-model';
 import type { ObjectType } from '@ontology/ontology-core';
@@ -24,6 +24,8 @@ export interface CreateObjectTypeWithMappingInput {
   sourceTable?: string;
   fieldMappings: { property: string; sourceColumn: string }[];
   mappingId?: string;
+  // 父子明细映射（主表 + 明细表纵向关联）：明细行按外键聚合为数组/计数属性挂到主对象。
+  childTableMappings?: ChildTableMapping[];
 }
 
 export class MappingService {
@@ -86,11 +88,16 @@ export class MappingService {
     const qualityStatus: ObjectMapping['qualityStatus'] = allMapped ? 'passed' : 'warning';
 
     // 2) 把来源内嵌进对象类型（取代独立的映射管理层）
+    //    父子明细映射：优先取入参顶层 childTableMappings，其次回退到 objectType 上声明的（数据驱动场景）。
+    const childTableMappings = input.childTableMappings?.length
+      ? input.childTableMappings
+      : (input.objectType.childTableMappings?.length ? input.objectType.childTableMappings : undefined);
     const ot: ObjectType = {
       ...input.objectType,
       version: input.objectType.version || 1,
       sourceConnectionId: input.sourceConnectionId || undefined,
       sourceTable: input.sourceTable || undefined,
+      childTableMappings,
     };
     await this.metadata.createObjectType(ot);
 

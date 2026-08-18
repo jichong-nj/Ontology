@@ -417,6 +417,73 @@ export async function seedBusinessObjectInstances(repo: PostgresMetadataReposito
   await srcPool.end();
 }
 
+// S3：父子明细下推 —— 依据对象类型上的 childTableMappings，把明细表行按父键(parentKey)
+// 聚合为数组/计数属性，合并写入主对象实例（纵向多表关联，对齐 Palantir MDO 父子明细场景）。
+// 明细表与主表同连接（复用主对象的 sourceConnectionId）；父 RID 约定为 String(parentKey 值)
+// （id 主键型父对象：Device/Department/Product/Project 均满足，Employee 用 emp_code 需另加映射）。
+// 幂等：writeObjectPatch 为 patch || EXCLUDED.patch 合并，可重复执行。
+export async function seedChildDetailInstances(repo: PostgresMetadataRepository): Promise<void> {
+  const ots = await repo.listObjectTypes();
+  const withChildren = ots.filter((o) => o.childTableMappings?.length);
+
+  const srcPool = new Pool({
+    connectionString:
+      process.env.ENTERPRISE_BIZ_URL ||
+      'postgresql://ontology:ontology@localhost:5432/enterprise_biz',
+  });
+
+  let affectedObjects = 0;
+  let affectedMappings = 0;
+  for (const ot of withChildren) {
+    const table = ot.sourceTable;
+    if (!table) continue;
+    const validProps = new Set(ot.properties.map((p) => p.apiName));
+    for (const child of ot.childTableMappings!) {
+      const aggs = child.aggregations.filter((a) => validProps.has(a.property));
+      if (!aggs.length) continue;
+      affectedMappings++;
+
+      const { rows } = await srcPool.query(`SELECT * FROM "${child.table}"`);
+      // 按父键分组
+      const groups = new Map<string, unknown[]>();
+      for (const r of rows) {
+        const key = r[child.parentKey];
+        if (key == null) continue;
+        const k = String(key);
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k)!.push(r);
+      }
+
+      for (const [parentRid, childRows] of groups) {
+        const patch: Record<string, unknown> = {};
+        for (const a of aggs) {
+          if (a.agg === 'count') {
+            patch[a.property] = childRows.length;
+          } else if (a.agg === 'collect') {
+            let values = childRows
+              .map((r) => r[a.childColumn])
+              .filter((v) => v != null);
+            if (a.asSet) {
+              values = [...new Set(values.map((v) => String(v)))];
+            }
+            if (a.limit != null && values.length > a.limit) {
+              values = values.slice(0, a.limit);
+            }
+            patch[a.property] = values;
+          }
+        }
+        await repo.writeObjectPatch(ot.apiName, parentRid, patch, 'bootstrap:seed-child');
+        affectedObjects++;
+      }
+    }
+  }
+
+  await srcPool.end();
+  console.log(
+    `[S3] 父子明细下推完成：${affectedMappings} 个明细映射、${affectedObjects} 个主对象被聚合`,
+  );
+}
+
 // S3：把 220 张扩展域表（hr/erp/crm/wms/am/pm/pd/ar/fin/sec）全量镜像为本体可写侧实例，
 // 并写入对应的外键关系实例（RID 统一为 ext_<sourceTable>_<id>）。
 // 完全数据驱动：依据对象类型 properties[].sourceMapping.column 把源行映射到属性；
@@ -596,6 +663,7 @@ async function main() {
   await seedLeaveRecordInstances(repo);
   await seedBusinessObjectInstances(repo);
   await seedExtensionInstances(repo);
+  await seedChildDetailInstances(repo);
   buildSandbox(repo);
   const ots = await repo.listObjectTypes();
   const lts = await repo.listLinkTypes();
