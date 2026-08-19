@@ -29,6 +29,8 @@ export interface AgentRuntime {
   getObjectLinks(objectType: string, objectRid: string): Promise<unknown>;
   aggregate(objectType: string, property: string, topN?: number): Promise<unknown>;
   histogram(objectType: string, property: string, buckets?: number): Promise<unknown>;
+  // 受限 NL2SQL：仅允许只读 SELECT，在 S1 源库执行；allowTables 为白名单（来自 S2 元数据的真实表名）
+  runSql(sql: string, allowTables: string[], limit?: number): Promise<unknown>;
 }
 
 export interface AgentRunResult {
@@ -53,6 +55,8 @@ const TOOL_GROUPS: Record<string, string[]> = {
   rules: ['run_rules', 'list_rules'],
   explore: ['list_object_types', 'get_instances', 'get_object_links', 'aggregate', 'histogram'],
   alerts: ['list_alerts'],
+  // 受限 NL2SQL：LLM 生成只读 SELECT，在 S1 源库白名单表内执行（不回写源）
+  sql: ['run_sql'],
 };
 
 function allToolSpecs(): ToolSpec[] {
@@ -213,6 +217,30 @@ function allToolSpecs(): ToolSpec[] {
         parameters: { type: 'object', properties: {}, required: [] },
       },
     },
+    {
+      type: 'function',
+      function: {
+        name: 'run_sql',
+        description:
+          '受限 NL2SQL：执行一条只读 SQL（仅允许 SELECT，禁止 INSERT/UPDATE/DELETE/DDL 等写操作；' +
+          '只能查询白名单内的源库表，白名单来自 S2 元数据中的真实表名）。用于在对象/聚合查询无法覆盖时，' +
+          '对底层 S1 源库做自由探索性查询。返回结果行数组（最多 limit 行）。' +
+          '若生成的 SQL 涉及白名单外表或写操作，会被拒绝并返回错误。',
+        parameters: {
+          type: 'object',
+          properties: {
+            sql: { type: 'string', description: '只读 SELECT 语句' },
+            allowTables: {
+              type: 'array',
+              description: '允许查询的真实表名白名单（来自对象类型底表的 source_table/真实表名）。例：["hr_employee","am_asset"]',
+              items: { type: 'string' },
+            },
+            limit: { type: 'number', description: '返回行数上限，默认 200，上限 1000' },
+          },
+          required: ['sql', 'allowTables'],
+        },
+      },
+    },
   ];
 }
 
@@ -255,6 +283,10 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
       return rt.histogram(a.objectType, a.property, a.buckets);
     },
     list_alerts: async () => rt.listAlerts(),
+    run_sql: async (a: any) => {
+      const allow = Array.isArray(a.allowTables) ? a.allowTables : [];
+      return rt.runSql(a.sql, allow, a.limit);
+    },
   } as Record<string, (args: any) => Promise<unknown>>;
 }
 

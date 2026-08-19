@@ -323,7 +323,7 @@ export interface AIPAgentConfigDTO {
   modelScope: string[];      // 可用模型 id 列表（模型范围）
   defaultModelId: string;    // 默认模型 id（∈ modelScope）
   temperature: number;
-  enabledTools: string[];    // 'functions' | 'actions' | 'rules' | 'explore' | 'alerts'
+  enabledTools: string[];    // 'functions' | 'actions' | 'rules' | 'explore' | 'alerts' | 'sql'
   objectTypes: string[];      // 可访问的对象类型白名单（空 = 不限制）
   maxSteps: number;
   version?: number;

@@ -61,6 +61,18 @@ S5 把 LLM 能力深度融入 Ontology。它不把 AI 当作外挂聊天框，�
 - 智能体只能调用被显式授权的 S2 Action/Function。
 - 每步调用受 S6 权限与审计记录。
 
+### F5.3.1 受限 NL2SQL（自由探索查询）
+**用户故事**：作为分析师，当 `get_instances`/`aggregate`/`histogram` 等结构化工具无法覆盖时，我想让智能体直接对底层 S1 只读源库跑一条自定义只读 SQL 做探索性分析。
+
+**输入**：自然语言问题 → 智能体生成只读 `SELECT`，并声明允许查询的真实表名白名单（来自 S2 元数据的 `sourceTable`）。
+**输出**：源库查询结果行（受 `limit` 上限约束）。
+
+**规则**：
+- 仅在 `sql` 工具组启用时可用；执行落在 S1 只读源（`source_connection.read_only=true`，当前为 `enterprise_biz`），**不回写源库**。
+- 强制只读：SQL 经安全校验，禁止 `INSERT/UPDATE/DELETE/DDL/GRANT` 等写与 DDL 关键字，仅允许 `SELECT`/`WITH(CTE)` 开头；并在事务内以 `READ ONLY` 模式执行，双保险。
+- 表白名单：LLM 必须传入 `allowTables`（真实表名），校验 `FROM/JOIN` 涉及的表不得超出白名单，杜绝越权访问。
+- 行数上限默认 200、上限 1000；若用户 SQL 末尾已带 `LIMIT` 会统一由上限覆盖。
+
 ### F5.4 自然语言问数（NL2Query）
 **用户故事**：作为非技术用户，我想用中文问"本月销售额 Top10 客户是谁"，系统直接给出对象列表/图表。
 

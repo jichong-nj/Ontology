@@ -754,7 +754,95 @@ const agentRuntime: AgentRuntime = {
   },
   aggregate: (objectType, property, topN) => repo.aggregateByProperty(objectType, property, topN ?? 20),
   histogram: (objectType, property, buckets) => repo.histogramByProperty(objectType, property, buckets ?? 20),
+  // 受限 NL2SQL：在 S1 只读源库执行，仅允许 SELECT，且表必须在白名单内
+  runSql: async (sql, allowTables, limit) => runReadOnlySql(sql, allowTables, limit ?? 200),
 };
+
+// ---------- 受限 NL2SQL 执行 ----------
+// 仅 enterprise_biz 这个只读源（S1）可被查询；按 source_connection 动态取连接信息。
+// 注意：设计上不回写源库，此处强制只允许只读 SELECT。
+const SQL_SOURCE_CONN = 'src_enterprise_biz';
+let sqlPool: import('pg').Pool | null = null;
+async function getSqlPool(): Promise<import('pg').Pool> {
+  if (sqlPool) return sqlPool;
+  const { rows } = await pool.query(
+    `SELECT connection_meta FROM source_connection WHERE id=$1 AND read_only=true`,
+    [SQL_SOURCE_CONN],
+  );
+  if (!rows[0]?.connection_meta) throw new Error(`未找到只读源连接 ${SQL_SOURCE_CONN}`);
+  const m = rows[0].connection_meta;
+  sqlPool = new Pool({
+    host: m.host,
+    port: m.port,
+    user: m.user,
+    database: m.database,
+    password: process.env.SOURCE_DATABASE_PASSWORD || 'ontology',
+    max: 2,
+  });
+  return sqlPool;
+}
+
+// 简单 SQL 安全校验：剥离注释/字符串后，只允许以只读语句开头，禁止写/DDL。
+function validateReadOnlySql(sql: string, allowTables: string[]): string {
+  const trimmed = (sql || '').trim().replace(/;+\s*$/, '');
+  if (!trimmed) throw new Error('SQL 为空');
+  // 去除行内注释 与 引号字符串，避免关键字被字符串内容误导
+  const stripped = trimmed
+    .replace(/--[^\n]*/g, ' ')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/'(?:[^']|'')*'/g, "''")
+    .replace(/"([^"]*)"/g, '$1');
+  const upper = stripped.toUpperCase();
+  const forbidden = [
+    'INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE',
+    'GRANT', 'REVOKE', 'MERGE', 'CALL', 'EXEC', 'EXECUTE', 'COPY', 'VACUUM',
+    'REINDEX', 'CLUSTER', 'COMMENT', 'BEGIN', 'COMMIT', 'ROLLBACK',
+  ];
+  for (const kw of forbidden) {
+    if (new RegExp(`\\b${kw}\\b`).test(upper)) {
+      throw new Error(`受限 NL2SQL 仅允许只读查询，检测到禁用关键字：${kw}`);
+    }
+  }
+  if (!/^\s*SELECT\b/.test(upper) && !/^\s*WITH\b/.test(upper)) {
+    throw new Error('受限 NL2SQL 仅允许以 SELECT 或 WITH(CTE) 开头的只读语句');
+  }
+  // 表白名单校验：提取 FROM / JOIN 后的表名
+  if (allowTables.length > 0) {
+    const mentioned = new Set<string>();
+    const re = /\b(?:FROM|JOIN)\s+([a-zA-Z_][\w.]*)?/gi;
+    let mt: RegExpExecArray | null;
+    while ((mt = re.exec(stripped)) !== null) {
+      if (mt[1]) mentioned.add(mt[1].split('.').pop()!.toLowerCase());
+    }
+    const bad = [...mentioned].filter((t) => !allowTables.map((x) => x.toLowerCase()).includes(t));
+    if (bad.length > 0) {
+      throw new Error(`检测到白名单外的表：${bad.join(', ')}（白名单：${allowTables.join(', ')}）`);
+    }
+  }
+  return trimmed;
+}
+
+async function runReadOnlySql(sql: string, allowTables: string[], limit: number): Promise<unknown> {
+  let safeSql = validateReadOnlySql(sql, allowTables);
+  const capped = Math.min(Math.max(limit, 1), 1000);
+  // 若用户 SQL 末尾已带 LIMIT，移除以统一由我们的上限控制（避免重复 LIMIT 语法错误）
+  safeSql = safeSql.replace(/\bLIMIT\s+\d+\s*;?\s*$/i, '').trim();
+  const p = await getSqlPool();
+  const client = await p.connect();
+  try {
+    // 用事务包裹并设为只读，双保险
+    await client.query('BEGIN TRANSACTION READ ONLY');
+    const { rows } = await client.query(`${safeSql} LIMIT ${capped}`, []);
+    await client.query('COMMIT');
+    return { rowCount: rows.length, rows, note: `受限 NL2SQL：在只读源执行，最多返回 ${capped} 行` };
+  } catch (e: any) {
+    // 出错必须回滚，避免悬挂事务导致后续命令 "current transaction is aborted"
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 
 // ---------- Provider CRUD ----------
 app.get('/api/aip/providers', async (_req, res) => {
@@ -929,7 +1017,7 @@ app.post('/api/aip/agents', async (req, res) => {
       modelScope: body.modelScope ?? [],
       defaultModelId: body.defaultModelId ?? '',
       temperature: body.temperature ?? 0.2,
-      enabledTools: body.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts'],
+      enabledTools: body.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts', 'sql'],
       objectTypes: body.objectTypes ?? [],
       maxSteps: body.maxSteps ?? 6,
       version: 1,
@@ -995,7 +1083,7 @@ app.put('/api/aip/agents/:id', async (req, res) => {
       modelScope: body.modelScope ?? existing?.modelScope ?? [],
       defaultModelId: body.defaultModelId ?? existing?.defaultModelId ?? '',
       temperature: body.temperature ?? existing?.temperature ?? 0.2,
-      enabledTools: body.enabledTools ?? existing?.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts'],
+      enabledTools: body.enabledTools ?? existing?.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts', 'sql'],
       objectTypes: body.objectTypes ?? existing?.objectTypes ?? [],
       maxSteps: body.maxSteps ?? existing?.maxSteps ?? 6,
       version: existing?.version,
