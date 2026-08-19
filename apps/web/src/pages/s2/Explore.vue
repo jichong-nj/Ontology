@@ -87,7 +87,7 @@ async function confirmRemove(apiName: string) {
       '移除图表',
       { confirmButtonText: '移除', cancelButtonText: '取消', type: 'warning' },
     );
-    charts.value = charts.value.filter((p) => p !== apiName);
+    charts.value = charts.value.filter((p) => p.apiName !== apiName);
     saveConfig();
   } catch {
     // 用户取消，不操作
