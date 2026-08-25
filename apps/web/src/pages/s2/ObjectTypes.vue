@@ -681,18 +681,24 @@ onMounted(load);
 }
 .types-list__head {
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3);
   margin-bottom: var(--space-3);
+  flex-wrap: wrap;
 }
 .types-list__tools {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .types-list__search {
-  width: 240px;
+  width: 220px;
+  flex-shrink: 1;
+  min-width: 140px;
 }
 .types-list__body {
   display: flex;
