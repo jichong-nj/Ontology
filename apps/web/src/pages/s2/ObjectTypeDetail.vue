@@ -4,9 +4,9 @@ import { useRoute, useRouter } from 'vue-router';
 import {
   ElButton, ElCard, ElMessage, ElTag, ElDescriptions, ElDescriptionsItem,
   ElIcon, ElDialog, ElForm, ElFormItem, ElInput, ElSelect, ElOption,
-  ElCheckbox, ElCollapse, ElCollapseItem,
+  ElCheckbox, ElCollapse, ElCollapseItem, ElMessageBox,
 } from 'element-plus';
-import { Link, Coin, Edit, Connection, Cpu, ArrowDown, Share } from '@element-plus/icons-vue';
+import { Link, Coin, Edit, Connection, Cpu, ArrowDown, Share, Delete } from '@element-plus/icons-vue';
 import { s2, s1, s2link, s2functions, s2shared } from '@/api';
 import type { ObjectType, OntologyProperty, SourceConnection, ProbeTable, ProbeColumn, LinkType, DerivedSpec, OntologyFunction, SharedProperty, ChildTableMapping, ChildAggregation } from '@/api';
 import { parseDerivedSpec } from '@/api';
@@ -299,8 +299,21 @@ function addSharedProp() {
   });
   sharedPick.value = '';
 }
-function removeProp(i: number) {
-  editForm.properties.splice(i, 1);
+async function removeProp(i: number) {
+  if (i < 0) return;
+  const prop = editForm.properties[i];
+  const label = prop?.displayName || prop?.apiName || '该属性';
+  try {
+    await ElMessageBox.confirm(
+      `确定要移除属性「${label}」吗？此操作会在保存后从对象类型中删除该字段。`,
+      '移除属性确认',
+      { type: 'warning', confirmButtonText: '移除', cancelButtonText: '取消', confirmButtonClass: 'el-button--danger' },
+    );
+    editForm.properties.splice(i, 1);
+    ElMessage.success(`已移除属性「${label}」`);
+  } catch {
+    // 用户取消，不做任何操作
+  }
 }
 
 async function saveEdit() {
@@ -490,17 +503,28 @@ watch(() => route.params.apiName, load);
             <ElButton size="small" @click="addProp">添加属性</ElButton>
           </div>
         </div>
+        <div class="wizard-prop-head">
+          <span class="col-shared" title="共享属性"></span>
+          <span class="col-api">字段名 (API)</span>
+          <span class="col-display">显示名</span>
+          <span class="col-type">类型</span>
+          <span class="col-required">必填</span>
+          <span class="col-ops">操作</span>
+        </div>
         <div v-for="(p, i) in editForm.properties.filter((x: any) => !x.derived)" :key="'n-' + i" class="wizard-prop-row wizard-prop-row--normal">
-          <ElInput v-model="p.apiName" placeholder="字段名" :disabled="!!p.sharedRef" />
+          <ElIcon v-if="p.sharedRef" class="col-shared prop-shared-icon" title="共享属性（来自共享属性库，字段名/类型不可改）"><Share /></ElIcon>
+          <span v-else class="col-shared" />
+          <ElInput v-model="p.apiName" placeholder="字段名 (API)" :disabled="!!p.sharedRef" />
           <ElInput v-model="p.displayName" placeholder="显示名" />
           <ElSelect v-model="p.type" style="width: 120px" :disabled="!!p.sharedRef">
             <ElOption v-for="dt in dataTypes" :key="dt" :label="dt" :value="dt" />
           </ElSelect>
-          <ElSwitch v-if="p.sharedRef" v-model="p.required" style="--el-switch-on-color: #67c23a" />
-          <div v-else class="wizard-prop-row__ops">
-            <ElTag v-if="p.sharedRef" size="small" type="success" effect="plain"><ElIcon><Share /></ElIcon> 共享</ElTag>
-            <ElButton text type="danger" @click="removeProp(editForm.properties.indexOf(p))">
-              <ElIcon><Link /></ElIcon>
+          <div class="col-required-cell">
+            <ElSwitch v-model="p.required" style="--el-switch-on-color: #67c23a" :disabled="!!p.sharedRef && !p.overridden" title="是否必填" />
+          </div>
+          <div class="wizard-prop-row__ops">
+            <ElButton text type="danger" @click="removeProp(editForm.properties.indexOf(p))" title="移除该属性">
+              <ElIcon><Delete /></ElIcon>
             </ElButton>
           </div>
         </div>
@@ -616,7 +640,10 @@ watch(() => route.params.apiName, load);
 
               <div class="derived-card__footer">
                 <ElCheckbox v-model="p.derived" @change="(v:any)=>onToggleDerived(p, !!v)">保持为派生属性</ElCheckbox>
-                <ElButton size="small" type="danger" text @click="toggleDerivedExpand(i)">收起</ElButton>
+                <div class="derived-card__footer-ops">
+                  <ElButton size="small" type="danger" text @click="removeProp(i)">删除属性</ElButton>
+                  <ElButton size="small" type="danger" text @click="toggleDerivedExpand(i)">收起</ElButton>
+                </div>
               </div>
             </div>
           </div>
@@ -786,12 +813,32 @@ watch(() => route.params.apiName, load);
 }
 .wizard-props__head--derived { margin-top: var(--space-4); }
 .wizard-props__actions { display: flex; align-items: center; gap: var(--space-1); }
-.wizard-prop-row--normal { grid-template-columns: 1fr 1fr 120px auto; }
-.wizard-prop-row__ops { display: flex; align-items: center; gap: var(--space-1); }
+.wizard-prop-head,
+.wizard-prop-row--normal {
+  display: grid;
+  grid-template-columns: 24px 1fr 1fr 120px 70px 44px;
+  gap: var(--space-1);
+  align-items: center;
+}
+.wizard-prop-head {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+  padding: 0 var(--space-1) var(--space-1);
+  border-bottom: 1px solid var(--border, #e4e7ed);
+  margin-bottom: var(--space-1);
+}
+.wizard-prop-head .col-required,
+.wizard-prop-head .col-ops { text-align: center; }
+.col-required-cell { display: flex; align-items: center; justify-content: center; }
+.wizard-prop-row--normal { margin-bottom: var(--space-1); }
+.wizard-prop-row__ops { display: flex; align-items: center; justify-content: center; gap: var(--space-1); }
+.col-shared { display: inline-flex; align-items: center; justify-content: center; }
+.prop-shared-icon { color: #67c23a; }
 .prop-shared-tag { margin-left: 4px; vertical-align: middle; }
 .wizard-prop-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 120px auto;
+  grid-template-columns: 24px 1fr 1fr 120px 70px 44px;
   gap: var(--space-1);
   margin-bottom: var(--space-1);
 }
@@ -857,6 +904,7 @@ watch(() => route.params.apiName, load);
   padding-top: var(--space-2);
   border-top: 1px dashed var(--border, #e4e7ed);
 }
+.derived-card__footer-ops { display: flex; align-items: center; gap: var(--space-1); }
 /* 父子明细映射卡片 */
 .ds-col { display: flex; flex-direction: column; gap: 4px; }
 .child-map-tag { justify-content: flex-start; font-size: 12px; }
