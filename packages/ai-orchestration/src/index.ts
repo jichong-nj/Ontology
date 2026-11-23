@@ -2,4 +2,5 @@
 export { OpenAICompatibleLLM, heuristicIsReasoning } from './llm-gateway';
 export type { ChatMessage, ToolSpec, ToolCall, LLMRequest, LLMResponse, LLMClientOptions } from './llm-gateway';
 export { AIPAgent } from './agent';
+export { trimHistory, estimateTokens } from './context';
 export type { AgentRuntime, AgentRunResult, ActiveModelRef } from './agent';

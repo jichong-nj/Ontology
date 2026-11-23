@@ -20,7 +20,7 @@ import {
   registerDbFunctions,
 } from '@ontology/enterprise-biz';
 import { RuleScheduler } from '@ontology/ontology-core';
-import { AIPAgent } from '@ontology/ai-orchestration';
+import { AIPAgent, trimHistory, estimateTokens } from '@ontology/ai-orchestration';
 import type { AgentRuntime, ActiveModelRef } from '@ontology/ai-orchestration';
 import { OpenAICompatibleLLM, heuristicIsReasoning } from '@ontology/ai-orchestration';
 import type { AIPAgentConfig, AIPProvider, AIPModel } from '@ontology/ontology-core';
@@ -1703,8 +1703,18 @@ app.post('/api/aip/agent/:id/run', async (req, res) => {
     const wantModelId = req.body?.modelId || cfg.defaultModelId;
     const resolved = wantModelId ? await resolveActiveModel(wantModelId) : null;
     const active = resolved?.ref;
-    const agent = new AIPAgent(finalizeAgentConfig(cfg), agentRuntime, active ?? undefined);
-    const result = await agent.run(message, history);
+    const fullCfg = finalizeAgentConfig(cfg);
+    // 上下文预算：滑动窗口裁剪历史（保留首条用户消息 + 最近若干轮）
+    const trimmedHistory = trimHistory(history, {
+      contextWindow: resolved?.model?.contextWindow,
+      maxTokens: resolved?.model?.maxTokens ?? active?.maxTokens,
+      reservedTokens: estimateTokens(fullCfg.systemPrompt || '') + estimateTokens(message),
+    });
+    if (trimmedHistory.length !== history.length) {
+      console.log(`[aip] 历史裁剪: ${history.length} → ${trimmedHistory.length} 条 (${message.slice(0, 20)}…)`);
+    }
+    const agent = new AIPAgent(fullCfg, agentRuntime, active ?? undefined);
+    const result = await agent.run(message, trimmedHistory);
     res.json({ ok: true, ...result });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1732,7 +1742,16 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
 
-    const agent = new AIPAgent(finalizeAgentConfig(cfg), agentRuntime, active ?? undefined);
+    const fullCfg = finalizeAgentConfig(cfg);
+    const trimmedHistory = trimHistory(history, {
+      contextWindow: resolved?.model?.contextWindow,
+      maxTokens: resolved?.model?.maxTokens ?? active?.maxTokens,
+      reservedTokens: estimateTokens(fullCfg.systemPrompt || '') + estimateTokens(message),
+    });
+    if (trimmedHistory.length !== history.length) {
+      console.log(`[aip] 历史裁剪(stream): ${history.length} → ${trimmedHistory.length} 条`);
+    }
+    const agent = new AIPAgent(fullCfg, agentRuntime, active ?? undefined);
     // 客户端主动停止（关闭连接）时中止生成，避免继续消耗模型调用
     let clientGone = false;
     res.on('close', () => { clientGone = true; });
@@ -1744,7 +1763,7 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
     let finalReply = '';
     let firstThought = true;
     try {
-      for await (const ev of agent.runStream(message, history)) {
+      for await (const ev of agent.runStream(message, trimmedHistory)) {
         if (clientGone) break;
         send(ev);
         if (ev.type === 'thought') {

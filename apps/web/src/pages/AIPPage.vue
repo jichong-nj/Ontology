@@ -374,7 +374,9 @@ async function send() {
   // 多轮上下文：把已有会话（用户 + AI 文本）带给模型，支撑"AI 追问 → 用户回答"的建模流程
   const history = messages.value
     .filter((m) => (m.content || '').trim().length > 0)
-    .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }));
+    .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }))
+    .slice(-20);                       // C 方案：只带最近 20 条
+  while (history.length && history[0].role !== 'user') history.shift();
 
   messages.value.push({ role: 'user', content: text });
   input.value = '';
