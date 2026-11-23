@@ -1836,9 +1836,10 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
     const timeline: unknown[] = [];
     let finalReply = '';
     let firstThought = true;
+    let interrupted = false; // 客户端断开或模型异常导致生成提前结束
     try {
       for await (const ev of agent.runStream(message, trimmedHistory)) {
-        if (clientGone) break;
+        if (clientGone) { interrupted = true; break; }
         send(ev);
         if (ev.type === 'thought') {
           // 把逐 token 思考合并为一个条目（落库用）
@@ -1856,8 +1857,10 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
         }
       }
     } catch (e: any) {
+      interrupted = true;
       send({ type: 'error', message: e.message });
     }
+    if (interrupted) console.warn(`[aip] 生成被中断，已生成 ${finalReply.length} 字，保存部分回答`);
     if (!clientGone && !res.writableEnded) {
       res.write('event: end\ndata: {}\n\n');
       res.end();
@@ -1865,8 +1868,11 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
 
     // 生成结束后只落 assistant（user 已在开始时落库）；空回复不落库，避免出现空气泡
     if (conversationId && finalReply.trim()) {
+      const content = interrupted
+        ? `${finalReply}\n\n> ⏹ 回答已中断（页面离开/连接关闭或模型异常），可重新发送继续。`
+        : finalReply;
       try {
-        await repo.appendMessage({ id: crypto.randomUUID(), conversationId, role: 'ai', content: finalReply, timeline });
+        await repo.appendMessage({ id: crypto.randomUUID(), conversationId, role: 'ai', content, timeline });
       } catch (e: any) {
         console.error('[aip] assistant 消息落库失败', e.message);
       }
