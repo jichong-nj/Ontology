@@ -130,13 +130,13 @@ INSERT INTO product (id, sku, name, category, owner_dept_id, status, launch_date
   (5, 'P1005', '旧型号网关 A0',   '物联网设备', 2, 'eol',    '2018-01-01');
 
 -- ---------- 设备 ----------
-INSERT INTO device (id, asset_code, name, type, model, product_id, status, purchase_date) VALUES
-  (1,  'DEV-0001', '网关-A1-01', '网关',   'A1', 1, 'in_use',      '2021-06-01'),
-  (2,  'DEV-0002', '网关-A1-02', '网关',   'A1', 1, 'in_use',      '2021-06-01'),
-  (3,  'DEV-0003', '边缘盒-B2-01','边缘计算','B2', 2, 'in_use',      '2022-04-01'),
-  (4,  'DEV-0004', '传感器-S2-01','传感器', 'S2', 4, 'maintenance', '2021-09-01'),
-  (5,  'DEV-0005', '传感器-S2-02','传感器', 'S2', 4, 'idle',        '2021-09-01'),
-  (6,  'DEV-0006', '旧网关-A0-01','网关',   'A0', 5, 'retired',     '2018-02-01');
+INSERT INTO device (id, asset_code, name, type, model, product_id, owner_emp_id, status, purchase_date) VALUES
+  (1,  'DEV-0001', '网关-A1-01', '网关',   'A1', 1, 6,  'in_use',      '2021-06-01'),
+  (2,  'DEV-0002', '网关-A1-02', '网关',   'A1', 1, 6,  'in_use',      '2021-06-01'),
+  (3,  'DEV-0003', '边缘盒-B2-01','边缘计算','B2', 2, 5,  'in_use',      '2022-04-01'),
+  (4,  'DEV-0004', '传感器-S2-01','传感器', 'S2', 4, 11, 'maintenance', '2021-09-01'),
+  (5,  'DEV-0005', '传感器-S2-02','传感器', 'S2', 4, 11, 'idle',        '2021-09-01'),
+  (6,  'DEV-0006', '旧网关-A0-01','网关',   'A0', 5, 10, 'retired',     '2018-02-01');
 
 -- 设备 <-> 部门（使用/归属）
 INSERT INTO device_department (device_id, department_id, usage_type) VALUES

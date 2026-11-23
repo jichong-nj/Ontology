@@ -132,6 +132,7 @@ CREATE TABLE device (
   type          TEXT,                        -- 设备类型
   model         TEXT,                        -- 型号
   product_id    BIGINT REFERENCES product(id),  -- 关联生产/对应产品
+  owner_emp_id  BIGINT REFERENCES employee(id), -- 责任人（指向 employee.id）
   status        TEXT NOT NULL DEFAULT 'in_use'
                 CHECK (status IN ('in_use','idle','maintenance','retired')),
   purchase_date DATE,
@@ -140,6 +141,7 @@ CREATE TABLE device (
 );
 COMMENT ON TABLE  device IS '设备信息';
 COMMENT ON COLUMN device.asset_code IS '治理统一资产编码';
+COMMENT ON COLUMN device.owner_emp_id IS '设备责任人（指向 employee.id）';
 
 CREATE INDEX ON device (product_id);
 
