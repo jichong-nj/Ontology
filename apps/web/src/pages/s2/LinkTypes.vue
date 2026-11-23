@@ -190,6 +190,21 @@ function objName(apiName: string) {
   return objects.value.find((o) => o.apiName === apiName)?.displayName || apiName;
 }
 
+// 关系基数汇总（展示用）：源→目标 的 1:N 以及自然语言解释
+const cardinalitySummary = computed(() => {
+  const s = form.value.sourceCardinality;
+  const t = form.value.targetCardinality;
+  const src = objName(form.value.sourceType) || '源对象';
+  const tgt = objName(form.value.targetType) || '目标对象';
+  const label = `${s === 'one' ? '1' : 'N'}:${t === 'one' ? '1' : 'N'}`;
+  let hint = '';
+  if (s === 'one' && t === 'many') hint = `一个${tgt}有多个${src}`;
+  else if (s === 'many' && t === 'one') hint = `一个${src}有多个${tgt}`;
+  else if (s === 'one' && t === 'one') hint = '一一对应';
+  else hint = '多对多';
+  return { label, hint };
+});
+
 function cardinalityLabel(lt: LinkType) {
   const sc = lt.sourceCardinality || 'one';
   const tc = lt.targetCardinality || 'many';
@@ -297,6 +312,11 @@ onMounted(load);
       lock-scroll
       destroy-on-close
     >
+      <div v-if="form.sourceType && form.targetType" class="lt-summary">
+        <span class="lt-summary__rel">{{ objName(form.sourceType) }} → {{ objName(form.targetType) }}</span>
+        <span class="lt-summary__card">{{ cardinalitySummary.label }}</span>
+        <span class="lt-summary__hint">{{ cardinalitySummary.hint }}</span>
+      </div>
       <div class="lt-config">
         <!-- ====== 左栏：源端（Source）====== -->
         <div class="lt-col">
@@ -316,10 +336,10 @@ onMounted(load);
 
           <!-- 基数 -->
           <div class="lt-field">
-            <label class="lt-field__label">基数（Cardinality）</label>
+            <label class="lt-field__label">基数（每个「{{ objName(form.sourceType) || '源对象' }}」对应几个「{{ objName(form.targetType) || '目标对象' }}」）</label>
             <ElRadioGroup v-model="form.sourceCardinality" size="large">
-              <ElRadioButton value="one">一对一（One）</ElRadioButton>
-              <ElRadioButton value="many">一对多（Many）</ElRadioButton>
+              <ElRadioButton value="one">1 个</ElRadioButton>
+              <ElRadioButton value="many">多个</ElRadioButton>
             </ElRadioGroup>
           </div>
 
@@ -401,10 +421,10 @@ onMounted(load);
 
           <!-- 基数 -->
           <div class="lt-field">
-            <label class="lt-field__label">基数（Cardinality）</label>
+            <label class="lt-field__label">基数（每个「{{ objName(form.targetType) || '目标对象' }}」对应几个「{{ objName(form.sourceType) || '源对象' }}」）</label>
             <ElRadioGroup v-model="form.targetCardinality" size="large">
-              <ElRadioButton value="one">一对一（One）</ElRadioButton>
-              <ElRadioButton value="many">一对多（Many）</ElRadioButton>
+              <ElRadioButton value="one">1 个</ElRadioButton>
+              <ElRadioButton value="many">多个</ElRadioButton>
             </ElRadioGroup>
           </div>
 
@@ -430,9 +450,9 @@ onMounted(load);
 
           <!-- 关系预览 -->
           <div v-if="form.sourceType && form.targetType" class="lt-preview">
-            <span>{{ form.targetCardinality === 'one' ? '一' : '多' }}</span>
+            <span>{{ form.targetCardinality === 'one' ? '1' : 'N' }}</span>
             <ElIcon><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/></svg></ElIcon>
-            <span>「{{ objName(form.sourceType) }}」{{ form.targetCardinality === 'one' ? '对应' : '对应多个' }}「{{ objName(form.targetType) }}」</span>
+            <span>「{{ objName(form.targetType) }}」对应{{ form.targetCardinality === 'one' ? '1 个' : '多个' }}「{{ objName(form.sourceType) }}」</span>
           </div>
 
           <!-- 复数名称 -->
@@ -597,6 +617,24 @@ onMounted(load);
   overflow-y: auto;
   padding-right: var(--space-2);
 }
+.lt-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.lt-summary__rel { font-weight: 600; }
+.lt-summary__card {
+  color: var(--accent);
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+.lt-summary__hint { color: var(--text-secondary); }
 .lt-col {
   padding: var(--space-3);
   border-radius: 8px;
