@@ -1884,6 +1884,10 @@ const MODELING_PROMPT = `
 - 函数体必须 "return async (args, ctx) => {...}"，args 含 objectType/objectRid/property；
 - 关系方向：ctx.links(lt) 返回 [{sourceRid, targetRid}]，按关系类型的源/目标端语义过滤；
 - 递归（含下级）必须做环保护与深度上限。
+- **预计算必须先读快照、再写回**：严禁先 clearObjectWrites 再读取（清空后 ctx.objects 必然为空，会静默删光实例）；
+  需要重置实例时用平台同步接口（/api/s2/object-types/:apiName/sync），不要在函数里 clear。
+- 写入前先检查实例数：若读取结果为 0 而源表有数据，立即停止并报告，不要继续写。
+- writeObjectPatch 返回 undefined 表示成功（写入无返回值），不要当作失败；落库结果用 get_instances 复核。
 `;
 
 // 注入建模提示词（不影响未启用 modeling 的 Agent）

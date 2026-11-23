@@ -612,8 +612,25 @@ export async function seedExtensionInstances(repo: PostgresMetadataRepository): 
 // 注册业务函数到沙箱（供运行时 invoke）
 export function buildSandbox(repo: PostgresMetadataRepository): TypeScriptFunctionSandbox {
   const sandbox = new TypeScriptFunctionSandbox();
+  // 安全代理：禁止沙箱函数执行破坏性清空/删除（曾导致实例被清空的事故）。
+  // 重置实例请走平台同步接口。其它方法绑定原 repo 后返回。
+  const BLOCKED = new Set(['clearObjectWrites', 'clearLinkInstances', 'deleteObjectType', 'deleteLinkType', 'deleteFunction']);
+  const safeRepo = new Proxy(repo, {
+    get(target, prop, receiver) {
+      if (typeof prop === 'string' && BLOCKED.has(prop)) {
+        return async () => {
+          throw new Error(
+            `沙箱函数禁止调用 ${prop}（会清空实例/关系导致数据丢失）。` +
+            '重置实例请使用平台接口 POST /api/s2/object-types/:apiName/sync',
+          );
+        };
+      }
+      const v = Reflect.get(target, prop, receiver);
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
   sandbox.setContext({
-    repo,
+    repo: safeRepo as typeof repo,
     objects: (t) => repo.listObjectProperties(t),
     links: (t) => repo.listLinkInstances(t),
   });
