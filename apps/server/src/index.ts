@@ -712,6 +712,12 @@ async function syncLinkInstances(
       throw new Error(`关系类型 ${apiName} 使用关联表模式，必须配置 sourceColumn / targetColumn`);
     }
     const data = await store.readSourceTable(conn, { schema, table: lt.junctionTable, limit: 50000 });
+    const colSet = new Set(data.columns.map((c) => c.name));
+    if (!colSet.has(lt.sourceColumn) || !colSet.has(lt.targetColumn)) {
+      throw new Error(
+        `关联表 ${lt.junctionTable} 缺少列 ${[lt.sourceColumn, lt.targetColumn].filter((c) => !colSet.has(c!)).join(', ')}（可用列：${[...colSet].join(', ')}）`,
+      );
+    }
     await repo.clearLinkInstances(apiName).catch(() => {});
     let written = 0;
     let skipped = 0;
@@ -735,6 +741,13 @@ async function syncLinkInstances(
   const srcPkCol = tbl.columns.find((c) => c.isPrimaryKey)?.name ?? 'id';
   const fkCol = lt.foreignKey || lt.primaryKey;
   if (!fkCol) throw new Error(`关系类型 ${apiName} 未配置外键列（foreignKey），无法同步关系实例`);
+  // 外键列必须存在于"源对象类型"的源表中；否则说明关系方向反了（外键在目标表上）
+  if (!tbl.columns.some((c) => c.name === fkCol)) {
+    throw new Error(
+      `外键列 ${fkCol} 不在源表 ${schema}.${src.sourceTable} 中（当前方向 ${lt.sourceType} → ${lt.targetType}）。` +
+      `关系方向应设为"持有外键的一方 → 被引用的一方"，例如 LeaveRecord → Employee（foreignKey=employee_id）。`,
+    );
+  }
 
   const data = await store.readSourceTable(conn, { schema, table: src.sourceTable, limit: 50000 });
   await repo.clearLinkInstances(apiName).catch(() => {});
@@ -1923,6 +1936,8 @@ const MODELING_PROMPT = `
 {"type":"link_type_draft","apiName":"OrganizationParent","displayName":"上级组织","sourceType":"Organization","targetType":"Organization","cardinality":"one-to-many","foreignKey":"parent_id","targetKeyProperty":"id","pluralName":"下级组织"}
 \`\`\`
    - foreignKey = 源表外键列名；targetKeyProperty = 目标对象主键属性 apiName；
+   - 方向规则：**持有外键的一方作为源端**（如 leave_record.employee_id → LeaveRecord → Employee），
+     不要把外键所在表放到目标端，否则同步会取不到外键列；
    - cardinality 取 one-to-one / one-to-many / many-to-many；
    - 外键模式只支持"外键值 = 目标对象主键值"；跨键关联（如 emp_code→id）当前不支持，
      建议用户给源表补一列指向目标主键（如 employee_id），或改用关联表模式。
