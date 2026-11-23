@@ -42,6 +42,18 @@ export interface TestResult {
   tables: { table: string; columns: { name: string; dataType: string; isNullable: boolean; isPrimaryKey: boolean }[] }[];
 }
 
+// 数据预览结果（S1 数据源浏览：打开表 → 查看真实数据）
+export interface TablePreview {
+  schema: string;
+  table: string;
+  dbType: DbType;
+  columns: { name: string; dataType: string }[];
+  rows: Record<string, unknown>[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface FieldMapping {
   property: string;               // S2 对象属性 apiName
   sourceColumn: string;           // 源表字段名

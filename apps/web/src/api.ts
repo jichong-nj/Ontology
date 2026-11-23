@@ -52,6 +52,18 @@ export interface TestResult {
   tables: ProbeTable[];
 }
 
+// S1 数据源浏览：打开表 → 查看真实数据（只读分页预览）
+export interface TablePreview {
+  schema: string;
+  table: string;
+  dbType: DbType;
+  columns: { name: string; dataType: string }[];
+  rows: Record<string, unknown>[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export const s1 = {
   listConnections: () => http.get<SourceConnection[]>('/s1/connections').then((r) => r.data),
   getConnection: (id: string) => http.get<SourceConnection>(`/s1/connections/${id}`).then((r) => r.data),
@@ -61,6 +73,17 @@ export const s1 = {
   deleteConnection: (id: string) => http.delete(`/s1/connections/${id}`).then((r) => r.data),
   // 探测只读源库的表与字段（创建对象类型时选表/映射字段用）
   probe: (connId: string) => http.get<TestResult>(`/s1/connections/${connId}/probe`).then((r) => r.data),
+  // 浏览：列出连接库内可见 schema
+  listSchemas: (connId: string) =>
+    http.get<{ schemas: string[] }>(`/s1/connections/${connId}/schemas`).then((r) => r.data),
+  // 浏览：指定 schema 下的表（含字段列）
+  listTables: (connId: string, schema?: string) =>
+    http.get<TestResult>(`/s1/connections/${connId}/tables`, { params: { schema } }).then((r) => r.data),
+  // 浏览：打开表 → 查看真实数据（limit 上限 500）
+  tableRows: (connId: string, table: string, opts: { schema?: string; limit?: number; offset?: number } = {}) =>
+    http
+      .get<TablePreview>(`/s1/connections/${connId}/tables/${encodeURIComponent(table)}/rows`, { params: opts })
+      .then((r) => r.data),
   // 仅测试连接连通性（不列举表）
   testConnection: (connId: string) => http.post<TestResult>(`/s1/connections/${connId}/test`).then((r) => r.data),
   // 参数化测试（用表单当前值，未保存也可用）
@@ -199,6 +222,18 @@ export const s2 = {
   // 组合创建：对象类型 + 关联数据源表与字段映射
   createObjectTypeWithMapping: (p: CreateObjectTypeWithMapping) =>
     http.post('/s2/object-types/with-mapping', p).then((r) => r.data),
+  // AIP 建模闭环：从 AI 草案创建对象类型（可同时同步实例）
+  createObjectTypeFromDraft: (draft: Record<string, unknown>, sync = true) =>
+    http.post('/s2/object-types/from-draft', { draft, sync }).then((r) => r.data),
+  // 手动重新同步某对象类型的实例（全量覆盖）
+  syncObjectInstances: (apiName: string, schema = 'public') =>
+    http.post(`/s2/object-types/${apiName}/sync`, { schema }).then((r) => r.data),
+  // AIP 关系建模：从草案创建关系类型（可同时同步关系实例）
+  createLinkTypeFromDraft: (draft: Record<string, unknown>, sync = true) =>
+    http.post('/s2/link-types/from-draft', { draft, sync }).then((r) => r.data),
+  // 手动重新同步某关系类型的关系实例（全量覆盖）
+  syncLinkInstances: (apiName: string, schema = 'public') =>
+    http.post(`/s2/link-types/${apiName}/sync`, { schema }).then((r) => r.data),
   updateObjectType: (apiName: string, ot: ObjectType) => http.put(`/s2/object-types/${apiName}`, ot).then((r) => r.data),
   deleteObjectType: (apiName: string) => http.delete(`/s2/object-types/${apiName}`).then((r) => r.data),
   // 计算派生属性（如"部门人数"）：传入对象实例 rid
@@ -452,3 +487,14 @@ export type AgentStreamEvent =
   | { type: 'done'; reply: string };
 
 export default http;
+
+// ---------- System（系统维护） ----------
+export interface ReingestStep { step: string; ok: boolean; error?: string }
+export interface ReingestReport { ok: boolean; steps: ReingestStep[]; elapsedMs: number }
+
+export const system = {
+  // 手动重新灌入业务数据（S1 数据源 + S2 定义 + S3 实例全量重推）
+  reingest: () => http.post<ReingestReport>('/admin/reingest').then((r) => r.data),
+  // 查询是否正在进行
+  reingestStatus: () => http.get<{ running: boolean }>('/admin/reingest/status').then((r) => r.data),
+};

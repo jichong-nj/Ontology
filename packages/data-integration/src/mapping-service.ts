@@ -4,10 +4,10 @@
 // 本服务保留的能力：源连接注册、表结构探测、以及“创建对象类型时关联数据源并映射字段”的组合动作。
 import type { MetadataRepository, ChildTableMapping } from '@ontology/ontology-core';
 import type { PostgresMappingStore } from './mapping-store.pg';
-import type { ObjectMapping, SourceConnection, TestResult } from './mapping-model';
+import type { ObjectMapping, SourceConnection, TestResult, TablePreview } from './mapping-model';
 import type { ObjectType } from '@ontology/ontology-core';
 
-export type { TestResult } from './mapping-model';
+export type { TestResult, TablePreview } from './mapping-model';
 
 export interface ProbeColumn {
   name: string;
@@ -45,11 +45,28 @@ export class MappingService {
     return this.store.getSourceConnection(id);
   }
 
-  // 探测只读源库中的表与字段
-  async probeSourceTables(connId: string): Promise<TestResult> {
+  // 探测只读源库中的表与字段（可按 schema 过滤）
+  async probeSourceTables(connId: string, schema?: string): Promise<TestResult> {
     const conn = await this.store.getSourceConnection(connId);
     if (!conn) throw new Error(`数据源不存在: ${connId}`);
-    return this.store.probeSourceTables(conn);
+    return this.store.probeSourceTables(conn, schema);
+  }
+
+  // 列出源库内可见 schema（数据源浏览：库 → schema → 表）
+  async listSourceSchemas(connId: string): Promise<string[]> {
+    const conn = await this.store.getSourceConnection(connId);
+    if (!conn) throw new Error(`数据源不存在: ${connId}`);
+    return this.store.listSourceSchemas(conn);
+  }
+
+  // 打开表 → 查看真实数据（只读分页预览）
+  async previewSourceTable(
+    connId: string,
+    opts: { schema?: string; table: string; limit?: number; offset?: number },
+  ): Promise<TablePreview> {
+    const conn = await this.store.getSourceConnection(connId);
+    if (!conn) throw new Error(`数据源不存在: ${connId}`);
+    return this.store.previewSourceTable(conn, opts);
   }
 
   // 仅做连通性测试（不列举表）

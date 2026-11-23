@@ -12,18 +12,43 @@ DROP TABLE IF EXISTS project_member        CASCADE;
 DROP TABLE IF EXISTS project_product       CASCADE;
 DROP TABLE IF EXISTS device_department     CASCADE;
 DROP TABLE IF EXISTS monitor_log           CASCADE;
+DROP TABLE IF EXISTS leave_record          CASCADE;
 DROP TABLE IF EXISTS device                CASCADE;
 DROP TABLE IF EXISTS product               CASCADE;
 DROP TABLE IF EXISTS project               CASCADE;
 DROP TABLE IF EXISTS employee              CASCADE;
 DROP TABLE IF EXISTS department            CASCADE;
+DROP TABLE IF EXISTS organization          CASCADE;
+
+-- ---------- 单位（集团/子公司/分公司） ----------
+CREATE TABLE organization (
+  id            BIGSERIAL PRIMARY KEY,
+  code          TEXT UNIQUE NOT NULL,        -- 治理统一单位编码
+  name          TEXT NOT NULL,
+  short_name    TEXT,                        -- 简称
+  org_type      TEXT NOT NULL DEFAULT 'subsidiary'
+                CHECK (org_type IN ('group','subsidiary','branch','office')),  -- 集团/子公司/分公司/办事处
+  parent_id     BIGINT REFERENCES organization(id),  -- 自引用：集团→子单位层级
+  credit_code   TEXT UNIQUE,                 -- 统一社会信用代码（治理后唯一标识）
+  leader_name   TEXT,                        -- 单位负责人（文本，不挂 employee 避免多重循环依赖）
+  location      TEXT,                        -- 注册地
+  established_date DATE,                     -- 成立日期
+  status        TEXT NOT NULL DEFAULT 'active'
+                CHECK (status IN ('active','inactive','merged')),  -- merged=被吸收合并
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE  organization IS '单位（法人/分支机构），支持集团→子单位层级';
+COMMENT ON COLUMN organization.code IS '治理统一单位编码';
+COMMENT ON COLUMN organization.credit_code IS '统一社会信用代码';
 
 -- ---------- 部门 ----------
 CREATE TABLE department (
   id            BIGSERIAL PRIMARY KEY,
   code          TEXT UNIQUE NOT NULL,        -- 部门编码（治理后统一编码）
   name          TEXT NOT NULL,
-  parent_id     BIGINT REFERENCES department(id),  -- 自引用：上下级部门
+  org_id        BIGINT NOT NULL REFERENCES organization(id),  -- 所属单位
+  parent_id     BIGINT REFERENCES department(id),  -- 自引用：上下级部门（限本单位内）
   manager_id    BIGINT,                      -- 部门负责人（指向 employee.id），建表后补 FK
   location      TEXT,                        -- 办公地点
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -60,6 +85,26 @@ ALTER TABLE department
 
 CREATE INDEX ON employee (department_id);
 CREATE INDEX ON employee (manager_id);
+CREATE INDEX ON department (org_id);
+CREATE INDEX ON department (parent_id);
+
+-- ---------- 请假记录 ----------
+CREATE TABLE leave_record (
+  id            BIGSERIAL PRIMARY KEY,
+  emp_code      TEXT NOT NULL,               -- 对齐 Employee RID（emp_code）
+  leave_type    TEXT NOT NULL
+                CHECK (leave_type IN ('annual','sick','personal','marriage','maternity','bereavement')),
+  start_date    DATE NOT NULL,
+  duration_days NUMERIC(4,1) NOT NULL,
+  reason        TEXT,
+  status        TEXT NOT NULL DEFAULT 'approved'
+                CHECK (status IN ('pending','approved','rejected')),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE  leave_record IS '请假记录（Employee 派生属性「年请假天数」数据源）';
+COMMENT ON COLUMN leave_record.emp_code IS '员工工号（对齐本体 Employee RID）';
+
+CREATE INDEX ON leave_record (emp_code, start_date);
 
 -- ---------- 产品 ----------
 CREATE TABLE product (
@@ -170,6 +215,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE TRIGGER trg_organization_updated BEFORE UPDATE ON organization FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER trg_department_updated  BEFORE UPDATE ON department  FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER trg_employee_updated    BEFORE UPDATE ON employee    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER trg_product_updated     BEFORE UPDATE ON product     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();

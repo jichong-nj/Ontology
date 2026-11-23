@@ -20,6 +20,7 @@ import {
   AIPMessage,
   FunctionSandbox,
 } from './types';
+import { ensureRid } from './rid';
 import { Pool } from 'pg';
 
 export class PostgresMetadataRepository implements MetadataRepository {
@@ -374,6 +375,8 @@ export class PostgresMetadataRepository implements MetadataRepository {
     objectRid: string,
     sandbox?: FunctionSandbox,
   ): Promise<{ value: unknown }> {
+    // RID 规范化：允许调用方传裸 rid（兼容旧接口），统一补类型前缀后参与匹配
+    objectRid = ensureRid(apiName, objectRid);
     const ot = await this.getObjectType(apiName);
     if (!ot) throw new Error(`对象类型不存在: ${apiName}`);
     const prop = ot.properties.find((p: PropertyDef) => p.apiName === propApiName);
@@ -461,12 +464,14 @@ export class PostgresMetadataRepository implements MetadataRepository {
   }
 
   async writeObjectPatch(objectType: string, objectRid: string, patch: unknown, actor: string): Promise<void> {
+    // RID 规范化：裸 RID 自动补类型前缀（兼容旧调用方/沙箱函数），保证全局唯一。
+    const normRid = ensureRid(objectType, objectRid);
     // 每实例一行：存在则合并 patch（修改单个属性不覆盖其他属性），不存在则插入。
     await this.pool.query(
       `INSERT INTO object_write (object_type, object_rid, patch, actor) VALUES ($1,$2,$3,$4)
        ON CONFLICT (object_type, object_rid)
        DO UPDATE SET patch = object_write.patch || EXCLUDED.patch, actor = EXCLUDED.actor`,
-      [objectType, objectRid, JSON.stringify(patch), actor],
+      [objectType, normRid, JSON.stringify(patch), actor],
     );
   }
 

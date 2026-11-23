@@ -54,6 +54,8 @@
             <el-checkbox value="rules">规则</el-checkbox>
             <el-checkbox value="explore">探索</el-checkbox>
             <el-checkbox value="alerts">告警</el-checkbox>
+            <el-checkbox value="sql">受限 SQL</el-checkbox>
+            <el-checkbox value="modeling">数据源建模</el-checkbox>
           </el-checkbox-group>
         </el-form-item>
         <el-form-item label="可访问对象类型">
@@ -135,7 +137,7 @@ async function openNewAgent() {
     id: '',
     displayName: '新智能体',
     systemPrompt: '你是本 Ontology 平台的智能体，可调用本体函数/动作/规则与探索工具回答用户问题。',
-    enabledTools: ['functions', 'actions', 'rules', 'explore', 'alerts'],
+    enabledTools: ['functions', 'actions', 'rules', 'explore', 'alerts', 'sql', 'modeling'],
     objectTypes: [],
     modelScope: scope,
     defaultModelId: scope[0] ?? '',

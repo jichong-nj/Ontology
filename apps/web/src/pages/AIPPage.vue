@@ -90,6 +90,64 @@
               </template>
               <!-- 回复正文（始终在最后） -->
               <div v-if="m.content" class="bubble ai" v-html="renderMd(m.content)"></div>
+              <div v-if="m.stopped" class="stopped-hint">⏹ 已停止生成</div>
+              <!-- AIP 建模草案：确认创建卡片（创建动作由用户点击触发，模型不直接写库） -->
+              <div v-if="m.draft && m.draft.type === 'object_type_draft'" class="draft-card">
+                <div class="draft-title">📦 对象类型草案 · {{ m.draft.displayName }}（{{ m.draft.apiName }}）</div>
+                <div class="draft-meta">
+                  源表 {{ m.draft.schema || 'public' }}.{{ m.draft.sourceTable }}
+                  · 主键 {{ m.draft.primaryKey || 'id' }}
+                  · {{ m.draft.properties.length }} 个属性
+                </div>
+                <div class="draft-props">
+                  <span v-for="p in m.draft.properties" :key="p.apiName" class="draft-prop">
+                    <span class="mono">{{ p.apiName }}</span>
+                    <span class="draft-prop-type">{{ p.type }}</span>
+                    <span class="draft-prop-src">← {{ p.sourceMapping }}</span>
+                  </span>
+                </div>
+                <el-button
+                  type="primary"
+                  size="small"
+                  :loading="m.draftCreating"
+                  @click="confirmDraft(m)"
+                >确认创建并同步实例</el-button>
+                <div v-if="m.draftResult" class="draft-result">
+                  <span v-if="m.draftResult.error" class="draft-err">✗ {{ m.draftResult.error }}</span>
+                  <span v-else>
+                    ✓ 已创建 {{ m.draftResult.apiName }}
+                    <template v-if="m.draftResult.sync && !m.draftResult.sync.error">
+                      ，同步 {{ m.draftResult.sync.written }} 条实例（读取 {{ m.draftResult.sync.read }} 行）
+                    </template>
+                  </span>
+                </div>
+              </div>
+
+              <!-- 关系类型草案卡片 -->
+              <div v-else-if="m.draft && m.draft.type === 'link_type_draft'" class="draft-card">
+                <div class="draft-title">🔗 关系类型草案 · {{ m.draft.displayName }}（{{ m.draft.apiName }}）</div>
+                <div class="draft-meta">
+                  {{ m.draft.sourceType }} → {{ m.draft.targetType }}
+                  · {{ m.draft.cardinality }}
+                  · 外键 {{ m.draft.foreignKey }}
+                  · 目标键 {{ m.draft.targetKeyProperty || m.draft.primaryKey }}
+                </div>
+                <el-button
+                  type="primary"
+                  size="small"
+                  :loading="m.draftCreating"
+                  @click="confirmDraft(m)"
+                >确认创建并同步关系实例</el-button>
+                <div v-if="m.draftResult" class="draft-result">
+                  <span v-if="m.draftResult.error" class="draft-err">✗ {{ m.draftResult.error }}</span>
+                  <span v-else>
+                    ✓ 已创建 {{ m.draftResult.apiName }}
+                    <template v-if="m.draftResult.sync && !m.draftResult.sync.error">
+                      ，同步 {{ m.draftResult.sync.written }} 条关系实例（读取 {{ m.draftResult.sync.read }} 行）
+                    </template>
+                  </span>
+                </div>
+              </div>
             </template>
           </div>
         </div>
@@ -116,7 +174,7 @@
 import { ref, reactive, onMounted, nextTick, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
-import { aip as api, AIPAgentConfigDTO, AIPConversationDTO, AIPMessageDTO } from '../api';
+import { aip as api, s2, AIPAgentConfigDTO, AIPConversationDTO, AIPMessageDTO } from '../api';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: false });
 function renderMd(s: string): string {
@@ -130,7 +188,7 @@ const currentConfig = ref<AIPAgentConfigDTO | null>(null);
 const conversations = ref<AIPConversationDTO[]>([]);
 const currentConvId = ref<string | null>(null);
 
-const messages = ref<{ role: 'user' | 'ai'; content: string; timeline?: any[]; curThink?: string }[]>([]);
+const messages = ref<{ role: 'user' | 'ai'; content: string; timeline?: any[]; curThink?: string; draft?: any; draftCreating?: boolean; draftResult?: any; stopped?: boolean }[]>([]);
 const input = ref('');
 const streaming = ref(false);
 let abortCtl: AbortController | null = null;
@@ -251,6 +309,50 @@ function quickAsk(t: string) {
   send();
 }
 
+// 从 AI 回复中提取对象类型草案（```json {"type":"object_type_draft",...} ```）
+function extractDraft(text: string): any | null {
+  const re = /```json\s*([\s\S]*?)```/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text || '')) !== null) {
+    try {
+      const obj = JSON.parse(m[1]);
+      if (
+        obj &&
+        (obj.type === 'object_type_draft' || obj.type === 'link_type_draft') &&
+        obj.apiName &&
+        (obj.type === 'link_type_draft' || Array.isArray(obj.properties))
+      ) return obj;
+    } catch { /* 非 JSON 块，忽略 */ }
+  }
+  return null;
+}
+
+// 用户点击「确认创建」：落库对象类型 + 同步实例
+async function confirmDraft(m: any) {
+  if (!m?.draft || m.draftCreating) return;
+  m.draftCreating = true;
+  m.draftResult = null;
+  const isLink = m.draft.type === 'link_type_draft';
+  try {
+    const r: any = isLink
+      ? await s2.createLinkTypeFromDraft(m.draft, true)
+      : await s2.createObjectTypeFromDraft(m.draft, true);
+    m.draftResult = r;
+    const kind = isLink ? '关系类型' : '对象类型';
+    if (r?.sync?.error) {
+      ElMessage.warning(`${kind} ${m.draft.apiName} 已创建，但关系/实例同步失败：${r.sync.error}`);
+    } else {
+      ElMessage.success(`已创建${kind} ${m.draft.apiName}，同步 ${r?.sync?.written ?? 0} 条${isLink ? '关系实例' : '实例'}`);
+    }
+  } catch (e: any) {
+    const msg = e?.response?.data?.error || e?.message || '创建失败';
+    m.draftResult = { error: msg };
+    ElMessage.error(msg);
+  } finally {
+    m.draftCreating = false;
+  }
+}
+
 async function send() {
   const text = input.value.trim();
   if (!text || streaming.value) return;
@@ -268,6 +370,11 @@ async function send() {
       return;
     }
   }
+
+  // 多轮上下文：把已有会话（用户 + AI 文本）带给模型，支撑"AI 追问 → 用户回答"的建模流程
+  const history = messages.value
+    .filter((m) => (m.content || '').trim().length > 0)
+    .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }));
 
   messages.value.push({ role: 'user', content: text });
   input.value = '';
@@ -322,19 +429,26 @@ async function send() {
         } else if (ev.type === 'done') {
           flushThink();
           aiMsg.content = reply || ev.reply || '';
+          aiMsg.draft = extractDraft(aiMsg.content) ?? undefined;
         } else if (ev.type === 'error') {
           flushThink();
           aiMsg.content = '⚠️ ' + ev.message;
         }
         scrollDown();
       },
-      [],
+      history,
       undefined,
       abortCtl.signal,
       convId ?? undefined,
     );
   } catch (e: any) {
-    aiMsg.content = '⚠️ ' + (e.message || '对话失败');
+    const aborted = e?.name === 'AbortError' || /abort/i.test(e?.message || '');
+    if (aborted) {
+      // 用户主动停止：保留已生成内容，只标记"已停止"，不当作错误
+      aiMsg.stopped = true;
+    } else {
+      aiMsg.content = '⚠️ ' + (e.message || '对话失败');
+    }
   } finally {
     streaming.value = false;
     abortCtl = null;
@@ -505,4 +619,28 @@ onMounted(async () => {
 .composer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .muted { color: #909399; }
 .small { font-size: 12px; }
+.stopped-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.draft-card {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  background: var(--surface);
+}
+.draft-title { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+.draft-meta { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+.draft-props { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.draft-prop {
+  display: inline-flex; gap: 4px; align-items: center;
+  font-size: 11px; border: 1px solid var(--border); border-radius: 4px;
+  padding: 2px 6px; background: var(--accent-soft);
+}
+.draft-prop-type { color: var(--text-muted); }
+.draft-prop-src { color: var(--text-secondary); }
+.draft-result { margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
+.draft-err { color: #dc2626; }
 </style>

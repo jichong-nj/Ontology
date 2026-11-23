@@ -3,7 +3,7 @@
 //
 // 既可作为 CLI 运行（npm run bootstrap），也可被 apps/server 在启动时调用。
 import { Pool } from 'pg';
-import { PostgresMetadataRepository } from '@ontology/ontology-core';
+import { PostgresMetadataRepository, rid as mkRid } from '@ontology/ontology-core';
 import {
   PostgresMappingStore,
   MappingService,
@@ -161,7 +161,7 @@ export async function seedEmployeeInstances(repo: PostgresMetadataRepository): P
   for (const r of rows) idToCode[r.id] = r.emp_code;
 
   for (const r of rows) {
-    const rid = r.emp_code;
+    const rid = mkRid('Employee', r.emp_code);
     await repo.writeObjectPatch(
       'Employee',
       rid,
@@ -182,10 +182,10 @@ export async function seedEmployeeInstances(repo: PostgresMetadataRepository): P
       'bootstrap:seed',
     );
     if (r.department_id != null) {
-      await repo.createLinkInstance('EmployeeDepartment', rid, String(r.department_id));
+      await repo.createLinkInstance('EmployeeDepartment', rid, mkRid('Department', r.department_id));
     }
     if (r.manager_id != null && idToCode[r.manager_id]) {
-      await repo.createLinkInstance('EmployeeManager', rid, idToCode[r.manager_id]);
+      await repo.createLinkInstance('EmployeeManager', rid, mkRid('Employee', idToCode[r.manager_id]));
     }
   }
   console.log(`[S3] 已写入 ${rows.length} 条人员实例与 EmployeeDepartment 关系实例`);
@@ -211,7 +211,7 @@ export async function seedLeaveRecordInstances(repo: PostgresMetadataRepository)
   await srcPool.end();
 
   for (const r of rows) {
-    const rid = `lr_${r.id}`;
+    const rid = mkRid('LeaveRecord', `lr_${r.id}`);
     await repo.writeObjectPatch(
       'LeaveRecord',
       rid,
@@ -227,7 +227,7 @@ export async function seedLeaveRecordInstances(repo: PostgresMetadataRepository)
     );
     if (r.emp_code) {
       // EmployeeLeave: source=Employee(emp_code) -> target=LeaveRecord(lr_<id>)
-      await repo.createLinkInstance('EmployeeLeave', r.emp_code, rid);
+      await repo.createLinkInstance('EmployeeLeave', mkRid('Employee', r.emp_code), rid);
     }
   }
   console.log(`[S3] 已写入 ${rows.length} 条请假记录实例与 EmployeeLeave 关系实例`);
@@ -251,7 +251,7 @@ export async function seedDepartmentInstances(repo: PostgresMetadataRepository):
   await srcPool.end();
 
   for (const r of rows) {
-    const rid = String(r.id);
+    const rid = mkRid('Department', r.id);
     await repo.writeObjectPatch(
       'Department',
       rid,
@@ -266,7 +266,7 @@ export async function seedDepartmentInstances(repo: PostgresMetadataRepository):
       'bootstrap:seed',
     );
     if (r.parent_id != null) {
-      await repo.createLinkInstance('DepartmentHierarchy', rid, String(r.parent_id));
+      await repo.createLinkInstance('DepartmentHierarchy', rid, mkRid('Department', r.parent_id));
     }
   }
   console.log(`[S3] 已写入 ${rows.length} 条部门实例与 DepartmentHierarchy 关系实例`);
@@ -308,7 +308,7 @@ export async function seedBusinessObjectInstances(repo: PostgresMetadataReposito
       `SELECT id, sku, name, category, owner_dept_id, status, launch_date FROM product ORDER BY id`,
     );
     for (const r of rows) {
-      const rid = String(r.id);
+      const rid = mkRid('Product', r.id);
       await repo.writeObjectPatch(
         'Product',
         rid,
@@ -324,7 +324,7 @@ export async function seedBusinessObjectInstances(repo: PostgresMetadataReposito
         'bootstrap:seed',
       );
       if (r.owner_dept_id != null) {
-        await repo.createLinkInstance('ProductOwnerDept', rid, String(r.owner_dept_id));
+        await repo.createLinkInstance('ProductOwnerDept', rid, mkRid('Department', r.owner_dept_id));
       }
     }
     console.log(`[S3] 已写入 ${rows.length} 条产品实例`);
@@ -336,7 +336,7 @@ export async function seedBusinessObjectInstances(repo: PostgresMetadataReposito
       `SELECT id, asset_code, name, type, model, product_id, status, purchase_date FROM device ORDER BY id`,
     );
     for (const r of rows) {
-      const rid = String(r.id);
+      const rid = mkRid('Device', r.id);
       await repo.writeObjectPatch(
         'Device',
         rid,
@@ -353,7 +353,7 @@ export async function seedBusinessObjectInstances(repo: PostgresMetadataReposito
         'bootstrap:seed',
       );
       if (r.product_id != null) {
-        await repo.createLinkInstance('DeviceProduct', rid, String(r.product_id));
+        await repo.createLinkInstance('DeviceProduct', rid, mkRid('Product', r.product_id));
       }
     }
     // 设备 <-> 部门 多对多
@@ -361,7 +361,7 @@ export async function seedBusinessObjectInstances(repo: PostgresMetadataReposito
       `SELECT device_id, department_id FROM device_department`,
     );
     for (const r of dd) {
-      await repo.createLinkInstance('DeviceDepartment', String(r.device_id), String(r.department_id));
+      await repo.createLinkInstance('DeviceDepartment', mkRid('Device', r.device_id), mkRid('Department', r.department_id));
     }
     console.log(`[S3] 已写入 ${rows.length} 条设备实例与 ${dd.length} 条设备-部门关系`);
   }
@@ -372,7 +372,7 @@ export async function seedBusinessObjectInstances(repo: PostgresMetadataReposito
       `SELECT id, code, name, dept_id, lead_emp_id, start_date, end_date, budget, status FROM project ORDER BY id`,
     );
     for (const r of rows) {
-      const rid = String(r.id);
+      const rid = mkRid('Project', r.id);
       await repo.writeObjectPatch(
         'Project',
         rid,
@@ -390,7 +390,7 @@ export async function seedBusinessObjectInstances(repo: PostgresMetadataReposito
         'bootstrap:seed',
       );
       if (r.dept_id != null) {
-        await repo.createLinkInstance('ProjectDepartment', rid, String(r.dept_id));
+        await repo.createLinkInstance('ProjectDepartment', rid, mkRid('Department', r.dept_id));
       }
     }
     // 项目成员 多对多（Employee 端统一用 emp_code 作为 RID）
@@ -402,14 +402,14 @@ export async function seedBusinessObjectInstances(repo: PostgresMetadataReposito
     );
     for (const r of pm) {
       const empRid = empIdToCode[r.employee_id];
-      if (empRid) await repo.createLinkInstance('ProjectMember', String(r.project_id), empRid);
+      if (empRid) await repo.createLinkInstance('ProjectMember', mkRid('Project', r.project_id), mkRid('Employee', empRid));
     }
     // 项目交付产品 多对多
     const { rows: pp } = await srcPool.query(
       `SELECT project_id, product_id FROM project_product`,
     );
     for (const r of pp) {
-      await repo.createLinkInstance('ProjectProduct', String(r.project_id), String(r.product_id));
+      await repo.createLinkInstance('ProjectProduct', mkRid('Project', r.project_id), mkRid('Product', r.product_id));
     }
     console.log(`[S3] 已写入 ${rows.length} 条项目实例与 ${pm.length} 条成员 / ${pp.length} 条交付产品关系`);
   }
@@ -472,7 +472,7 @@ export async function seedChildDetailInstances(repo: PostgresMetadataRepository)
             patch[a.property] = values;
           }
         }
-        await repo.writeObjectPatch(ot.apiName, parentRid, patch, 'bootstrap:seed-child');
+        await repo.writeObjectPatch(ot.apiName, mkRid(ot.apiName, parentRid), patch, 'bootstrap:seed-child');
         affectedObjects++;
       }
     }
@@ -572,7 +572,7 @@ export async function seedExtensionInstances(repo: PostgresMetadataRepository): 
     const { rows } = await srcPool.query(`SELECT * FROM "${table}" ORDER BY id`);
 
     for (const r of rows) {
-      const rid = `ext_${table}_${r.id}`;
+      const rid = mkRid(ot.apiName, `ext_${table}_${r.id}`);
       const patch: Record<string, unknown> = {};
       for (const pc of propCols) {
         let v = r[pc.column];
@@ -597,9 +597,9 @@ export async function seedExtensionInstances(repo: PostgresMetadataRepository): 
         const fkVal = r[fkCol];
         if (fkVal == null) continue;
         const targetRid =
-          lt.targetType === 'Employee' ? empIdToCode[fkVal] : String(fkVal);
+          lt.targetType === 'Employee' ? mkRid('Employee', empIdToCode[fkVal]) : mkRid(lt.targetType, fkVal);
         if (!targetRid) continue;
-        await repo.createLinkInstance(lt.apiName, `ext_${table}_${r.id}`, targetRid);
+        await repo.createLinkInstance(lt.apiName, mkRid(ot.apiName, `ext_${table}_${r.id}`), targetRid);
         totalLinks++;
       }
     }

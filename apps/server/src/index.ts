@@ -47,24 +47,62 @@ async function getSandbox(): Promise<TypeScriptFunctionSandbox> {
   return sharedSandbox;
 }
 let ruleScheduler: import('@ontology/ontology-core').RuleScheduler | null = null;
+
+// ---------- 数据重新灌入（S1/S2/S3 bootstrap 的可复用实现） ----------
+// 逐步执行并收集结果：单步失败不阻断后续步骤（如扩展域源表缺失时，核心数据仍能灌入）。
+export interface ReingestStep { step: string; ok: boolean; error?: string }
+export interface ReingestReport { ok: boolean; steps: ReingestStep[]; elapsedMs: number }
+
+let reingestRunning = false;
+
+async function runReingest(): Promise<ReingestReport> {
+  if (reingestRunning) throw new Error('重新灌入正在进行中，请稍后再试');
+  reingestRunning = true;
+  const t0 = Date.now();
+  const steps: ReingestStep[] = [];
+  const run = async (name: string, fn: () => Promise<void>) => {
+    try {
+      await fn();
+      steps.push({ step: name, ok: true });
+    } catch (e: any) {
+      console.error(`[reingest] ${name} 失败:`, e.message);
+      steps.push({ step: name, ok: false, error: e.message });
+    }
+  };
+
+  try {
+    // 1) S1 数据源注册 + S2 对象/关系/函数/动作/规则定义同步
+    await run('S1/S2 建模定义', () => seedEnterpriseBiz(pool));
+    // 2) S3 实例下推（clear + 重插，全量覆盖）
+    await run('部门实例 + 层级关系', () => seedDepartmentInstances(repo));
+    await run('人员实例 + 隶属/汇报关系', () => seedEmployeeInstances(repo));
+    await run('请假记录实例', () => seedLeaveRecordInstances(repo));
+    await run('产品 / 设备 / 项目实例', () => seedBusinessObjectInstances(repo));
+    await run('扩展域实例（220 表）', () => seedExtensionInstances(repo));
+    await run('父子明细实例', () => seedChildDetailInstances(repo));
+    // 3) 函数定义 + 沙箱注册 + 告警调度器
+    await run('函数定义同步 + 沙箱注册', async () => {
+      for (const fn of functions) {
+        await repo.createFunction(fn);
+      }
+      await getSandbox();
+    });
+    await run('告警调度器', async () => {
+      if (!ruleScheduler) ruleScheduler = startScheduler(repo, 10_000);
+    });
+  } finally {
+    reingestRunning = false;
+  }
+
+  const ok = steps.every((s) => s.ok);
+  console.log(`[reingest] ${ok ? '全部完成' : '部分失败'}（${Date.now() - t0}ms）`);
+  return { ok, steps, elapsedMs: Date.now() - t0 };
+}
+
+// 启动时自动引导（当前已按需关闭，见文末 app.listen；需要恢复时取消注释即可）
 async function bootstrapEnterpriseBiz() {
   try {
-    // 1) 将企业治理数据写为对象实例（S1 源库在 manage 端；对象/关系/函数定义落在元数据库）
-    await seedEnterpriseBiz(pool);
-    await seedDepartmentInstances(repo);
-    await seedEmployeeInstances(repo);
-    await seedLeaveRecordInstances(repo);
-    await seedBusinessObjectInstances(repo);
-    await seedExtensionInstances(repo);
-    await seedChildDetailInstances(repo);
-    // 2) 注册函数定义 + TS 实现到沙箱
-    for (const fn of functions) {
-      await repo.createFunction(fn);
-    }
-    await getSandbox(); // 预热共享沙箱（注册 evaluateDimissionRisk / createDimissionAlert）
-    // 启动后台告警调度器（可配置 Function 评估 + 可配置 Action 落地告警对象）
-    ruleScheduler = startScheduler(repo, 10_000);
-    console.log('[bootstrap] enterprise-biz 场景已注册（对象实例 + 函数 + 告警调度器）');
+    await runReingest();
   } catch (e: any) {
     console.error('[bootstrap] enterprise-biz 引导失败:', e.message);
   }
@@ -126,7 +164,7 @@ app.delete('/api/s1/connections/:id', async (req, res) => {
 // 探测只读源库的表与字段（映射内嵌在对象类型中，无需独立的映射管理层）
 app.get('/api/s1/connections/:id/probe', async (req, res) => {
   try {
-    const result = await mappingSvc.probeSourceTables(req.params.id);
+    const result = await mappingSvc.probeSourceTables(req.params.id, req.query.schema as string | undefined);
     res.json(result);
   } catch (e: any) {
     // 源端不可达（如源库未部署）或连接不存在，返回结构化结果而非裸 500。
@@ -134,10 +172,55 @@ app.get('/api/s1/connections/:id/probe', async (req, res) => {
   }
 });
 
+// ---------- S1 数据源浏览（库 → schema → 表 → 真实数据） ----------
+// 列出连接库内可见 schema
+app.get('/api/s1/connections/:id/schemas', async (req, res) => {
+  try {
+    const schemas = await mappingSvc.listSourceSchemas(req.params.id);
+    res.json({ schemas });
+  } catch (e: any) {
+    res.json({ schemas: [], error: e.message });
+  }
+});
+
+// 列出指定 schema 下的表（含字段列；与 probe 同构，支持 schema 查询参数）
+app.get('/api/s1/connections/:id/tables', async (req, res) => {
+  try {
+    const result = await mappingSvc.probeSourceTables(req.params.id, req.query.schema as string | undefined);
+    res.json(result);
+  } catch (e: any) {
+    res.json({ reachable: false, error: e.message, tables: [] });
+  }
+});
+
+// 打开表 → 查看真实数据（只读分页预览；limit 上限 500）
+app.get('/api/s1/connections/:id/tables/:table/rows', async (req, res) => {
+  try {
+    const limit = Number(req.query.limit ?? 50);
+    const offset = Number(req.query.offset ?? 0);
+    const result = await mappingSvc.previewSourceTable(req.params.id, {
+      schema: req.query.schema as string | undefined,
+      table: req.params.table,
+      limit,
+      offset,
+    });
+    res.json(result);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // 仅测试连接连通性（建立连接 + SELECT 1），不列举表。
 app.post('/api/s1/connections/:id/test', async (req, res) => {
   try {
     const result = await mappingSvc.testConnection(req.params.id);
+    // 回写连接状态，让列表标签反映真实连通性（connected / error）
+    await pool
+      .query(`UPDATE source_connection SET status=$2, updated_at=now() WHERE id=$1`, [
+        req.params.id,
+        result.reachable ? 'connected' : 'error',
+      ])
+      .catch(() => { /* 状态回写失败不影响测试结果返回 */ });
     res.json(result);
   } catch (e: any) {
     res.json({ reachable: false, error: e.message, tables: [] });
@@ -439,6 +522,247 @@ app.post('/api/s2/object-types/with-mapping', async (req, res) => {
   }
 });
 
+// ---------- S3 通用实例同步（源表 → 对象实例） ----------
+// 按对象类型的 sourceConnectionId / sourceTable + 属性 sourceMapping，只读拉取源表并写入实例。
+// 供 AIP 建模闭环（"引入表 → 建对象类型 → 同步实例"）与手工重建使用。
+
+function coerceValue(v: unknown, type: string): unknown {
+  if (v === null || v === undefined) return null;
+  switch (type) {
+    case 'integer':
+      return Math.trunc(Number(v));
+    case 'float':
+      return Number(v);
+    case 'boolean':
+      return typeof v === 'boolean' ? v : v === 1 || v === '1' || v === 'true' || v === true;
+    case 'date':
+      return v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
+    case 'timestamp':
+      return v instanceof Date ? v.toISOString() : String(v);
+    default:
+      return typeof v === 'string' ? v : String(v);
+  }
+}
+
+async function syncObjectInstances(
+  apiName: string,
+  schema = 'public',
+): Promise<{ read: number; written: number; skipped: number; elapsedMs: number }> {
+  const t0 = Date.now();
+  const ot = await repo.getObjectType(apiName);
+  if (!ot) throw new Error(`对象类型不存在: ${apiName}`);
+  if (!ot.sourceConnectionId || !ot.sourceTable) {
+    throw new Error(`对象类型 ${apiName} 未绑定数据源表，无法同步实例`);
+  }
+  const conn = await store.getSourceConnection(ot.sourceConnectionId);
+  if (!conn) throw new Error(`数据源不存在: ${ot.sourceConnectionId}`);
+
+  // 主键列：优先取源表真实主键，回退第一列映射名为 id 的属性
+  const probe = await store.probeSourceTables(conn, schema);
+  if (!probe.reachable) throw new Error(`数据源不可达: ${probe.error ?? '未知错误'}`);
+  const tbl = probe.tables.find((t) => t.table === ot.sourceTable);
+  const pkCol = tbl?.columns.find((c) => c.isPrimaryKey)?.name ?? 'id';
+  const pkProp = ot.properties.find((p) => p.sourceMapping === pkCol);
+  if (!pkProp) {
+    throw new Error(`源表 ${ot.sourceTable} 的主键列 ${pkCol} 未映射到任何属性，无法确定实例 rid`);
+  }
+
+  const data = await store.readSourceTable(conn, { schema, table: ot.sourceTable, limit: 50000 });
+  const mapped = ot.properties.filter((p) => p.sourceMapping);
+
+  // 全量覆盖：先清旧实例再写（幂等）
+  await repo.clearObjectWrites(apiName).catch(() => { /* 无旧实例时忽略 */ });
+
+  let written = 0;
+  let skipped = 0;
+  for (const row of data.rows) {
+    const ridVal = row[pkCol];
+    if (ridVal === null || ridVal === undefined) {
+      skipped++;
+      continue;
+    }
+    const patch: Record<string, unknown> = {};
+    for (const p of mapped) {
+      patch[p.apiName] = coerceValue(row[p.sourceMapping as string], p.type);
+    }
+    await repo.writeObjectPatch(apiName, `${apiName}:${String(ridVal)}`, patch, 'sync:source');
+    written++;
+  }
+  return { read: data.rows.length, written, skipped, elapsedMs: Date.now() - t0 };
+}
+
+// 从 AIP 草案创建对象类型（可同时同步实例）
+app.post('/api/s2/object-types/from-draft', async (req, res) => {
+  try {
+    const draft = req.body?.draft ?? req.body;
+    if (!draft?.apiName || !/^[A-Za-z][A-Za-z0-9_]*$/.test(draft.apiName)) {
+      return res.status(400).json({ error: '草案缺少合法 apiName（字母开头，仅字母数字下划线）' });
+    }
+    if (!Array.isArray(draft.properties) || draft.properties.length === 0) {
+      return res.status(400).json({ error: '草案缺少 properties' });
+    }
+    if (!draft.sourceConnectionId || !draft.sourceTable) {
+      return res.status(400).json({ error: '草案缺少 sourceConnectionId / sourceTable' });
+    }
+    const objectType = {
+      apiName: draft.apiName,
+      displayName: draft.displayName ?? draft.apiName,
+      description: draft.description ?? '',
+      properties: draft.properties.map((p: any) => ({
+        apiName: p.apiName,
+        displayName: p.displayName ?? p.apiName,
+        type: p.type ?? 'string',
+        required: !!p.required,
+        sourceMapping: p.sourceMapping,
+      })),
+      implementsInterfaces: [],
+      sourceConnectionId: draft.sourceConnectionId,
+      sourceTable: draft.sourceTable,
+      titleProperty: draft.titleProperty,
+      version: 1,
+      createdAt: '',
+      updatedAt: '',
+    };
+    const fieldMappings = objectType.properties
+      .filter((p: any) => p.sourceMapping)
+      .map((p: any) => ({ property: p.apiName, sourceColumn: p.sourceMapping }));
+    await mappingSvc.createObjectTypeWithMapping({
+      objectType: objectType as any,
+      sourceConnectionId: draft.sourceConnectionId,
+      sourceTable: draft.sourceTable,
+      fieldMappings,
+      mappingId: `map_${draft.apiName.toLowerCase()}_${draft.sourceTable}`,
+    });
+
+    let sync: unknown = null;
+    if (req.body?.sync !== false) {
+      try {
+        sync = await syncObjectInstances(draft.apiName, draft.schema || 'public');
+      } catch (e: any) {
+        sync = { error: e.message };
+      }
+    }
+    res.status(201).json({ ok: true, apiName: draft.apiName, sync });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---------- 关系类型：从草案创建 + 从源表外键同步关系实例 ----------
+// 约定：foreignKey = 源表中外键列名；primaryKey = 目标对象主键属性 apiName（用于算 target rid）。
+// 仅支持"外键值 = 目标对象主键值"的关联（自关联/直接外键），需 join 的场景暂不自动处理。
+async function syncLinkInstances(
+  apiName: string,
+  schema = 'public',
+): Promise<{ read: number; written: number; skipped: number; elapsedMs: number }> {
+  const t0 = Date.now();
+  const lt = await repo.getLinkType(apiName);
+  if (!lt) throw new Error(`关系类型不存在: ${apiName}`);
+  const src = await repo.getObjectType(lt.sourceType);
+  if (!src) throw new Error(`源对象类型不存在: ${lt.sourceType}`);
+  if (!src.sourceConnectionId || !src.sourceTable) {
+    throw new Error(`源对象类型 ${lt.sourceType} 未绑定数据源表，无法同步关系实例`);
+  }
+  const conn = await store.getSourceConnection(src.sourceConnectionId);
+  if (!conn) throw new Error(`数据源不存在: ${src.sourceConnectionId}`);
+  const probe = await store.probeSourceTables(conn, schema);
+  if (!probe.reachable) throw new Error(`数据源不可达: ${probe.error ?? '未知错误'}`);
+  const tbl = probe.tables.find((t) => t.table === src.sourceTable);
+  if (!tbl) throw new Error(`源表不存在: ${schema}.${src.sourceTable}`);
+  const srcPkCol = tbl.columns.find((c) => c.isPrimaryKey)?.name ?? 'id';
+  const fkCol = lt.foreignKey || lt.primaryKey;
+  if (!fkCol) throw new Error(`关系类型 ${apiName} 未配置外键列（foreignKey），无法同步关系实例`);
+
+  const data = await store.readSourceTable(conn, { schema, table: src.sourceTable, limit: 50000 });
+  await repo.clearLinkInstances(apiName).catch(() => {});
+  let written = 0;
+  let skipped = 0;
+  for (const row of data.rows) {
+    const fkVal = row[fkCol];
+    const srcVal = row[srcPkCol];
+    if (fkVal === null || fkVal === undefined || srcVal === null || srcVal === undefined) {
+      skipped++;
+      continue;
+    }
+    await repo.createLinkInstance(apiName, `${lt.sourceType}:${String(srcVal)}`, `${lt.targetType}:${String(fkVal)}`);
+    written++;
+  }
+  return { read: data.rows.length, written, skipped, elapsedMs: Date.now() - t0 };
+}
+
+// 从 AIP 草案创建关系类型（可同时同步关系实例）
+app.post('/api/s2/link-types/from-draft', async (req, res) => {
+  try {
+    const draft = req.body?.draft ?? req.body;
+    if (!draft?.apiName || !/^[A-Za-z][A-Za-z0-9_]*$/.test(draft.apiName)) {
+      return res.status(400).json({ error: '草案缺少合法 apiName（字母开头，仅字母数字下划线）' });
+    }
+    if (!draft.sourceType || !draft.targetType) {
+      return res.status(400).json({ error: '草案缺少 sourceType / targetType' });
+    }
+    const src = await repo.getObjectType(draft.sourceType);
+    const tgt = await repo.getObjectType(draft.targetType);
+    if (!src) return res.status(400).json({ error: `源对象类型不存在: ${draft.sourceType}` });
+    if (!tgt) return res.status(400).json({ error: `目标对象类型不存在: ${draft.targetType}` });
+
+    const cardinality = draft.cardinality ?? 'one-to-many';
+    const targetKeyProp = draft.targetKeyProperty ?? draft.primaryKey;
+    await repo.createLinkType({
+      apiName: draft.apiName,
+      displayName: draft.displayName ?? draft.apiName,
+      sourceType: draft.sourceType,
+      targetType: draft.targetType,
+      cardinality,
+      sourceCardinality: draft.sourceCardinality ?? (cardinality.startsWith('many') ? 'many' : 'one'),
+      targetCardinality: draft.targetCardinality ?? (cardinality.endsWith('many') ? 'many' : 'one'),
+      primaryKey: targetKeyProp,
+      foreignKey: draft.foreignKey,
+      pluralName: draft.pluralName,
+      visibility: 'Normal',
+      instanceSource: 'source',
+      version: 1,
+    } as any);
+    // createLinkType 只写基础列，主键/外键/schema 元数据用 update 补齐
+    await repo.updateLinkType(draft.apiName, {
+      primaryKey: targetKeyProp,
+      foreignKey: draft.foreignKey,
+      pluralName: draft.pluralName,
+    });
+
+    let sync: unknown = null;
+    if (req.body?.sync !== false && (draft.foreignKey || draft.primaryKey)) {
+      try {
+        sync = await syncLinkInstances(draft.apiName, draft.schema || 'public');
+      } catch (e: any) {
+        sync = { error: e.message };
+      }
+    }
+    res.status(201).json({ ok: true, apiName: draft.apiName, sync });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 手动重新同步某关系类型的关系实例（全量覆盖）
+app.post('/api/s2/link-types/:apiName/sync', async (req, res) => {
+  try {
+    const result = await syncLinkInstances(req.params.apiName, (req.body?.schema as string) || 'public');
+    res.json({ ok: true, ...result });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 手动重新同步某对象类型的实例（全量覆盖）
+app.post('/api/s2/object-types/:apiName/sync', async (req, res) => {
+  try {
+    const result = await syncObjectInstances(req.params.apiName, (req.body?.schema as string) || 'public');
+    res.json({ ok: true, ...result });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 app.post('/api/s2/object-types', async (req, res) => {
   try {
     await repo.createObjectType(req.body);
@@ -632,17 +956,21 @@ app.get('/api/s2/explore/instances/:objectType/query', async (req, res) => {
 // 获取某个具体对象的所有关联关系（按 link_type 分组，含对端对象属性）
 app.get('/api/s2/explore/object/:objectType/:objectRid/links', async (req, res) => {
   try {
-    const { objectType, objectRid } = req.params;
+    const { objectType } = req.params;
+    // RID 规范化：兼容裸 rid（如 "2"）与带类型前缀（如 "Department:2"）
+    const objectRid = req.params.objectRid.includes(':')
+      ? req.params.objectRid
+      : `${objectType}:${req.params.objectRid}`;
     // 查询所有以该对象为 source 或 target 的 link_instance，JOIN link_type 获取元信息
     const { rows } = await pool.query(
       `SELECT li.link_type, lt.display_name AS link_display_name,
               lt.source_type, lt.target_type,
-              CASE WHEN li.source_rid = $2 THEN 'target' ELSE 'source' END AS direction,
-              CASE WHEN li.source_rid = $2 THEN li.target_rid ELSE li.source_rid END AS other_rid
+              CASE WHEN lt.source_type = $1 AND li.source_rid = $2 THEN 'target' ELSE 'source' END AS direction,
+              CASE WHEN lt.source_type = $1 AND li.source_rid = $2 THEN li.target_rid ELSE li.source_rid END AS other_rid
          FROM link_instance li
          JOIN link_type lt ON lt.api_name = li.link_type
-        WHERE (li.source_rid = $2 OR li.target_rid = $2)
-          AND (lt.source_type = $1 OR lt.target_type = $1)
+        WHERE ((lt.source_type = $1 AND li.source_rid = $2)
+            OR (lt.target_type = $1 AND li.target_rid = $2))
         ORDER BY li.link_type, li.created_at DESC`,
       [objectType, objectRid],
     );
@@ -738,17 +1066,18 @@ const agentRuntime: AgentRuntime = {
   listAlerts: () => repo.listObjectProperties('Alert'),
   getInstances: (objectType, opts) => repo.listInstances(objectType, opts),
   getObjectLinks: async (objectType, objectRid) => {
+    const normRid = objectRid.includes(':') ? objectRid : `${objectType}:${objectRid}`;
     const { rows } = await pool.query(
       `SELECT li.link_type, lt.display_name AS link_display_name,
               lt.source_type, lt.target_type,
-              CASE WHEN li.source_rid = $2 THEN 'target' ELSE 'source' END AS direction,
-              CASE WHEN li.source_rid = $2 THEN li.target_rid ELSE li.source_rid END AS other_rid
+              CASE WHEN lt.source_type = $1 AND li.source_rid = $2 THEN 'target' ELSE 'source' END AS direction,
+              CASE WHEN lt.source_type = $1 AND li.source_rid = $2 THEN li.target_rid ELSE li.source_rid END AS other_rid
          FROM link_instance li
          JOIN link_type lt ON lt.api_name = li.link_type
-        WHERE (li.source_rid = $2 OR li.target_rid = $2)
-          AND (lt.source_type = $1 OR lt.target_type = $1)
+        WHERE ((lt.source_type = $1 AND li.source_rid = $2)
+            OR (lt.target_type = $1 AND li.target_rid = $2))
         ORDER BY li.link_type, li.created_at DESC`,
-      [objectType, objectRid],
+      [objectType, normRid],
     );
     return rows;
   },
@@ -756,27 +1085,86 @@ const agentRuntime: AgentRuntime = {
   histogram: (objectType, property, buckets) => repo.histogramByProperty(objectType, property, buckets ?? 20),
   // 受限 NL2SQL：在 S1 只读源库执行，仅允许 SELECT，且表必须在白名单内
   runSql: async (sql, allowTables, limit) => runReadOnlySql(sql, allowTables, limit ?? 200),
+  // 数据源建模：列出已接入数据源（不暴露口令）
+  listSourceConnections: async () => {
+    const list = await store.listSourceConnections();
+    return list.map((c) => {
+      const meta = (c.connectionMeta ?? {}) as Record<string, unknown>;
+      return {
+        id: c.id,
+        displayName: c.displayName,
+        kind: c.kind,
+        dbType: (meta.dbType as string) ?? 'postgres',
+        database: (meta.database as string) ?? undefined,
+      };
+    });
+  },
+  // 关系建模：读取关系类型列表 / 单个对象类型完整定义
+  listLinkTypes: () => repo.listLinkTypes(),
+  getObjectType: (apiName: string) => repo.getObjectType(apiName),
+  // 数据源建模：列出某 schema 下的全部表名（只读）
+  listSourceTables: async (connId: string, schema?: string) => {
+    const conn = await store.getSourceConnection(connId);
+    if (!conn) throw new Error(`数据源不存在: ${connId}`);
+    const s = schema || 'public';
+    const tables = await store.listSourceTableNames(conn, s);
+    return { connId, schema: s, count: tables.length, tables };
+  },
+  // 数据源建模：读取源表结构与样例行（只读，不创建任何对象类型）
+  inspectSourceTable: async (connId: string, schema: string, table: string) => {
+    const conn = await store.getSourceConnection(connId);
+    if (!conn) throw new Error(`数据源不存在: ${connId}`);
+    const probe = await store.probeSourceTables(conn, schema);
+    if (!probe.reachable) throw new Error(`数据源不可达: ${probe.error ?? '未知错误'}`);
+    const t = probe.tables.find((x) => x.table === table);
+    if (!t) {
+      const names = probe.tables.map((x) => x.table);
+      throw new Error(
+        `表不存在: ${schema}.${table}。该 schema 下可用表（${names.length} 张）：${names.slice(0, 40).join(', ')}`,
+      );
+    }
+    const preview = await store.previewSourceTable(conn, { schema, table, limit: 5, offset: 0 });
+    return {
+      connId,
+      schema,
+      table,
+      columns: t.columns,
+      totalRows: preview.total,
+      sampleRows: preview.rows,
+      note: '只读探测结果：未创建/未修改任何对象类型',
+    };
+  },
 };
 
 // ---------- 受限 NL2SQL 执行 ----------
 // 仅 enterprise_biz 这个只读源（S1）可被查询；按 source_connection 动态取连接信息。
 // 注意：设计上不回写源库，此处强制只允许只读 SELECT。
-const SQL_SOURCE_CONN = 'src_enterprise_biz';
+// 连接解析：优先用环境变量 SQL_SOURCE_CONN_ID 指定的连接，否则取最早创建的只读连接。
+// （之前写死 'src_enterprise_biz'，连接重建后 id 变化会失效，已改为动态解析。）
 let sqlPool: import('pg').Pool | null = null;
+let sqlPoolConnId: string | null = null;
 async function getSqlPool(): Promise<import('pg').Pool> {
   if (sqlPool) return sqlPool;
-  const { rows } = await pool.query(
-    `SELECT connection_meta FROM source_connection WHERE id=$1 AND read_only=true`,
-    [SQL_SOURCE_CONN],
-  );
-  if (!rows[0]?.connection_meta) throw new Error(`未找到只读源连接 ${SQL_SOURCE_CONN}`);
+  const preferId = process.env.SQL_SOURCE_CONN_ID;
+  const { rows } = preferId
+    ? await pool.query(
+        `SELECT id, connection_meta FROM source_connection WHERE id=$1 AND read_only=true`,
+        [preferId],
+      )
+    : await pool.query(
+        `SELECT id, connection_meta FROM source_connection WHERE read_only=true ORDER BY created_at ASC LIMIT 1`,
+      );
+  if (!rows[0]?.connection_meta) {
+    throw new Error('未找到可用的只读源连接：请先在 Data Sources 建一个只读连接（或用 SQL_SOURCE_CONN_ID 指定）');
+  }
+  sqlPoolConnId = rows[0].id;
   const m = rows[0].connection_meta;
   sqlPool = new Pool({
     host: m.host,
     port: m.port,
     user: m.user,
     database: m.database,
-    password: process.env.SOURCE_DATABASE_PASSWORD || 'ontology',
+    password: process.env.SOURCE_DATABASE_PASSWORD || m.password || 'ontology',
     max: 2,
   });
   return sqlPool;
@@ -814,7 +1202,8 @@ function validateReadOnlySql(sql: string, allowTables: string[]): string {
     while ((mt = re.exec(stripped)) !== null) {
       if (mt[1]) mentioned.add(mt[1].split('.').pop()!.toLowerCase());
     }
-    const bad = [...mentioned].filter((t) => !allowTables.map((x) => x.toLowerCase()).includes(t));
+    const allowNorm = allowTables.map((x) => x.split('.').pop()!.toLowerCase());
+    const bad = [...mentioned].filter((t) => !allowNorm.includes(t));
     if (bad.length > 0) {
       throw new Error(`检测到白名单外的表：${bad.join(', ')}（白名单：${allowTables.join(', ')}）`);
     }
@@ -1017,7 +1406,7 @@ app.post('/api/aip/agents', async (req, res) => {
       modelScope: body.modelScope ?? [],
       defaultModelId: body.defaultModelId ?? '',
       temperature: body.temperature ?? 0.2,
-      enabledTools: body.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts', 'sql'],
+      enabledTools: body.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts', 'sql', 'modeling'],
       objectTypes: body.objectTypes ?? [],
       maxSteps: body.maxSteps ?? 6,
       version: 1,
@@ -1083,7 +1472,7 @@ app.put('/api/aip/agents/:id', async (req, res) => {
       modelScope: body.modelScope ?? existing?.modelScope ?? [],
       defaultModelId: body.defaultModelId ?? existing?.defaultModelId ?? '',
       temperature: body.temperature ?? existing?.temperature ?? 0.2,
-      enabledTools: body.enabledTools ?? existing?.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts', 'sql'],
+      enabledTools: body.enabledTools ?? existing?.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts', 'sql', 'modeling'],
       objectTypes: body.objectTypes ?? existing?.objectTypes ?? [],
       maxSteps: body.maxSteps ?? existing?.maxSteps ?? 6,
       version: existing?.version,
@@ -1200,7 +1589,7 @@ app.post('/api/aip/agent/:id/run', async (req, res) => {
     const wantModelId = req.body?.modelId || cfg.defaultModelId;
     const resolved = wantModelId ? await resolveActiveModel(wantModelId) : null;
     const active = resolved?.ref;
-    const agent = new AIPAgent(cfg, agentRuntime, active ?? undefined);
+    const agent = new AIPAgent(finalizeAgentConfig(cfg), agentRuntime, active ?? undefined);
     const result = await agent.run(message, history);
     res.json({ ok: true, ...result });
   } catch (e: any) {
@@ -1229,14 +1618,20 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
 
-    const agent = new AIPAgent(cfg, agentRuntime, active ?? undefined);
-    const send = (event: unknown) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    const agent = new AIPAgent(finalizeAgentConfig(cfg), agentRuntime, active ?? undefined);
+    // 客户端主动停止（关闭连接）时中止生成，避免继续消耗模型调用
+    let clientGone = false;
+    res.on('close', () => { clientGone = true; });
+    const send = (event: unknown) => {
+      if (!clientGone && !res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
     // 收集结构化过程（思考/工具）用于落库
     const timeline: unknown[] = [];
     let finalReply = '';
     let firstThought = true;
     try {
       for await (const ev of agent.runStream(message, history)) {
+        if (clientGone) break;
         send(ev);
         if (ev.type === 'thought') {
           // 把逐 token 思考合并为一个条目（落库用）
@@ -1256,8 +1651,10 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
     } catch (e: any) {
       send({ type: 'error', message: e.message });
     }
-    res.write('event: end\ndata: {}\n\n');
-    res.end();
+    if (!clientGone && !res.writableEnded) {
+      res.write('event: end\ndata: {}\n\n');
+      res.end();
+    }
 
     // 落库（会话存在时记录 user + assistant）
     if (conversationId) {
@@ -1276,6 +1673,21 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
 // 健康检查
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+// ---------- 系统维护：手动重新灌入业务数据 ----------
+// 等价于启动时的 bootstrap（S1 数据源 + S2 定义 + S3 实例全量重推），但由用户显式触发。
+app.post('/api/admin/reingest', async (_req, res) => {
+  try {
+    const report = await runReingest();
+    res.json(report);
+  } catch (e: any) {
+    // 并发触发等前置条件不满足时返回 409
+    res.status(409).json({ error: e.message });
+  }
+});
+
+// 查询重新灌入是否正在进行（供前端禁用按钮 / 轮询）
+app.get('/api/admin/reingest/status', (_req, res) => res.json({ running: reingestRunning }));
+
 const PORT = Number(process.env.PORT || 4000);
 
 // AIP Agent 默认系统提示词（可在配置平台覆盖）
@@ -1285,13 +1697,56 @@ const DEFAULT_AGENT_PROMPT = `你是 Ontology 平台的智能助理（AIP Agent�
 - 触发动作、运行自动化规则
 - 聚合统计与直方图分析
 - 查看告警
+- 数据源建模：浏览已接入的数据源、分析源表结构，并给出对象类型建模建议（创建动作需用户在前端确认）
 请根据用户自然语言意图，自主选择合适的工具并多步串联完成复杂任务，最后用简洁中文总结结果。`;
+
+// 数据源建模工作流：仅在 Agent 启用了 modeling 工具组时追加到系统提示词。
+// 关键约束：AI 只做"分析 + 提问 + 给草案"，创建动作由前端确认卡片触发（不由模型直连写库）。
+const MODELING_PROMPT = `
+## 数据源建模工作流（当用户要求"把某数据源中的某张表引入并创建对象类型"时严格执行）
+1. 先调用 list_source_connections 确定数据源 id（名称不完全匹配时列出候选让用户选，不要臆测）。
+2. 先用 list_source_tables 拿到该 schema 下的真实表名（禁止猜测表名），再调用 inspect_source_table
+   读取表结构（字段名/类型/主键/可空）与样例行，禁止凭猜测编造字段。
+3. 分析后给出建模建议，并一次性提出必要的澄清问题（最多 3 个），例如：
+   - 主键：用自增 id 还是业务编码（emp_code 等）？
+   - 字段裁剪：created_at / updated_at / 敏感字段是否不建为属性？
+   - 类型：date/timestamp 是否保留；枚举字段（gender/status）是否需要约束说明？
+   - 关系：哪些外键建议同时建成关系类型（如 dept_id → Department）？
+4. 用户回答或确认后，输出最终草案：必须用一个 json 代码块，且严格符合以下结构：
+\`\`\`json
+{"type":"object_type_draft","apiName":"Employee","displayName":"员工","description":"……","sourceConnectionId":"src_enterprise_biz","schema":"public","sourceTable":"employee","primaryKey":"id","titleProperty":"name","properties":[{"apiName":"id","displayName":"ID","type":"integer","required":true,"sourceMapping":"id"},{"apiName":"name","displayName":"姓名","type":"string","required":true,"sourceMapping":"name"}]}
+\`\`\`
+   - type 只能是 string/integer/float/boolean/date/timestamp；
+   - apiName 用 PascalCase，属性 apiName 用 camelCase，displayName 用中文；
+   - sourceMapping 必须填源表真实列名。
+5. 最后告知用户："确认后点击下方「确认创建」将创建对象类型并同步实例。"然后停止，
+   不要自行创建、不要调用其他写操作。
+
+## 关系类型建模（当用户问"两个对象之间有没有关系/能不能建关系"时）
+1. 先用 list_link_types 看已有关系，再用 inspect_object_type 查看源/目标对象类型的属性与 sourceMapping，
+   确认哪一列是外键（如 organization.parent_id）。
+2. 输出关系类型草案，必须用 json 代码块：
+\`\`\`json
+{"type":"link_type_draft","apiName":"OrganizationParent","displayName":"上级组织","sourceType":"Organization","targetType":"Organization","cardinality":"one-to-many","foreignKey":"parent_id","targetKeyProperty":"id","pluralName":"下级组织"}
+\`\`\`
+   - foreignKey = 源表外键列名；targetKeyProperty = 目标对象主键属性 apiName；
+   - cardinality 取 one-to-one / one-to-many / many-to-many；
+   - 只支持"外键值 = 目标对象主键值"的关联；若需要跨键 join（如 emp_code→id），必须明确说明做不到。
+3. 告知用户"确认后点击「确认创建」将创建关系类型并同步关系实例"，然后停止。
+`;
+
+// 注入建模提示词（不影响未启用 modeling 的 Agent）
+function finalizeAgentConfig(cfg: AIPAgentConfig): AIPAgentConfig {
+  if (!Array.isArray(cfg.enabledTools) || !cfg.enabledTools.includes('modeling')) return cfg;
+  return { ...cfg, systemPrompt: `${cfg.systemPrompt || ''}\n${MODELING_PROMPT}` };
+}
 // 仅当作为入口直接运行时才监听端口；被测试 import 时不自动启动，避免 EADDRINUSE。
 if (import.meta.url === `file://${process.argv[1]}`) {
   app.listen(PORT, () => {
     console.log(`[ontology-server] S1/S2 API on :${PORT}`);
-    // 启动后引导业务场景（实例下推 + 函数注册）
-    bootstrapEnterpriseBiz();
+    // 自动 bootstrap 已按要求关闭（2026-11-23）：重启不再自动灌 S1/S2/S3 业务数据。
+    // 需要恢复时：取消下面一行注释并重启后端；或手动执行 `npm run bootstrap -w @ontology/enterprise-biz`。
+    // bootstrapEnterpriseBiz();
   });
 }
 

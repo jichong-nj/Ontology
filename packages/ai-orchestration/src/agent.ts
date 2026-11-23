@@ -31,6 +31,15 @@ export interface AgentRuntime {
   histogram(objectType: string, property: string, buckets?: number): Promise<unknown>;
   // 受限 NL2SQL：仅允许只读 SELECT，在 S1 源库执行；allowTables 为白名单（来自 S2 元数据的真实表名）
   runSql(sql: string, allowTables: string[], limit?: number): Promise<unknown>;
+  // 数据源建模：列出已接入的 S1 数据源（供"引入某表建对象类型"流程选源）
+  listSourceConnections(): Promise<Array<{ id: string; displayName: string; dbType?: string; database?: string }>>;
+  // 关系建模：关系类型列表 / 单个对象类型完整定义（含属性映射）
+  listLinkTypes(): Promise<unknown>;
+  getObjectType(apiName: string): Promise<unknown>;
+  // 数据源建模：列出某 schema 下的全部表名（只读）
+  listSourceTables(connId: string, schema?: string): Promise<unknown>;
+  // 数据源建模：读取某数据源中一张表的完整结构 + 样例行（不落库，只供分析）
+  inspectSourceTable(connId: string, schema: string, table: string): Promise<unknown>;
 }
 
 export interface AgentRunResult {
@@ -57,6 +66,8 @@ const TOOL_GROUPS: Record<string, string[]> = {
   alerts: ['list_alerts'],
   // 受限 NL2SQL：LLM 生成只读 SELECT，在 S1 源库白名单表内执行（不回写源）
   sql: ['run_sql'],
+  // 数据源建模：列出数据源 / 读取源表结构与样例（只读；创建动作需用户在前端确认）
+  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type'],
 };
 
 function allToolSpecs(): ToolSpec[] {
@@ -241,6 +252,74 @@ function allToolSpecs(): ToolSpec[] {
         },
       },
     },
+    {
+      type: 'function',
+      function: {
+        name: 'list_source_connections',
+        description:
+          '列出已接入的 S1 数据源（名称、类型、数据库）。用于"把某数据源里的某张表引入并创建对象类型"时先确定数据源。',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'list_link_types',
+        description: '列出当前本体中已存在的关系类型（apiName/显示名/源对象/目标对象/基数），用于关系建模前避免重复。',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'inspect_object_type',
+        description:
+          '读取某个对象类型的完整定义：属性列表（含 sourceMapping 源列映射）、源连接/源表、titleProperty。' +
+          '用于设计关系类型时确认外键列与主键属性。',
+        parameters: {
+          type: 'object',
+          properties: {
+            apiName: { type: 'string', description: '对象类型 apiName，如 Organization' },
+          },
+          required: ['apiName'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'list_source_tables',
+        description:
+          '列出某个 S1 数据源指定 schema 下的全部表名（只读）。当用户问"这个数据源有哪些表"或开始建模前，' +
+          '先调用本工具拿到真实表名，再对具体表调用 inspect_source_table。不要靠猜测表名。',
+        parameters: {
+          type: 'object',
+          properties: {
+            connId: { type: 'string', description: '数据源连接 id（来自 list_source_connections）' },
+            schema: { type: 'string', description: 'schema 名，PostgreSQL 通常为 public' },
+          },
+          required: ['connId'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'inspect_source_table',
+        description:
+          '读取某个 S1 数据源中一张表的结构（字段名/类型/是否主键/是否可空）与少量样例行，用于分析该表如何建模。' +
+          '只读，不会修改源库，也不会创建任何对象类型。',
+        parameters: {
+          type: 'object',
+          properties: {
+            connId: { type: 'string', description: '数据源连接 id（来自 list_source_connections）' },
+            schema: { type: 'string', description: 'schema 名，PostgreSQL 通常为 public' },
+            table: { type: 'string', description: '表名' },
+          },
+          required: ['connId', 'table'],
+        },
+      },
+    },
   ];
 }
 
@@ -287,6 +366,12 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
       const allow = Array.isArray(a.allowTables) ? a.allowTables : [];
       return rt.runSql(a.sql, allow, a.limit);
     },
+    list_source_connections: async () => rt.listSourceConnections(),
+    list_link_types: async () => rt.listLinkTypes(),
+    inspect_object_type: async (a: any) => rt.getObjectType(a.apiName),
+    list_source_tables: async (a: any) => rt.listSourceTables(a.connId, a.schema),
+    inspect_source_table: async (a: any) =>
+      rt.inspectSourceTable(a.connId, a.schema || 'public', a.table),
   } as Record<string, (args: any) => Promise<unknown>>;
 }
 

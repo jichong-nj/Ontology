@@ -1,6 +1,6 @@
 // S1 数据接入与映射 — PostgreSQL 存储实现（映射配置持久化，源端始终只读）
 import { Pool } from 'pg';
-import type { SourceConnection, ObjectMapping, ConnectionMeta, DbType, TestResult } from './mapping-model';
+import type { SourceConnection, ObjectMapping, ConnectionMeta, DbType, TestResult, TablePreview } from './mapping-model';
 
 // MySQL 驱动按需加载（仅当连接为 mysql 时引入，避免无 mysql 依赖时启动失败）
 let mysqlMod: typeof import('mysql2/promise') | null = null;
@@ -287,35 +287,258 @@ export class PostgresMappingStore {
     );
   }
 
-  async probeSourceTables(conn: SourceConnection): Promise<TestResult> {
+  async probeSourceTables(conn: SourceConnection, schema = 'public'): Promise<TestResult> {
     const { meta, dbType, database } = this.resolveMeta(conn);
     if (dbType === 'mysql') {
       return this.probeMysql(conn, meta, database);
     }
-    return this.probePostgres(conn, meta, database);
+    return this.probePostgres(conn, meta, database, schema);
   }
 
-  private async probePostgres(conn: SourceConnection, meta: ConnectionMeta, database: string): Promise<TestResult> {
+  // 列出源库内可见 schema（供数据源浏览：库 → schema → 表）
+  async listSourceSchemas(conn: SourceConnection): Promise<string[]> {
+    const { meta, dbType, database } = this.resolveMeta(conn);
+    if (dbType === 'mysql') {
+      const mysql = await loadMysql();
+      const c = await mysql.createConnection({
+        host: meta.host || 'localhost',
+        port: Number(meta.port || 3306),
+        user: meta.user || 'root',
+        password: meta.password || '',
+        connectTimeout: 3000,
+      });
+      try {
+        const [rows] = await c.query(
+          `SELECT schema_name FROM information_schema.schemata ORDER BY schema_name`,
+        );
+        return (rows as any[]).map((r) => r.schema_name ?? Object.values(r)[0]) as string[];
+      } finally {
+        await c.end();
+      }
+    }
+    const url = this.buildPgUrl(meta, database);
+    const srcPool = new Pool({ connectionString: url, max: 1, connectionTimeoutMillis: 3000 });
+    try {
+      const { rows } = await srcPool.query(
+        `SELECT schema_name FROM information_schema.schemata
+         WHERE schema_name NOT LIKE 'pg\\_%' AND schema_name <> 'information_schema'
+         ORDER BY schema_name`,
+      );
+      return rows.map((r: any) => r.schema_name);
+    } finally {
+      await srcPool.end();
+    }
+  }
+
+  // 数据预览：只读 SELECT * FROM <schema>.<table> LIMIT/OFFSET，附带字段与总行数
+  async previewSourceTable(
+    conn: SourceConnection,
+    opts: { schema?: string; table: string; limit?: number; offset?: number },
+  ): Promise<TablePreview> {
+    const { meta, dbType, database } = this.resolveMeta(conn);
+    const schema = opts.schema || (dbType === 'mysql' ? database : 'public');
+    const table = opts.table;
+    const limit = Math.min(Math.max(1, Number(opts.limit) || 50), 500);
+    const offset = Math.max(0, Number(opts.offset) || 0);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
+      throw new Error(`非法表名或 schema：${schema}.${table}`);
+    }
+
+    if (dbType === 'mysql') {
+      const mysql = await loadMysql();
+      const c = await mysql.createConnection({
+        host: meta.host || 'localhost',
+        port: Number(meta.port || 3306),
+        user: meta.user || 'root',
+        password: meta.password || '',
+        database,
+        connectTimeout: 3000,
+      });
+      try {
+        const [chk] = await c.query(
+          `SELECT 1 FROM information_schema.tables
+           WHERE table_schema = ? AND table_name = ? AND table_type = 'BASE TABLE'`,
+          [schema, table],
+        );
+        if ((chk as any[]).length === 0) throw new Error(`表 ${schema}.${table} 不存在`);
+        const [cols] = await c.query(
+          `SELECT column_name, data_type FROM information_schema.columns
+           WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position`,
+          [schema, table],
+        );
+        const [rows] = await c.query(
+          `SELECT * FROM \`${schema}\`.\`${table}\` LIMIT ? OFFSET ?`,
+          [limit, offset],
+        );
+        const [cnt] = await c.query(`SELECT COUNT(*) AS n FROM \`${schema}\`.\`${table}\``);
+        return {
+          schema, table, dbType: 'mysql',
+          columns: (cols as any[]).map((x) => ({ name: x.column_name, dataType: x.data_type })),
+          rows: rows as Record<string, unknown>[],
+          total: Number((cnt as any[])[0]?.n ?? 0),
+          limit, offset,
+        };
+      } finally {
+        await c.end();
+      }
+    }
+
+    const url = this.buildPgUrl(meta, database);
+    const srcPool = new Pool({ connectionString: url, max: 1, connectionTimeoutMillis: 3000 });
+    try {
+      const chk = await srcPool.query(
+        `SELECT 1 FROM information_schema.tables
+         WHERE table_schema=$1 AND table_name=$2 AND table_type='BASE TABLE'`,
+        [schema, table],
+      );
+      if (chk.rowCount === 0) throw new Error(`表 ${schema}.${table} 不存在`);
+      const { rows: cols } = await srcPool.query(
+        `SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema=$1 AND table_name=$2 ORDER BY ordinal_position`,
+        [schema, table],
+      );
+      const { rows } = await srcPool.query(
+        `SELECT * FROM "${schema}"."${table}" LIMIT $1 OFFSET $2`,
+        [limit, offset],
+      );
+      const { rows: cnt } = await srcPool.query(
+        `SELECT count(*)::bigint AS n FROM "${schema}"."${table}"`,
+      );
+      return {
+        schema, table, dbType: 'postgres',
+        columns: cols.map((x: any) => ({ name: x.column_name, dataType: x.data_type })),
+        rows,
+        total: Number(cnt[0]?.n ?? 0),
+        limit, offset,
+      };
+    } finally {
+      await srcPool.end();
+    }
+  }
+
+  // 列出源库指定 schema 下的表名（供建模/浏览快速枚举，只读）
+  async listSourceTableNames(conn: SourceConnection, schema = 'public'): Promise<string[]> {
+    const { meta, dbType, database } = this.resolveMeta(conn);
+    const s = dbType === 'mysql' ? (schema || database) : schema;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) throw new Error(`非法 schema：${s}`);
+    if (dbType === 'mysql') {
+      const mysql = await loadMysql();
+      const c = await mysql.createConnection({
+        host: meta.host || 'localhost',
+        port: Number(meta.port || 3306),
+        user: meta.user || 'root',
+        password: meta.password || '',
+        database,
+        connectTimeout: 3000,
+      });
+      try {
+        const [rows] = await c.query(
+          `SELECT table_name FROM information_schema.tables
+           WHERE table_schema = ? AND table_type = 'BASE TABLE' ORDER BY table_name`,
+          [s],
+        );
+        return (rows as any[]).map((r) => r.table_name ?? Object.values(r)[0]) as string[];
+      } finally {
+        await c.end();
+      }
+    }
+    const url = this.buildPgUrl(meta, database);
+    const srcPool = new Pool({ connectionString: url, max: 1, connectionTimeoutMillis: 3000 });
+    try {
+      const { rows } = await srcPool.query(
+        `SELECT table_name FROM information_schema.tables
+         WHERE table_schema=$1 AND table_type='BASE TABLE' ORDER BY table_name`,
+        [s],
+      );
+      return rows.map((r: any) => r.table_name);
+    } finally {
+      await srcPool.end();
+    }
+  }
+
+  // 全量读取源表（供 S3 通用实例同步）：只读 SELECT，rows 为原始行
+  async readSourceTable(
+    conn: SourceConnection,
+    opts: { schema?: string; table: string; limit?: number },
+  ): Promise<{ columns: { name: string; dataType: string }[]; rows: Record<string, unknown>[] }> {
+    const { meta, dbType, database } = this.resolveMeta(conn);
+    const schema = opts.schema || (dbType === 'mysql' ? database : 'public');
+    const table = opts.table;
+    const limit = Math.min(Math.max(1, Number(opts.limit) || 50000), 200000);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
+      throw new Error(`非法表名或 schema：${schema}.${table}`);
+    }
+    if (dbType === 'mysql') {
+      const mysql = await loadMysql();
+      const c = await mysql.createConnection({
+        host: meta.host || 'localhost',
+        port: Number(meta.port || 3306),
+        user: meta.user || 'root',
+        password: meta.password || '',
+        database,
+        connectTimeout: 3000,
+      });
+      try {
+        const [cols] = await c.query(
+          `SELECT column_name, data_type FROM information_schema.columns
+           WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position`,
+          [schema, table],
+        );
+        const [rows] = await c.query(`SELECT * FROM \`${schema}\`.\`${table}\` LIMIT ?`, [limit]);
+        return {
+          columns: (cols as any[]).map((x) => ({ name: x.column_name, dataType: x.data_type })),
+          rows: rows as Record<string, unknown>[],
+        };
+      } finally {
+        await c.end();
+      }
+    }
+    const url = this.buildPgUrl(meta, database);
+    const srcPool = new Pool({ connectionString: url, max: 1, connectionTimeoutMillis: 3000 });
+    try {
+      const { rows: cols } = await srcPool.query(
+        `SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema=$1 AND table_name=$2 ORDER BY ordinal_position`,
+        [schema, table],
+      );
+      const { rows } = await srcPool.query(
+        `SELECT * FROM "${schema}"."${table}" LIMIT $1`,
+        [limit],
+      );
+      return {
+        columns: cols.map((x: any) => ({ name: x.column_name, dataType: x.data_type })),
+        rows,
+      };
+    } finally {
+      await srcPool.end();
+    }
+  }
+
+  private async probePostgres(conn: SourceConnection, meta: ConnectionMeta, database: string, schema: string): Promise<TestResult> {
     const url = this.buildPgUrl(meta, database);
     const srcPool = new Pool({ connectionString: url, max: 1, connectionTimeoutMillis: 3000 });
     try {
       const { rows: tbls } = await srcPool.query(
         `SELECT table_name FROM information_schema.tables
-         WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name`,
+         WHERE table_schema=$1 AND table_type='BASE TABLE' ORDER BY table_name`,
+        [schema],
       );
       const tables = [];
       for (const t of tbls) {
         const { rows: cols } = await srcPool.query(
           `SELECT column_name, data_type, is_nullable
            FROM information_schema.columns
-           WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position`,
-          [t.table_name],
+           WHERE table_schema=$1 AND table_name=$2 ORDER BY ordinal_position`,
+          [schema, t.table_name],
         );
         const { rows: pk } = await srcPool.query(
           `SELECT a.attname AS col
-           FROM pg_index i JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=ANY(i.indkey)
-           WHERE i.indrelid=($1::text)::regclass AND i.indisprimary`,
-          [t.table_name],
+           FROM pg_index i
+           JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=ANY(i.indkey)
+           JOIN pg_class c ON c.oid=i.indrelid
+           JOIN pg_namespace n ON n.oid=c.relnamespace
+           WHERE n.nspname=$1 AND c.relname=$2 AND i.indisprimary`,
+          [schema, t.table_name],
         );
         const pkSet = new Set(pk.map((r: any) => r.col));
         tables.push({

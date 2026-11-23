@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { s2shared, s2 } from '@/api';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { s2shared, s2, system } from '@/api';
+import type { ReingestReport } from '@/api';
 
 const router = useRouter();
 const route = useRoute();
@@ -106,6 +108,40 @@ const pageTitle = computed(() => {
 function navigateTo(item: { to: string }) {
   router.push(item.to);
 }
+
+// ---------- 系统设置（隐藏入口：左下角 ⚙️） ----------
+const sysDialogVisible = ref(false);
+const reingesting = ref(false);
+const reingestResult = ref<ReingestReport | null>(null);
+
+function openSysSettings() {
+  sysDialogVisible.value = true;
+}
+
+// 手动重新灌入：S1 数据源 + S2 定义 + S3 实例全量重推
+async function doReingest() {
+  try {
+    await ElMessageBox.confirm(
+      '将重新执行 S1/S2/S3 灌入：重新注册数据源、同步对象 / 关系 / 函数 / 动作 / 规则定义，并全量重推对象实例（先清空再写入）。期间请勿重复点击。确定继续？',
+      '重新灌入数据',
+      { type: 'warning', confirmButtonText: '开始灌入', cancelButtonText: '取消' },
+    );
+  } catch {
+    return; // 用户取消
+  }
+  reingesting.value = true;
+  reingestResult.value = null;
+  try {
+    const report = await system.reingest();
+    reingestResult.value = report;
+    if (report.ok) ElMessage.success(`重新灌入完成（${(report.elapsedMs / 1000).toFixed(1)}s）`);
+    else ElMessage.warning('重新灌入部分步骤失败，请查看明细');
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || e.message || '重新灌入失败');
+  } finally {
+    reingesting.value = false;
+  }
+}
 </script>
 
 <template>
@@ -125,7 +161,7 @@ function navigateTo(item: { to: string }) {
         </button>
       </div>
       <div class="nav-bottom">
-        <button class="nav-btn" title="Settings">⚙️</button>
+        <button class="nav-btn" title="Settings" @click="openSysSettings">⚙️</button>
       </div>
     </nav>
 
@@ -180,6 +216,42 @@ function navigateTo(item: { to: string }) {
         <router-view />
       </div>
     </main>
+
+    <!-- 系统设置（隐藏入口：左下角 ⚙️）：数据维护 -->
+    <ElDialog v-model="sysDialogVisible" title="系统设置" width="560px" align-center>
+      <div class="sys-block">
+        <h4 class="sys-block__title">数据维护</h4>
+        <p class="sys-hint">
+          重新执行 S1/S2/S3 灌入：重新注册数据源、同步对象 / 关系 / 函数 / 动作 / 规则定义，
+          并全量重推对象实例（先清空再写入）。用于演示数据重置，或前端手工改动后恢复。
+        </p>
+        <ElButton type="danger" :loading="reingesting" @click="doReingest">
+          {{ reingesting ? '正在重新灌入…' : '重新灌入数据' }}
+        </ElButton>
+      </div>
+
+      <div v-if="reingestResult" class="sys-result">
+        <ElAlert
+          :type="reingestResult.ok ? 'success' : 'warning'"
+          :closable="false"
+          show-icon
+          :title="reingestResult.ok
+            ? `全部完成（${(reingestResult.elapsedMs / 1000).toFixed(1)}s）`
+            : `部分失败（${(reingestResult.elapsedMs / 1000).toFixed(1)}s）`"
+        />
+        <ul class="sys-steps">
+          <li v-for="s in reingestResult.steps" :key="s.step" :class="{ fail: !s.ok }">
+            <span class="sys-step__mark">{{ s.ok ? '✓' : '✗' }}</span>
+            <span>{{ s.step }}</span>
+            <span v-if="s.error" class="sys-step__err">{{ s.error }}</span>
+          </li>
+        </ul>
+      </div>
+
+      <template #footer>
+        <ElButton @click="sysDialogVisible = false">关闭</ElButton>
+      </template>
+    </ElDialog>
   </div>
 </template>
 
@@ -493,5 +565,37 @@ html, body, #app {
   flex: 1;
   overflow-y: auto;
   padding: 20px 24px;
+}
+
+/* 系统设置（隐藏入口） */
+.sys-block__title {
+  font-size: 14px;
+  margin-bottom: var(--space-2);
+}
+.sys-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin-bottom: var(--space-3);
+}
+.sys-result { margin-top: var(--space-3); }
+.sys-steps {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  font-size: 12px;
+}
+.sys-steps li {
+  display: flex;
+  gap: 6px;
+  padding: 3px 0;
+  color: var(--text-secondary);
+}
+.sys-steps li.fail { color: #dc2626; }
+.sys-step__mark { flex: 0 0 auto; }
+.sys-step__err {
+  color: var(--text-muted);
+  font-size: 11px;
+  word-break: break-all;
 }
 </style>

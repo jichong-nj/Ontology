@@ -3,9 +3,10 @@ import { onMounted, ref, reactive } from 'vue';
 import {
   ElButton, ElCard, ElMessage, ElTag, ElDialog, ElForm, ElFormItem,
   ElInput, ElSelect, ElOption, ElDrawer, ElDescriptions, ElDescriptionsItem, ElMessageBox,
+  ElTable, ElTableColumn, ElPagination,
 } from 'element-plus';
 import { s1 } from '@/api';
-import type { SourceConnection, SourceKind, ConnStatus, ProbeTable, DbType, ConnectionMeta } from '@/api';
+import type { SourceConnection, SourceKind, ConnStatus, ProbeTable, DbType, ConnectionMeta, TablePreview } from '@/api';
 import { tryRequest } from '@/utils/error';
 
 const conns = ref<SourceConnection[]>([]);
@@ -19,6 +20,16 @@ const drawerVisible = ref(false);
 const detail = ref<SourceConnection | null>(null);
 const probeTables = ref<ProbeTable[]>([]);
 const probing = ref(false);
+const schemas = ref<string[]>([]);
+const activeSchema = ref('public');
+
+// 表数据预览（打开表 → 查看真实数据）
+const previewVisible = ref(false);
+const previewTable = ref('');
+const previewData = ref<TablePreview | null>(null);
+const previewLoading = ref(false);
+const previewPage = ref(1);
+const previewLimit = ref(50);
 
 // 对话框内：测试连接 + 选库
 const testing = ref(false);
@@ -203,7 +214,10 @@ async function submit() {
     readOnly: true,                 // S1 强制只读
     connectionMeta: meta,
     secretRef: form.secretRef || `secret://${form.displayName}`,
-    status: 'pending',
+    // 状态：刚测过且成功 → connected；否则保持（编辑时沿用旧值）/ pending
+    status: testResult?.ok
+      ? 'connected'
+      : (isEdit.value ? (conns.value.find((c) => c.id === editingId.value)?.status ?? 'pending') : 'pending'),
     icon: form.icon,
   };
   await tryRequest(async () => {
@@ -229,14 +243,30 @@ async function openDetail(c: SourceConnection) {
   detail.value = c;
   drawerVisible.value = true;
   probeTables.value = [];
-  await runProbe(c.id);
+  schemas.value = [];
+  previewVisible.value = false;
+  previewData.value = null;
+  await loadSchemas(c.id);
+  await runProbe(c.id, activeSchema.value);
 }
 
-async function runProbe(id: string) {
+// 浏览：加载连接库内的 schema 列表
+async function loadSchemas(id: string) {
+  await tryRequest(async () => {
+    const r = await s1.listSchemas(id);
+    schemas.value = r.schemas || [];
+    if (schemas.value.length && !schemas.value.includes(activeSchema.value)) {
+      activeSchema.value = schemas.value.includes('public') ? 'public' : schemas.value[0];
+    }
+  });
+}
+
+// 浏览：某 schema 下的表（含字段列）
+async function runProbe(id: string, schema = 'public') {
   probeTables.value = [];
   probing.value = true;
   await tryRequest(async () => {
-    const r = await s1.probe(id);
+    const r = await s1.listTables(id, schema);
     probeTables.value = r.tables || [];
     if (!r.reachable && r.error) {
       ElMessage.warning(`探测失败：${r.error}`);
@@ -245,12 +275,59 @@ async function runProbe(id: string) {
   probing.value = false;
 }
 
+function onSchemaChange(schema: string) {
+  if (!detail.value) return;
+  previewVisible.value = false;
+  runProbe(detail.value.id, schema);
+}
+
+// 打开表 → 拉取真实数据（只读分页）
+async function openPreview(t: ProbeTable) {
+  previewTable.value = t.table;
+  previewPage.value = 1;
+  previewVisible.value = true;
+  await loadRows();
+}
+
+async function loadRows() {
+  if (!detail.value) return;
+  previewLoading.value = true;
+  await tryRequest(async () => {
+    previewData.value = await s1.tableRows(detail.value!.id, previewTable.value, {
+      schema: activeSchema.value,
+      limit: previewLimit.value,
+      offset: (previewPage.value - 1) * previewLimit.value,
+    });
+  });
+  previewLoading.value = false;
+}
+
+function onPreviewPage(p: number) {
+  previewPage.value = p;
+  loadRows();
+}
+
+function onPreviewSize(s: number) {
+  previewLimit.value = s;
+  previewPage.value = 1;
+  loadRows();
+}
+
+// 单元格渲染：null/undefined → —，对象 → JSON 字符串
+function fmtCell(_row: Record<string, unknown>, _col: unknown, v: unknown): string {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
 // 显式测试连接连通性（卡片上的已保存连接）
 async function runTest(id: string) {
   await tryRequest(async () => {
     const r = await s1.testConnection(id);
     if (r.reachable) ElMessage.success(`「${id}」连接正常`);
     else ElMessage.error(`连接失败：${r.error}`);
+    // 状态已由后端回写（connected / error），刷新列表同步标签
+    await load();
   });
 }
 
@@ -441,7 +518,7 @@ onMounted(load);
             :loading="testing"
             @click="runTest(detail.id)"
           >测试连接</ElButton>
-          <ElButton size="small" :loading="probing" @click="runProbe(detail.id)">重新探测</ElButton>
+          <ElButton size="small" :loading="probing" @click="runProbe(detail.id, activeSchema)">重新探测</ElButton>
         </div>
         <ElAlert
           v-if="testResult"
@@ -475,17 +552,64 @@ onMounted(load);
           </ElDescriptionsItem>
         </ElDescriptions>
 
-        <h4 class="drawer-sub">探测到的表（{{ probeTables.length }}）</h4>
+        <h4 class="drawer-sub">浏览表（{{ probeTables.length }}）</h4>
+        <div class="schema-row">
+          <ElSelect v-model="activeSchema" size="small" style="flex: 1" @change="onSchemaChange">
+            <ElOption v-for="s in schemas" :key="s" :label="s" :value="s" />
+          </ElSelect>
+          <ElButton size="small" :loading="probing" @click="runProbe(detail.id, activeSchema)">刷新</ElButton>
+        </div>
         <div v-loading="probing">
           <ul v-if="probeTables.length" class="table-list">
-            <li v-for="t in probeTables" :key="t.table" class="table-list__item">
+            <li
+              v-for="t in probeTables"
+              :key="t.table"
+              class="table-list__item table-list__item--clickable"
+              @click="openPreview(t)"
+            >
               <span class="mono">{{ t.table }}</span>
-              <span class="table-list__cols">{{ t.columns.length }} 字段</span>
+              <span class="table-list__cols">{{ t.columns.length }} 字段 · 查看数据</span>
             </li>
           </ul>
           <p v-else class="drawer-empty">暂无可见表（或连接尚未就绪）。</p>
         </div>
       </template>
+    </ElDrawer>
+
+    <!-- 表数据预览：打开表 → 查看真实数据（只读分页） -->
+    <ElDrawer
+      v-model="previewVisible"
+      :title="`${activeSchema}.${previewTable}`"
+      size="760px"
+      append-to-body
+    >
+      <div v-loading="previewLoading">
+        <p v-if="previewData" class="form-hint">
+          共 {{ previewData.total }} 行 · 当前第 {{ previewData.offset + 1 }}–{{ previewData.offset + previewData.rows.length }} 行 · 只读预览
+        </p>
+        <ElTable :data="previewData?.rows || []" size="small" border height="440" empty-text="无数据">
+          <ElTableColumn
+            v-for="c in previewData?.columns || []"
+            :key="c.name"
+            :prop="c.name"
+            :label="c.name"
+            :formatter="fmtCell"
+            show-overflow-tooltip
+            min-width="120"
+          />
+        </ElTable>
+        <div class="preview-pager">
+          <ElPagination
+            layout="total, sizes, prev, pager, next"
+            :total="previewData?.total || 0"
+            :page-size="previewLimit"
+            :current-page="previewPage"
+            :page-sizes="[20, 50, 100, 200]"
+            @current-change="onPreviewPage"
+            @size-change="onPreviewSize"
+          />
+        </div>
+      </div>
     </ElDrawer>
   </div>
 </template>
@@ -648,6 +772,18 @@ onMounted(load);
   font-size: 13px;
 }
 .table-list__item:last-child { border-bottom: none; }
+.table-list__item--clickable { cursor: pointer; transition: background .15s; }
+.table-list__item--clickable:hover { background: var(--primary-soft); }
 .table-list__cols { color: var(--text-muted); font-size: 12px; }
 .drawer-empty { font-size: 12px; color: var(--text-muted); }
+.schema-row {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.preview-pager {
+  margin-top: var(--space-3);
+  display: flex;
+  justify-content: flex-end;
+}
 </style>
