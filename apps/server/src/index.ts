@@ -1890,10 +1890,19 @@ const MODELING_PROMPT = `
 - writeObjectPatch 返回 undefined 表示成功（写入无返回值），不要当作失败；落库结果用 get_instances 复核。
 `;
 
+// 工具调用格式约束：所有 Agent 统一追加（减少本地模型输出 XML 文本的概率）
+const TOOL_FORMAT_HINT = `
+## 工具调用格式
+请通过平台提供的 function-calling 通道调用工具；不要输出 <tool_call>、<function=...>、<parameter=...> 这类 XML 文本。
+`;
+
 // 注入建模提示词（不影响未启用 modeling 的 Agent）
 function finalizeAgentConfig(cfg: AIPAgentConfig): AIPAgentConfig {
-  if (!Array.isArray(cfg.enabledTools) || !cfg.enabledTools.includes('modeling')) return cfg;
-  return { ...cfg, systemPrompt: `${cfg.systemPrompt || ''}\n${MODELING_PROMPT}` };
+  const base = `${cfg.systemPrompt || ''}\n${TOOL_FORMAT_HINT}`;
+  if (!Array.isArray(cfg.enabledTools) || !cfg.enabledTools.includes('modeling')) {
+    return { ...cfg, systemPrompt: base };
+  }
+  return { ...cfg, systemPrompt: `${base}\n${MODELING_PROMPT}` };
 }
 // 仅当作为入口直接运行时才监听端口；被测试 import 时不自动启动，避免 EADDRINUSE。
 if (import.meta.url === `file://${process.argv[1]}`) {

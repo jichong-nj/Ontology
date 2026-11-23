@@ -3,6 +3,7 @@
 // 与具体 HTTP 解耦：由 server 注入 Runtime（进程内直接调用 repo / sandbox / 调度器 / pool）。
 
 import { OpenAICompatibleLLM, type ChatMessage, type ToolSpec, type ToolCall } from './llm-gateway';
+import { parseXmlToolCalls } from './xml-tool-calls';
 import type { AIPAgentConfig } from '@ontology/ontology-core';
 
 // 运行时激活的模型引用：包含模型名与其所属 provider 的接入点
@@ -597,6 +598,15 @@ export class AIPAgent {
         return { reply: `调用模型失败：${e.message}`, steps };
       }
 
+      // 本地模型可能把工具调用输出成 XML 文本：兜底解析成 tool_calls
+      if (!resp.toolCalls || resp.toolCalls.length === 0) {
+        const parsed = parseXmlToolCalls(resp.content ?? '');
+        if (parsed.calls.length) {
+          console.warn('[agent] 检测到 XML 工具调用，已自动转换:', parsed.calls.map((c) => c.function.name).join(','));
+          resp = { ...resp, content: parsed.cleaned || null, toolCalls: parsed.calls };
+        }
+      }
+
       // 没有工具调用 → 直接返回最终答复
       if (!resp.toolCalls || resp.toolCalls.length === 0) {
         return { reply: resp.content ?? resp.reasoningContent ?? '(模型未返回内容)', steps };
@@ -662,8 +672,10 @@ export class AIPAgent {
       try {
         // 第一次流式：用于探测工具调用 + 流式输出思考/推理
         let accThought = '';
-        let accContent = '';
+        let contentBuf = '';
+        let emittedLen = 0;
         let toolCalls: ToolCall[] = [];
+        const HOLDBACK = 48; // 暂扣尾部，避免把 <tool_call> 前缀当正文发出
         for await (const chunk of this.llm.chatStream({
           model: modelName,
           messages,
@@ -678,18 +690,45 @@ export class AIPAgent {
             }
           }
           if (chunk.delta.content) {
-            accContent += chunk.delta.content;
-            gotReplyChunk = true;
-            yield { type: 'reply_chunk', content: chunk.delta.content };
+            contentBuf += chunk.delta.content;
+            const xmlIdx = contentBuf.indexOf('<tool_call');
+            const safeEnd = xmlIdx >= 0 ? xmlIdx : Math.max(emittedLen, contentBuf.length - HOLDBACK);
+            if (safeEnd > emittedLen) {
+              const piece = contentBuf.slice(emittedLen, safeEnd);
+              emittedLen = safeEnd;
+              if (piece) {
+                gotReplyChunk = true;
+                yield { type: 'reply_chunk', content: piece };
+              }
+            }
           }
           if (chunk.finished) {
             toolCalls = chunk.toolCalls;
           }
         }
+        // XML 兜底：部分本地模型把 tool_call 当文本输出；剥离并转成真实工具调用
+        let parsedCalls = toolCalls;
+        let finalContent = contentBuf;
+        const xmlParsed = parseXmlToolCalls(contentBuf);
+        if ((!parsedCalls || parsedCalls.length === 0) && xmlParsed.calls.length) {
+          console.warn('[agent] 检测到 XML 工具调用(stream)，已自动转换:', xmlParsed.calls.map((c) => c.function.name).join(','));
+          parsedCalls = xmlParsed.calls;
+          finalContent = xmlParsed.cleaned;
+        }
+        // 补发剩余正文（若剥离了 XML，只补发 cleaned 中尚未发出的部分）
+        const flushTarget = finalContent === contentBuf ? contentBuf : finalContent;
+        if (flushTarget.length > emittedLen) {
+          const piece = flushTarget.slice(emittedLen);
+          if (piece) {
+            gotReplyChunk = true;
+            yield { type: 'reply_chunk', content: piece };
+          }
+          emittedLen = flushTarget.length;
+        }
         resp = {
-          content: accContent || null,
+          content: finalContent || null,
           reasoningContent: accThought || undefined,
-          toolCalls,
+          toolCalls: parsedCalls,
         };
         yield { type: 'call_status', step, ok: true };
       } catch (e: any) {
