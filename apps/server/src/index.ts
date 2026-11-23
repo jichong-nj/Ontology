@@ -1792,6 +1792,17 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
 
+    // 立刻落库 user 消息：生成期间刷新/切换页面也不会丢请求
+    if (conversationId) {
+      try {
+        await repo.appendMessage({
+          id: crypto.randomUUID(), conversationId, role: 'user', content: message, timeline: [],
+        });
+      } catch (e: any) {
+        console.error('[aip] user 消息落库失败', e.message);
+      }
+    }
+
     const fullCfg = finalizeAgentConfig(cfg);
     const trimmedHistory = trimHistory(history, {
       contextWindow: resolved?.model?.contextWindow,
@@ -1839,13 +1850,12 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
       res.end();
     }
 
-    // 落库（会话存在时记录 user + assistant）
-    if (conversationId) {
+    // 生成结束后只落 assistant（user 已在开始时落库）；空回复不落库，避免出现空气泡
+    if (conversationId && finalReply.trim()) {
       try {
-        await repo.appendMessage({ id: crypto.randomUUID(), conversationId, role: 'user', content: message, timeline: [] });
         await repo.appendMessage({ id: crypto.randomUUID(), conversationId, role: 'ai', content: finalReply, timeline });
       } catch (e: any) {
-        console.error('[aip] 会话落库失败', e.message);
+        console.error('[aip] assistant 消息落库失败', e.message);
       }
     }
   } catch (e: any) {
