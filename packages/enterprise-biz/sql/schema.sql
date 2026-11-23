@@ -91,7 +91,8 @@ CREATE INDEX ON department (parent_id);
 -- ---------- 请假记录 ----------
 CREATE TABLE leave_record (
   id            BIGSERIAL PRIMARY KEY,
-  emp_code      TEXT NOT NULL,               -- 对齐 Employee RID（emp_code）
+  emp_code      TEXT NOT NULL,               -- 工号（业务键，保留）
+  employee_id   BIGINT REFERENCES employee(id), -- 员工主键（关系/外键用）
   leave_type    TEXT NOT NULL
                 CHECK (leave_type IN ('annual','sick','personal','marriage','maternity','bereavement')),
   start_date    DATE NOT NULL,

@@ -153,6 +153,9 @@ export class PostgresMetadataRepository implements MetadataRepository {
         visibility: r.visibility || 'Normal',
         instanceSource: r.instance_source,
         version: r.version,
+        junctionTable: r.junction_table || undefined,
+        sourceColumn: r.source_column || undefined,
+        targetColumn: r.target_column || undefined,
       })),
     };
   }
@@ -392,6 +395,9 @@ export class PostgresMetadataRepository implements MetadataRepository {
       visibility: r.visibility || 'Normal',
       instanceSource: r.instance_source,
       version: r.version,
+      junctionTable: r.junction_table || undefined,
+      sourceColumn: r.source_column || undefined,
+      targetColumn: r.target_column || undefined,
     }));
   }
 
@@ -419,15 +425,20 @@ export class PostgresMetadataRepository implements MetadataRepository {
       visibility: r.visibility || 'Normal',
       instanceSource: r.instance_source,
       version: r.version,
+      junctionTable: r.junction_table || undefined,
+      sourceColumn: r.source_column || undefined,
+      targetColumn: r.target_column || undefined,
     };
   }
 
   async createLinkType(def: LinkType): Promise<void> {
     await this.pool.query(
-      `INSERT INTO link_type (api_name, display_name, source_type, target_type, cardinality, instance_source, version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `INSERT INTO link_type (api_name, display_name, source_type, target_type, cardinality, instance_source, version,
+                              junction_table, source_column, target_column)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT (api_name) DO NOTHING`,
-      [def.apiName, def.displayName, def.sourceType, def.targetType, def.cardinality, def.instanceSource, def.version ?? 1],
+      [def.apiName, def.displayName, def.sourceType, def.targetType, def.cardinality, def.instanceSource, def.version ?? 1,
+       def.junctionTable ?? null, def.sourceColumn ?? null, def.targetColumn ?? null],
     );
   }
 
@@ -445,6 +456,9 @@ export class PostgresMetadataRepository implements MetadataRepository {
     if (patch.pluralName !== undefined) { sets.push(`plural_name=$${i++}`); values.push(patch.pluralName); }
     if (patch.visibility !== undefined) { sets.push(`visibility=$${i++}`); values.push(patch.visibility); }
     if (patch.instanceSource !== undefined) { sets.push(`instance_source=$${i++}`); values.push(patch.instanceSource); }
+    if (patch.junctionTable !== undefined) { sets.push(`junction_table=$${i++}`); values.push(patch.junctionTable); }
+    if (patch.sourceColumn !== undefined) { sets.push(`source_column=$${i++}`); values.push(patch.sourceColumn); }
+    if (patch.targetColumn !== undefined) { sets.push(`target_column=$${i++}`); values.push(patch.targetColumn); }
     if (sets.length === 0) return;
     values.push(apiName);
     await this.pool.query(`UPDATE link_type SET ${sets.join(',')} WHERE api_name=$${i}`, values);

@@ -53,7 +53,12 @@ CREATE TABLE link_type (
   target_type     TEXT NOT NULL REFERENCES object_type(api_name),
   cardinality     TEXT NOT NULL CHECK (cardinality IN ('one-to-one','one-to-many','many-to-many')),
   instance_source TEXT NOT NULL CHECK (instance_source IN ('source','managed')),
-  version         INT  NOT NULL
+  version         INT  NOT NULL,
+  -- 多对多 join 表后备（对齐 Palantir join table dataset）：
+  -- junction_table 非空时，关系实例从该关联表读取，source_column/target_column 映射两端主键。
+  junction_table  TEXT,
+  source_column   TEXT,
+  target_column   TEXT
 );
 
 CREATE TABLE link_instance (

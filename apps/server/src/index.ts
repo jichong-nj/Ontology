@@ -705,6 +705,29 @@ async function syncLinkInstances(
   }
   const conn = await store.getSourceConnection(src.sourceConnectionId);
   if (!conn) throw new Error(`数据源不存在: ${src.sourceConnectionId}`);
+
+  // 多对多 join 表模式：关系实例直接来自关联表（对齐 Palantir join table dataset）
+  if (lt.junctionTable) {
+    if (!lt.sourceColumn || !lt.targetColumn) {
+      throw new Error(`关系类型 ${apiName} 使用关联表模式，必须配置 sourceColumn / targetColumn`);
+    }
+    const data = await store.readSourceTable(conn, { schema, table: lt.junctionTable, limit: 50000 });
+    await repo.clearLinkInstances(apiName).catch(() => {});
+    let written = 0;
+    let skipped = 0;
+    for (const row of data.rows) {
+      const sVal = row[lt.sourceColumn];
+      const tVal = row[lt.targetColumn];
+      if (sVal === null || sVal === undefined || tVal === null || tVal === undefined) {
+        skipped++;
+        continue;
+      }
+      await repo.createLinkInstance(apiName, `${lt.sourceType}:${String(sVal)}`, `${lt.targetType}:${String(tVal)}`);
+      written++;
+    }
+    return { read: data.rows.length, written, skipped, elapsedMs: Date.now() - t0 };
+  }
+
   const probe = await store.probeSourceTables(conn, schema);
   if (!probe.reachable) throw new Error(`数据源不可达: ${probe.error ?? '未知错误'}`);
   const tbl = probe.tables.find((t) => t.table === src.sourceTable);
@@ -745,7 +768,11 @@ app.post('/api/s2/link-types/from-draft', async (req, res) => {
     if (!src) return res.status(400).json({ error: `源对象类型不存在: ${draft.sourceType}` });
     if (!tgt) return res.status(400).json({ error: `目标对象类型不存在: ${draft.targetType}` });
 
-    const cardinality = draft.cardinality ?? 'one-to-many';
+    const isJunction = !!draft.junctionTable;
+    if (isJunction && (!draft.sourceColumn || !draft.targetColumn)) {
+      return res.status(400).json({ error: '关联表模式需要 sourceColumn / targetColumn' });
+    }
+    const cardinality = draft.cardinality ?? (isJunction ? 'many-to-many' : 'one-to-many');
     const targetKeyProp = draft.targetKeyProperty ?? draft.primaryKey;
     await repo.createLinkType({
       apiName: draft.apiName,
@@ -758,6 +785,9 @@ app.post('/api/s2/link-types/from-draft', async (req, res) => {
       primaryKey: targetKeyProp,
       foreignKey: draft.foreignKey,
       pluralName: draft.pluralName,
+      junctionTable: draft.junctionTable,
+      sourceColumn: draft.sourceColumn,
+      targetColumn: draft.targetColumn,
       visibility: 'Normal',
       instanceSource: 'source',
       version: 1,
@@ -767,10 +797,13 @@ app.post('/api/s2/link-types/from-draft', async (req, res) => {
       primaryKey: targetKeyProp,
       foreignKey: draft.foreignKey,
       pluralName: draft.pluralName,
+      junctionTable: draft.junctionTable,
+      sourceColumn: draft.sourceColumn,
+      targetColumn: draft.targetColumn,
     });
 
     let sync: unknown = null;
-    if (req.body?.sync !== false && (draft.foreignKey || draft.primaryKey)) {
+    if (req.body?.sync !== false && (draft.foreignKey || draft.primaryKey || draft.junctionTable)) {
       try {
         sync = await syncLinkInstances(draft.apiName, draft.schema || 'public');
       } catch (e: any) {
@@ -1881,8 +1914,14 @@ const MODELING_PROMPT = `
 \`\`\`
    - foreignKey = 源表外键列名；targetKeyProperty = 目标对象主键属性 apiName；
    - cardinality 取 one-to-one / one-to-many / many-to-many；
-   - 只支持"外键值 = 目标对象主键值"的关联；若需要跨键 join（如 emp_code→id），必须明确说明做不到。
-3. 告知用户"确认后点击「确认创建」将创建关系类型并同步关系实例"，然后停止。
+   - 外键模式只支持"外键值 = 目标对象主键值"；跨键关联（如 emp_code→id）当前不支持，
+     建议用户给源表补一列指向目标主键（如 employee_id），或改用关联表模式。
+3. 多对多关系（中间表/关联表）用关联表模式，草案示例：
+\`\`\`json
+{"type":"link_type_draft","apiName":"DeviceDepartment","displayName":"设备使用部门","sourceType":"Device","targetType":"Department","cardinality":"many-to-many","junctionTable":"device_department","sourceColumn":"device_id","targetColumn":"department_id"}
+\`\`\`
+   - junctionTable 为关联表名；sourceColumn 映射源端主键、targetColumn 映射目标端主键；此模式不需要 foreignKey。
+4. 告知用户"确认后点击「确认创建」将创建关系类型并同步关系实例"，然后停止。
 
 ## 派生属性 / 统计类属性（当用户要"员工数/人数/统计值"时）
 先判断用途，再选路径：

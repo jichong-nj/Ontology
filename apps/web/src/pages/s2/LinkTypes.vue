@@ -78,6 +78,7 @@ const form = ref({
   primaryKey: '', foreignKey: '',
   pluralName: '', visibility: 'Normal',
   instanceSource: 'source' as 'source' | 'managed',
+  junctionTable: '', sourceColumn: '', targetColumn: '',
 });
 
 // 源对象类型的属性列表（用于 Primary key 下拉）
@@ -117,6 +118,7 @@ function resetForm() {
     primaryKey: '', foreignKey: '',
     pluralName: '', visibility: 'Normal',
     instanceSource: 'source',
+    junctionTable: '', sourceColumn: '', targetColumn: '',
   };
   isEdit.value = false;
 }
@@ -140,6 +142,9 @@ async function openEdit(lt: LinkType) {
     pluralName: lt.pluralName || '',
     visibility: lt.visibility || 'Normal',
     instanceSource: lt.instanceSource || 'source',
+    junctionTable: lt.junctionTable || '',
+    sourceColumn: lt.sourceColumn || '',
+    targetColumn: lt.targetColumn || '',
   };
   dialogVisible.value = true;
 }
@@ -153,14 +158,21 @@ async function submit() {
     ElMessage.warning('请选择源端和目标端对象类型');
     return;
   }
+  if (form.value.junctionTable && (!form.value.sourceColumn || !form.value.targetColumn)) {
+    ElMessage.warning('关联表模式需填写源端列与目标端列');
+    return;
+  }
   await tryRequest(async () => {
     if (isEdit.value) {
       await s2link.updateLinkType(form.value.apiName, { ...form.value });
       ElMessage.success('关系类型已更新');
     } else {
-      // 创建时把 sourceCardinality + targetCardinality 合成 legacy cardinality
+      // 创建时把 sourceCardinality + targetCardinality 合成 legacy cardinality；
+      // 关联表模式固定 many-to-many
       const payload: any = { ...form.value };
-      payload.cardinality = `${form.value.sourceCardinality}-to-${form.value.targetCardinality}`;
+      payload.cardinality = form.value.junctionTable
+        ? 'many-to-many'
+        : `${form.value.sourceCardinality}-to-${form.value.targetCardinality}`;
       await s2link.createLinkType(payload);
       ElMessage.success('关系类型创建成功');
     }
@@ -484,6 +496,19 @@ onMounted(load);
         </div>
       </div>
 
+      <!-- 多对多关联表（可选） -->
+      <div class="lt-junction">
+        <div class="lt-junction__title">多对多关联表（可选，对齐 Palantir join table）</div>
+        <div class="lt-junction__row">
+          <ElInput v-model="form.junctionTable" placeholder="关联表名，如 device_department" />
+          <ElInput v-model="form.sourceColumn" placeholder="源端列，如 device_id" />
+          <ElInput v-model="form.targetColumn" placeholder="目标端列，如 department_id" />
+        </div>
+        <p class="lt-junction__hint">
+          填写关联表后，此关系固定为 many-to-many，实例从关联表生成，无需外键属性；留空则按外键模式。
+        </p>
+      </div>
+
       <template #footer>
         <ElButton @click="dialogVisible = false">取消</ElButton>
         <ElButton type="primary" @click="submit">{{ isEdit ? '保存' : '创建' }}</ElButton>
@@ -618,6 +643,20 @@ onMounted(load);
   overflow-y: auto;
   padding-right: var(--space-2);
 }
+.lt-junction {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+.lt-junction__title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.lt-junction__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}
+.lt-junction__hint { font-size: 12px; color: var(--text-muted); margin: 8px 0 0; }
 .lt-summary {
   display: flex;
   align-items: center;

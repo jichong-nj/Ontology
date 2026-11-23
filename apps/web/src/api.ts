@@ -180,6 +180,9 @@ export interface LinkType {
   pluralName?: string;
   visibility?: string;
   instanceSource: 'source' | 'managed';
+  junctionTable?: string;
+  sourceColumn?: string;
+  targetColumn?: string;
 }
 export interface CreateObjectTypeWithMapping {
   objectType: ObjectType;

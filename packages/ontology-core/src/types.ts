@@ -141,6 +141,11 @@ export interface LinkType {
   // - 'managed': 实例由本平台在 link_instance 表中维护（如用户标注的关联）。
   instanceSource: 'source' | 'managed';
   version: number;
+  // 多对多 join 表后备（可选）：与 foreignKey 二选一。
+  // junctionTable 非空时，关系实例从该表读取：source_column -> sourceType 主键，target_column -> targetType 主键。
+  junctionTable?: string;
+  sourceColumn?: string;
+  targetColumn?: string;
 }
 
 export interface InterfaceDef {
