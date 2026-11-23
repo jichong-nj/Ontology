@@ -17,14 +17,14 @@ export interface ActiveModelRef {
 
 // 进程内能力执行器（由 server 注入，避免 Agent 自己拼 SQL）
 export interface AgentRuntime {
-  listFunctions(): Promise<Array<{ apiName: string; displayName: string; description?: string; inputs: unknown }>>;
-  listActions(): Promise<Array<{ apiName: string; displayName: string; effect?: unknown }>>;
-  listRules(): Promise<Array<{ apiName: string; displayName: string; enabled: boolean }>>;
+  listFunctions(opts?: { keyword?: string; limit?: number; offset?: number }): Promise<unknown>;
+  listActions(opts?: { keyword?: string; limit?: number; offset?: number }): Promise<unknown>;
+  listRules(opts?: { keyword?: string; limit?: number; offset?: number }): Promise<unknown>;
   listObjectTypes(opts?: { objectTypes?: string[]; keyword?: string; limit?: number; offset?: number }): Promise<unknown>;
   invokeFunction(name: string, args: Record<string, unknown>): Promise<unknown>;
   triggerAction(name: string, args: Record<string, unknown>): Promise<unknown>;
   runRules(): Promise<unknown>;
-  listAlerts(): Promise<unknown>;
+  listAlerts(opts?: { keyword?: string; limit?: number; offset?: number }): Promise<unknown>;
   getInstances(objectType: string, opts?: { filter?: unknown[]; pageSize?: number; pageToken?: string }): Promise<unknown>;
   getObjectLinks(objectType: string, objectRid: string): Promise<unknown>;
   aggregate(objectType: string, property: string, topN?: number): Promise<unknown>;
@@ -71,7 +71,7 @@ const TOOL_GROUPS: Record<string, string[]> = {
   // 受限 NL2SQL：LLM 生成只读 SELECT，在 S1 源库白名单表内执行（不回写源）
   sql: ['run_sql'],
   // 数据源建模：列出数据源 / 读取源表结构与样例（只读；创建动作需用户在前端确认）
-  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type', 'create_function', 'add_object_type_property', 'compute_derived', 'invoke_function'],
+  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type', 'list_functions', 'create_function', 'add_object_type_property', 'compute_derived', 'invoke_function'],
 };
 
 function allToolSpecs(): ToolSpec[] {
@@ -80,8 +80,16 @@ function allToolSpecs(): ToolSpec[] {
       type: 'function',
       function: {
         name: 'list_functions',
-        description: '列出所有可用的 Ontology 函数（含说明与入参），用于发现能力。',
-        parameters: { type: 'object', properties: {}, required: [] },
+        description: '列出可用的 Ontology 函数（含说明与入参），用于发现能力。支持 keyword/limit/offset，返回 { total, count, hasMore, items }。',
+        parameters: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string', description: '按 apiName/显示名模糊过滤（可选）' },
+            limit: { type: 'number', description: '返回条数，默认 100，上限 500' },
+            offset: { type: 'number', description: '偏移量，默认 0' },
+          },
+          required: [],
+        },
       },
     },
     {
@@ -103,8 +111,16 @@ function allToolSpecs(): ToolSpec[] {
       type: 'function',
       function: {
         name: 'list_actions',
-        description: '列出所有已注册的动作（Action）。',
-        parameters: { type: 'object', properties: {}, required: [] },
+        description: '列出已注册的动作（Action）。支持 keyword/limit/offset，返回 { total, count, hasMore, items }。',
+        parameters: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string', description: '按 apiName/显示名模糊过滤（可选）' },
+            limit: { type: 'number', description: '返回条数，默认 100，上限 500' },
+            offset: { type: 'number', description: '偏移量，默认 0' },
+          },
+          required: [],
+        },
       },
     },
     {
@@ -126,8 +142,16 @@ function allToolSpecs(): ToolSpec[] {
       type: 'function',
       function: {
         name: 'list_rules',
-        description: '列出所有自动化规则（含启用状态）。',
-        parameters: { type: 'object', properties: {}, required: [] },
+        description: '列出自动化规则（含启用状态）。支持 keyword/limit/offset，返回 { total, count, hasMore, items }。',
+        parameters: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string', description: '按 apiName/显示名模糊过滤（可选）' },
+            limit: { type: 'number', description: '返回条数，默认 100，上限 500' },
+            offset: { type: 'number', description: '偏移量，默认 0' },
+          },
+          required: [],
+        },
       },
     },
     {
@@ -237,8 +261,16 @@ function allToolSpecs(): ToolSpec[] {
       type: 'function',
       function: {
         name: 'list_alerts',
-        description: '列出当前所有告警对象（Alert 实例）。',
-        parameters: { type: 'object', properties: {}, required: [] },
+        description: '列出当前告警对象（Alert 实例）。支持 keyword/limit/offset，返回 { total, count, hasMore, items }。',
+        parameters: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string', description: '在实例属性中模糊匹配（可选）' },
+            limit: { type: 'number', description: '返回条数，默认 100，上限 500' },
+            offset: { type: 'number', description: '偏移量，默认 0' },
+          },
+          required: [],
+        },
       },
     },
     {
@@ -420,11 +452,11 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
       ? { error: `该 Agent 无权访问对象类型 "${objectType}"（白名单：${allowed.join(', ')}）` }
       : null;
   return {
-    list_functions: async () => rt.listFunctions(),
+    list_functions: async (a: any) => listEnvelope(await rt.listFunctions({ keyword: a?.keyword, limit: a?.limit, offset: a?.offset }), a?.offset),
     invoke_function: async (a: any) => rt.invokeFunction(a.name, a.args ?? {}),
-    list_actions: async () => rt.listActions(),
+    list_actions: async (a: any) => listEnvelope(await rt.listActions({ keyword: a?.keyword, limit: a?.limit, offset: a?.offset }), a?.offset),
     trigger_action: async (a: any) => rt.triggerAction(a.name, a.args ?? {}),
-    list_rules: async () => rt.listRules(),
+    list_rules: async (a: any) => listEnvelope(await rt.listRules({ keyword: a?.keyword, limit: a?.limit, offset: a?.offset }), a?.offset),
     run_rules: async () => rt.runRules(),
     list_object_types: async (a: any) => {
       const r: any = await rt.listObjectTypes({
@@ -457,7 +489,7 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
       if (err) return err;
       return rt.histogram(a.objectType, a.property, a.buckets);
     },
-    list_alerts: async () => rt.listAlerts(),
+    list_alerts: async (a: any) => listEnvelope(await rt.listAlerts({ keyword: a?.keyword, limit: a?.limit, offset: a?.offset }), a?.offset),
     run_sql: async (a: any) => {
       const allow = Array.isArray(a.allowTables) ? a.allowTables : [];
       return rt.runSql(a.sql, allow, a.limit);
@@ -485,6 +517,16 @@ function selectTools(enabled: string[]): ToolSpec[] {
     for (const t of TOOL_GROUPS[g] ?? []) allowed.add(t);
   }
   return allToolSpecs().filter((s) => allowed.has(s.function.name));
+}
+
+function listEnvelope(r: any, offset = 0) {
+  if (Array.isArray(r)) return r;
+  return {
+    total: r.total,
+    count: r.items.length,
+    hasMore: offset + r.items.length < r.total,
+    items: r.items,
+  };
 }
 
 function safeStringify(v: unknown): string {

@@ -263,8 +263,16 @@ app.get('/api/s2/object-types/:apiName/derived/:propApiName', async (req, res) =
 });
 
 // ---------- S2 函数管理（CRUD）----------
-app.get('/api/s2/functions', async (_req, res) => {
+app.get('/api/s2/functions', async (req, res) => {
   try {
+    const keyword = (req.query.keyword as string) || undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset ? Number(req.query.offset) : undefined;
+    const withTotal = req.query.withTotal === '1' || req.query.withTotal === 'true';
+    if (keyword || limit !== undefined || offset !== undefined || withTotal) {
+      const r = await repo.searchFunctions({ keyword, limit, offset });
+      return res.json(withTotal ? r : r.items);
+    }
     const list = await repo.listFunctions();
     res.json(list);
   } catch (e: any) {
@@ -323,8 +331,16 @@ app.delete('/api/s2/functions/:apiName', async (req, res) => {
 });
 
 // ---------- S2 动作管理（CRUD + 触发）----------
-app.get('/api/s2/actions', async (_req, res) => {
+app.get('/api/s2/actions', async (req, res) => {
   try {
+    const keyword = (req.query.keyword as string) || undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset ? Number(req.query.offset) : undefined;
+    const withTotal = req.query.withTotal === '1' || req.query.withTotal === 'true';
+    if (keyword || limit !== undefined || offset !== undefined || withTotal) {
+      const r = await repo.searchActions({ keyword, limit, offset });
+      return res.json(withTotal ? r : r.items);
+    }
     const list = await repo.listActions();
     res.json(list);
   } catch (e: any) {
@@ -396,8 +412,16 @@ app.post('/api/s2/functions/:fnApiName/invoke', async (req, res) => {
 });
 
 // 自动化规则列表（通用「满足条件→执行动作」）
-app.get('/api/s2/rules', async (_req, res) => {
+app.get('/api/s2/rules', async (req, res) => {
   try {
+    const keyword = (req.query.keyword as string) || undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset ? Number(req.query.offset) : undefined;
+    const withTotal = req.query.withTotal === '1' || req.query.withTotal === 'true';
+    if (keyword || limit !== undefined || offset !== undefined || withTotal) {
+      const r = await repo.searchRules({ keyword, limit, offset });
+      return res.json(withTotal ? r : r.items);
+    }
     const rules = await repo.listRules();
     res.json(rules);
   } catch (e: any) {
@@ -467,8 +491,16 @@ app.delete('/api/s2/rules/:apiName', async (req, res) => {
 });
 
 // 告警对象列表（本体可写侧 Alert 实例）
-app.get('/api/s2/alerts', async (_req, res) => {
+app.get('/api/s2/alerts', async (req, res) => {
   try {
+    const keyword = (req.query.keyword as string) || undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset ? Number(req.query.offset) : undefined;
+    const withTotal = req.query.withTotal === '1' || req.query.withTotal === 'true';
+    if (keyword || limit !== undefined || offset !== undefined || withTotal) {
+      const r = await repo.searchObjectProperties('Alert', { keyword, limit, offset });
+      return res.json(withTotal ? r : r.items);
+    }
     const props = await repo.listObjectProperties('Alert');
     res.json(props);
   } catch (e: any) {
@@ -1054,9 +1086,9 @@ app.get('/api/s2/explore/:objectType/histogram', async (req, res) => {
 // ---------- AIP 配置平台：Provider / Model / Agent 三层体系 ----------
 // 进程内运行时：把本体能力（函数/动作/规则/探索/告警）桥接给 Agent 工具调用。
 const agentRuntime: AgentRuntime = {
-  listFunctions: () => repo.listFunctions(),
-  listActions: () => repo.listActions(),
-  listRules: () => repo.listRules(),
+  listFunctions: (opts) => repo.searchFunctions(opts ?? {}),
+  listActions: (opts) => repo.searchActions(opts ?? {}),
+  listRules: (opts) => repo.searchRules(opts ?? {}),
   listObjectTypes: (opts) => repo.searchObjectTypes(opts ?? {}),
   invokeFunction: async (name, args) => {
     const sb = await getSandbox();
@@ -1079,7 +1111,7 @@ const agentRuntime: AgentRuntime = {
     }
     return scheduler.runAll();
   },
-  listAlerts: () => repo.listObjectProperties('Alert'),
+  listAlerts: (opts) => repo.searchObjectProperties('Alert', opts ?? {}),
   getInstances: (objectType, opts) => repo.listInstances(objectType, opts),
   getObjectLinks: async (objectType, objectRid) => {
     const normRid = objectRid.includes(':') ? objectRid : `${objectType}:${objectRid}`;
@@ -1500,9 +1532,22 @@ app.delete('/api/aip/agents/:id', async (req, res) => {
   }
 });
 
-app.get('/api/aip/agents', async (_req, res) => {
+app.get('/api/aip/agents', async (req, res) => {
   try {
-    const { rows } = await pool.query(`SELECT * FROM aip_agent ORDER BY created_at ASC`);
+    const keyword = (req.query.keyword as string) || undefined;
+    const limit = req.query.limit ? Math.min(Math.max(Number(req.query.limit), 1), 500) : undefined;
+    const offset = req.query.offset ? Math.max(Number(req.query.offset), 0) : undefined;
+    const params: unknown[] = [];
+    const wheres: string[] = [];
+    if (keyword) {
+      params.push(`%${keyword}%`);
+      wheres.push(`(id ILIKE $${params.length} OR display_name ILIKE $${params.length})`);
+    }
+    const whereSql = wheres.length ? `WHERE ${wheres.join(' AND ')}` : '';
+    const paging = limit !== undefined
+      ? ` LIMIT ${limit} OFFSET ${offset ?? 0}`
+      : '';
+    const { rows } = await pool.query(`SELECT * FROM aip_agent ${whereSql} ORDER BY created_at ASC${paging}`, params);
     res.json(rows.map((r: any) => ({
       id: r.id,
       displayName: r.display_name,

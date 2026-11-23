@@ -920,6 +920,101 @@ export class PostgresMetadataRepository implements MetadataRepository {
     }));
   }
 
+  // ---------- 通用列表检索（functions / actions / rules） ----------
+  // 表名为内部常量，keyword 对若干列做 ILIKE；返回 total + 分页 items。
+  private async searchTable<T>(
+    table: string,
+    kwCols: string[],
+    mapper: (r: any) => T,
+    opts?: { keyword?: string; limit?: number; offset?: number },
+  ): Promise<{ total: number; items: T[] }> {
+    const params: unknown[] = [];
+    const wheres: string[] = [];
+    const kw = (opts?.keyword ?? '').trim();
+    if (kw) {
+      params.push(`%${kw}%`);
+      const ph = `$${params.length}`;
+      wheres.push(`(${kwCols.map((c) => `${c} ILIKE ${ph}`).join(' OR ')})`);
+    }
+    const whereSql = wheres.length ? `WHERE ${wheres.join(' AND ')}` : '';
+    const limit = Math.min(Math.max(Number(opts?.limit) || 100, 1), 500);
+    const offset = Math.max(Number(opts?.offset) || 0, 0);
+    const { rows: cnt } = await this.pool.query(
+      `SELECT count(*)::int AS n FROM ${table} ${whereSql}`,
+      params,
+    );
+    const { rows } = await this.pool.query(
+      `SELECT * FROM ${table} ${whereSql} ORDER BY api_name
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset],
+    );
+    return { total: cnt[0]?.n ?? 0, items: rows.map(mapper) };
+  }
+
+  async searchFunctions(opts?: { keyword?: string; limit?: number; offset?: number }) {
+    return this.searchTable('ontology_function', ['api_name', 'display_name'], (r: any) => ({
+      apiName: r.api_name,
+      displayName: r.display_name ?? r.api_name,
+      language: r.language,
+      entry: r.entry,
+      inputs: r.inputs,
+      outputs: r.outputs,
+      description: r.description ?? null,
+      body: r.body,
+      version: r.version,
+    }), opts);
+  }
+
+  async searchActions(opts?: { keyword?: string; limit?: number; offset?: number }) {
+    return this.searchTable('action_type', ['api_name', 'display_name'], (r: any) => ({
+      apiName: r.api_name,
+      displayName: r.display_name ?? r.api_name,
+      kind: r.kind,
+      parameters: r.parameters,
+      validationRules: r.validation_rules,
+      preconditions: r.preconditions ?? [],
+      effect: r.effect,
+      version: r.version,
+    }), opts);
+  }
+
+  async searchRules(opts?: { keyword?: string; limit?: number; offset?: number }) {
+    return this.searchTable('rule', ['api_name', 'display_name'], (r: any) => rowToRule(r), opts);
+  }
+
+  // 实例检索（用于 alerts 等）：关键字匹配 patch 全文，按 rid 去重取最新 patch
+  async searchObjectProperties(
+    objectType: string,
+    opts?: { keyword?: string; limit?: number; offset?: number },
+  ): Promise<{ total: number; items: { objectRid: string; properties: Record<string, unknown> }[] }> {
+    const params: unknown[] = [objectType];
+    const wheres: string[] = ['object_type = $1'];
+    const kw = (opts?.keyword ?? '').trim();
+    if (kw) {
+      params.push(`%${kw}%`);
+      wheres.push(`patch::text ILIKE $${params.length}`);
+    }
+    const whereSql = wheres.join(' AND ');
+    const limit = Math.min(Math.max(Number(opts?.limit) || 100, 1), 500);
+    const offset = Math.max(Number(opts?.offset) || 0, 0);
+    const { rows: cnt } = await this.pool.query(
+      `SELECT count(DISTINCT object_rid)::int AS n FROM object_write WHERE ${whereSql}`,
+      params,
+    );
+    const { rows } = await this.pool.query(
+      `SELECT DISTINCT ON (object_rid) object_rid, patch
+         FROM object_write
+        WHERE ${whereSql}
+        ORDER BY object_rid, id DESC
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset],
+    );
+    return {
+      total: cnt[0]?.n ?? 0,
+      items: rows.map((r: any) => ({ objectRid: r.object_rid, properties: r.patch ?? {} })),
+    };
+  }
+
   async createFunction(def: OntologyFunction): Promise<void> {
     await this.pool.query(
       `INSERT INTO ontology_function (api_name, display_name, language, entry, inputs, outputs, description, body, version)
