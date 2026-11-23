@@ -88,7 +88,7 @@ async function runReingest(): Promise<ReingestReport> {
       await getSandbox();
     });
     await run('告警调度器', async () => {
-      if (!ruleScheduler) ruleScheduler = startScheduler(repo, 10_000);
+      if (!ruleScheduler) ruleScheduler = await startScheduler(repo, 10_000);
     });
   } finally {
     reingestRunning = false;
@@ -97,6 +97,23 @@ async function runReingest(): Promise<ReingestReport> {
   const ok = steps.every((s) => s.ok);
   console.log(`[reingest] ${ok ? '全部完成' : '部分失败'}（${Date.now() - t0}ms）`);
   return { ok, steps, elapsedMs: Date.now() - t0 };
+}
+
+// 启动规则调度器（仅当存在启用规则时；不灌数据，与 bootstrap 解耦）
+async function startRuleSchedulerIfNeeded() {
+  try {
+    const rules = await repo.listRules();
+    const enabled = rules.filter((r) => r.enabled);
+    if (!enabled.length) {
+      console.log('[scheduler] 无启用规则，跳过启动');
+      return;
+    }
+    if (ruleScheduler) return;
+    ruleScheduler = await startScheduler(repo, 10_000);
+    console.log(`[scheduler] 已启动定时规则巡检（${enabled.length} 条启用规则，10s tick）`);
+  } catch (e: any) {
+    console.error('[scheduler] 启动失败:', e.message);
+  }
 }
 
 // 启动时自动引导（当前已按需关闭，见文末 app.listen；需要恢复时取消注释即可）
@@ -641,9 +658,11 @@ app.post('/api/s2/object-types/from-draft', async (req, res) => {
     if (!Array.isArray(draft.properties) || draft.properties.length === 0) {
       return res.status(400).json({ error: '草案缺少 properties' });
     }
-    if (!draft.sourceConnectionId || !draft.sourceTable) {
-      return res.status(400).json({ error: '草案缺少 sourceConnectionId / sourceTable' });
+    // 数据源为可选：两者都不给 = 平台生成型对象类型（如 Alert），不建映射、不同步
+    if ((draft.sourceConnectionId && !draft.sourceTable) || (!draft.sourceConnectionId && draft.sourceTable)) {
+      return res.status(400).json({ error: 'sourceConnectionId 与 sourceTable 需同时提供（或都省略）' });
     }
+    const hasSource = !!(draft.sourceConnectionId && draft.sourceTable);
     const objectType = {
       apiName: draft.apiName,
       displayName: draft.displayName ?? draft.apiName,
@@ -675,7 +694,7 @@ app.post('/api/s2/object-types/from-draft', async (req, res) => {
     });
 
     let sync: unknown = null;
-    if (req.body?.sync !== false) {
+    if (hasSource && req.body?.sync !== false) {
       try {
         sync = await syncObjectInstances(draft.apiName, draft.schema || 'public');
       } catch (e: any) {
@@ -1999,6 +2018,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // 自动 bootstrap 已按要求关闭（2026-11-23）：重启不再自动灌 S1/S2/S3 业务数据。
     // 需要恢复时：取消下面一行注释并重启后端；或手动执行 `npm run bootstrap -w @ontology/enterprise-biz`。
     // bootstrapEnterpriseBiz();
+    // 规则调度器独立启动：有启用规则才跑（告警等自动化依赖它）
+    startRuleSchedulerIfNeeded();
   });
 }
 

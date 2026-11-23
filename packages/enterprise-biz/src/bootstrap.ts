@@ -664,8 +664,10 @@ export async function registerDbFunctions(repo: PostgresMetadataRepository, sand
 
 // 启动后台规则调度器（按通用 rule 表的 trigger 执行可配置 Function 与 Action）
 // 触发器支持 schedule（周期轮询）与 event（对象写入事件）。规则语义是通用的「满足条件→执行动作」。
-export function startScheduler(repo: PostgresMetadataRepository, tickMs = 10_000): RuleScheduler {
+export async function startScheduler(repo: PostgresMetadataRepository, tickMs = 10_000): Promise<RuleScheduler> {
   const sandbox = buildSandbox(repo);
+  // 用 DB 中可编辑的函数体覆盖 seed 版本（否则 FDE 在线修改的函数在调度器里不生效）
+  await registerDbFunctions(repo, sandbox);
   const scheduler = new RuleScheduler(repo, sandbox, { tickMs });
   scheduler.start();
   return scheduler;
