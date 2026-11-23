@@ -1,6 +1,6 @@
 # 与 Palantir 的对齐差距：对象主键与关系关联
 
-> 状态：差距记录 + 未来功能设计（自选主键尚未实现）
+> 状态：差距记录 + 未来功能设计（自选主键、标题模板均未实现）
 > 最后更新：2026-11-23
 > 相关：`docs/S3-vs-palantir.md`（总体原语差距）、`link_instance` 关系实例、AIP 建模工具
 
@@ -23,6 +23,7 @@
 | 多对多关系 | join table，两列分别映射两端主键 | `junctionTable/sourceColumn/targetColumn` | ✅ 已对齐（2026-11-23） |
 | 跨键关联（FK→非主键属性） | **不支持**，需把业务键设为主键或在数据层 join 出主键列 | **不支持**，需补列（如 `employee_id`）或改主键 | ⚠️ 双方语义一致，但我们的绕行成本更高 |
 | 关系实例存储 | backing datasource / join table | `link_instance(link_type, source_rid, target_rid)` | ✅ 对齐 |
+| 标题属性（titleProperty） | 单一属性；组合标题在 Pipeline 上游生成 | 单一属性，无组合能力 | ⚠️ 差距（组合需源表加列） |
 | 变更主键 | 有影响评估与提示 | 无（尚未支持自选主键） | ⚠️ 差距 |
 
 ## 2. Palantir 的机制（依据公开文档）
@@ -117,17 +118,72 @@
 - 为保持语义简单、避免隐式 join 带来的性能与一致性问题，暂不把它作为主路径；
 - 如未来确有需求，可作为一个显式的"逃生通道"（默认关闭、文档标注非标准）。
 
-## 7. 后续路线
+## 7. 未来功能（二）：标题模板（`titleTemplate`）
+
+### 7.1 需求
+
+- `titleProperty` 只能指向**单个属性**，而"多行同类对象"（请假记录、告警、交易）需要组合标题（谁 · 什么 · 何时）。
+- 当前两条路：源表加 `title` 列（可读，但每张表都要加）/ 选一个次优单字段（如 `reason`）。
+- 目标：在对象类型上配置标题模板，**同步时物化**为实例属性，Explore / 关系面板 / AIP 直接可用。
+
+### 7.2 与 Palantir 对照
+
+- Palantir 的 title property 同样是**单个属性**；组合标题在 Pipeline 上游生成一个真实属性。
+- 我们采用同一思路：同步时物化，而不是前端运行时拼接——保证可排序 / 搜索 / 导出。
+
+### 7.3 设计
+
+- 存储：`object_type.title_template TEXT`（可空）。
+- 语法：仅支持 `{apiName}` 占位符 + 静态文本/分隔符，**不做表达式求值**（防注入）。
+- 渲染：同步时对实例 patch 计算，写入 `title` 字段；建议声明为 `string` 属性，`titleProperty='title'`。
+- 空值：属性缺失/为空 → 空串；整体为空 → 回退 RID。
+- 日期/数字格式：v1 不做格式符，源列先格式化（如 `to_char`）。
+- 跨对象字段（如请假记录显示员工姓名）：v1 **不支持** `{employee.name}`；在上游带出 `employee_name` 列后使用 `{employeeName}`（与 Palantir 一致）。
+- 兼容：未配置模板 → 行为与现在完全一致；改模板需重同步该类型。
+
+### 7.4 入口
+
+- UI：对象类型编辑器增加"标题模板"输入 + 可用属性 token 提示 + 预览。
+- AIP：`object_type_draft` 增加可选 `titleTemplate`；提示词说明"组合标题优先用模板，不要为标题单独加源列"。
+- 同步：`syncObjectInstances` 计算并写入 `title`。
+
+### 7.5 验收标准
+
+1. LeaveRecord 配 `{empCode} · {leaveType} · {startDate}` → 实例标题形如 `E0005 · 年假 · 2026-02-10`；
+2. 源表带出 `employee_name` 时用 `{employeeName} · {leaveType} · {startDate}` → `陈静 · 年假 · 2026-02-10`；
+3. 模板为空或引用属性全为空 → 回退 RID；
+4. 未配置模板的类型不回归（现有 4 个对象类型展示不变）。
+
+### 7.6 工作量与风险
+
+| 项 | 估计 |
+|---|---|
+| 模型/存储/同步渲染 | 0.5 天 |
+| UI 编辑器 + 预览 | 0.5 天 |
+| AIP 草案/提示词 + 测试 | 0.5 天 |
+
+风险：
+- 模板注入 → 仅做字面量替换，禁止求值；
+- 模板范围失控 → 限定"同对象属性 + 分隔符"，复杂逻辑走上游或派生属性；
+- 改模板后旧实例标题过期 → 需要重同步（文档需说明）；
+- **标题不得用作主键**（身份仍由 RID/主键决定）。
+
+### 7.7 优先级
+
+P1，低于"自选主键"；当前可用"源表加 `title` 列"临时替代。
+
+## 8. 后续路线
 
 | 优先级 | 事项 | 说明 |
 |---|---|---|
-| P0 | 自选主键（本文第 4 节） | 解决业务键关联，减少冗余外键列 |
-| P1 | 主键迁移预检与工具 | 变更主键的破坏性操作需要保护 |
-| P2 | managed 关系写入 API | 手工/函数维护 `link_instance`（不依赖源表） |
+| P0 | 自选主键（第 4 节） | 解决业务键关联，减少冗余外键列 |
+| P1 | 标题模板（第 7 节） | 组合标题，减少每表加 title 列 |
+| P2 | 主键迁移预检与工具 | 变更主键的破坏性操作需要保护 |
+| P3 | managed 关系写入 API | 手工/函数维护 `link_instance`（不依赖源表） |
 | — | join table | ✅ 已完成 |
 | — | targetMatchProperty | ❌ 暂不做（与 Palantir 对齐） |
 
-## 8. 参考
+## 9. 参考
 
 - Palantir Create a link type：https://www.palantir.com/docs/foundry/object-link-types/create-link-type
 - Palantir Link type metadata：https://palantir.com/docs/foundry/object-link-types/link-type-metadata
