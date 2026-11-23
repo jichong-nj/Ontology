@@ -17,6 +17,7 @@
 | S7 技术栈选型 | [S7-tech-stack.md](docs/S7-tech-stack.md) | — | 语言/框架/运行时工程约束 |
 | S1 接口文档（实现态） | [S1-api.md](docs/S1-api.md) | — | 映射 SDK / 质量门禁 |
 | S2 接口文档（实现态） | [S2-api.md](docs/S2-api.md) | — | 元数据仓库 / 方法运行时 |
+| 对标差距与路线（主键/关系） | [PALANTIR-PK-ALIGNMENT.md](docs/PALANTIR-PK-ALIGNMENT.md) | Ontology 主键与 Link Type | 自选主键待实现；join table 已对齐 |
 
 ## 架构
 
