@@ -1173,6 +1173,23 @@ const agentRuntime: AgentRuntime = {
     } as any);
     return { ok: true, created: true, apiName: def.apiName };
   },
+  // 派生/函数建模：删除函数（被派生属性引用时拒绝）
+  deleteFunction: async (apiName: string) => {
+    const fn = await repo.getFunction(apiName);
+    if (!fn) throw new Error(`函数不存在: ${apiName}`);
+    const types = await repo.listObjectTypes();
+    const refs: string[] = [];
+    for (const ot of types) {
+      for (const p of ot.properties) {
+        if ((p as any).reducerFn === apiName) refs.push(`${ot.apiName}.${p.apiName}`);
+      }
+    }
+    if (refs.length) {
+      throw new Error(`函数 ${apiName} 正被派生属性引用，不能删除：${refs.join(', ')}（请先移除属性或改绑其他函数）`);
+    }
+    await repo.deleteFunction(apiName);
+    return { ok: true, deleted: apiName };
+  },
   // 派生/函数建模：给对象类型新增/更新属性（按 apiName 覆盖，保留其它属性）
   upsertObjectTypeProperty: async (apiName: string, property: Record<string, unknown>) => {
     const ot = await repo.getObjectType(apiName);
@@ -1888,6 +1905,7 @@ const MODELING_PROMPT = `
   需要重置实例时用平台同步接口（/api/s2/object-types/:apiName/sync），不要在函数里 clear。
 - 写入前先检查实例数：若读取结果为 0 而源表有数据，立即停止并报告，不要继续写。
 - writeObjectPatch 返回 undefined 表示成功（写入无返回值），不要当作失败；落库结果用 get_instances 复核。
+- 探测/临时函数用完可用 delete_function 清理；若函数仍被派生属性（reducerFn）引用会被拒绝，需先解绑。
 `;
 
 // 工具调用格式约束：所有 Agent 统一追加（减少本地模型输出 XML 文本的概率）

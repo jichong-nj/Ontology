@@ -39,6 +39,7 @@ export interface AgentRuntime {
   getObjectType(apiName: string): Promise<unknown>;
   // 派生/函数建模：注册函数、给对象类型加属性、计算派生属性验证
   createFunction(def: { apiName: string; displayName: string; description?: string; body: string }): Promise<unknown>;
+  deleteFunction(apiName: string): Promise<unknown>;
   upsertObjectTypeProperty(apiName: string, property: Record<string, unknown>): Promise<unknown>;
   computeDerived(objectType: string, property: string, rid: string): Promise<unknown>;
   // 数据源建模：列出某 schema 下的全部表名（只读）
@@ -72,7 +73,7 @@ const TOOL_GROUPS: Record<string, string[]> = {
   // 受限 NL2SQL：LLM 生成只读 SELECT，在 S1 源库白名单表内执行（不回写源）
   sql: ['run_sql'],
   // 数据源建模：列出数据源 / 读取源表结构与样例（只读；创建动作需用户在前端确认）
-  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type', 'list_functions', 'create_function', 'add_object_type_property', 'compute_derived', 'invoke_function'],
+  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type', 'list_functions', 'create_function', 'delete_function', 'add_object_type_property', 'compute_derived', 'invoke_function'],
 };
 
 function allToolSpecs(): ToolSpec[] {
@@ -330,6 +331,21 @@ function allToolSpecs(): ToolSpec[] {
     {
       type: 'function',
       function: {
+        name: 'delete_function',
+        description:
+          '删除一个 Ontology 函数（用于清理探测/临时函数）。若该函数正被任何对象类型的派生属性（reducerFn）引用，会被拒绝并列出引用位置。',
+        parameters: {
+          type: 'object',
+          properties: {
+            apiName: { type: 'string', description: '要删除的函数 apiName' },
+          },
+          required: ['apiName'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'add_object_type_property',
         description:
           '给已存在的对象类型新增/更新一个属性（按 apiName 覆盖）。可创建派生属性：' +
@@ -504,6 +520,7 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
     inspect_object_type: async (a: any) => rt.getObjectType(a.apiName),
     create_function: async (a: any) =>
       rt.createFunction({ apiName: a.apiName, displayName: a.displayName, description: a.description, body: a.body }),
+    delete_function: async (a: any) => rt.deleteFunction(a.apiName),
     add_object_type_property: async (a: any) => rt.upsertObjectTypeProperty(a.apiName, a.property),
     compute_derived: async (a: any) => rt.computeDerived(a.objectType, a.property, a.rid),
     list_source_tables: async (a: any) => rt.listSourceTables(a.connId, a.schema),
