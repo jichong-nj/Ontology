@@ -18,6 +18,7 @@
 | S1 接口文档（实现态） | [S1-api.md](docs/S1-api.md) | — | 映射 SDK / 质量门禁 |
 | S2 接口文档（实现态） | [S2-api.md](docs/S2-api.md) | — | 元数据仓库 / 方法运行时 |
 | 对标差距与路线（主键/关系） | [PALANTIR-PK-ALIGNMENT.md](docs/PALANTIR-PK-ALIGNMENT.md) | Ontology 主键与 Link Type | 自选主键待实现；join table 已对齐 |
+| 待办与技术债 | [BACKLOG.md](docs/BACKLOG.md) | — | 已知体验/技术债清单 |
 
 ## 架构
 
