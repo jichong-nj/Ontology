@@ -196,7 +196,8 @@ const cardinalitySummary = computed(() => {
   const t = form.value.targetCardinality;
   const src = objName(form.value.sourceType) || '源对象';
   const tgt = objName(form.value.targetType) || '目标对象';
-  const label = `${s === 'one' ? '1' : 'N'}:${t === 'one' ? '1' : 'N'}`;
+  // 实体数量比（源 : 目标）：源端“一对多”表示目标侧多，故比例是 t:s
+  const label = `${t === 'many' ? 'N' : '1'}:${s === 'many' ? 'N' : '1'}`;
   let hint = '';
   if (s === 'one' && t === 'many') hint = `一个${tgt}有多个${src}`;
   else if (s === 'many' && t === 'one') hint = `一个${src}有多个${tgt}`;
