@@ -477,8 +477,16 @@ app.get('/api/s2/alerts', async (_req, res) => {
 });
 
 // ---------- S2 对象类型 ----------
-app.get('/api/s2/object-types', async (_req, res) => {
+app.get('/api/s2/object-types', async (req, res) => {
   try {
+    const keyword = (req.query.keyword as string) || undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset ? Number(req.query.offset) : undefined;
+    const withTotal = req.query.withTotal === '1' || req.query.withTotal === 'true';
+    if (keyword || limit !== undefined || offset !== undefined || withTotal) {
+      const r = await repo.searchObjectTypes({ keyword, limit, offset });
+      return res.json(withTotal ? r : r.items);
+    }
     const list = await repo.listObjectTypes();
     res.json(list);
   } catch (e: any) {
@@ -881,8 +889,16 @@ app.post('/api/s2/shared-properties/:apiName/apply', async (req, res) => {
 });
 
 // ---------- S2 关系类型 ----------
-app.get('/api/s2/link-types', async (_req, res) => {
+app.get('/api/s2/link-types', async (req, res) => {
   try {
+    const keyword = (req.query.keyword as string) || undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset ? Number(req.query.offset) : undefined;
+    const withTotal = req.query.withTotal === '1' || req.query.withTotal === 'true';
+    if (keyword || limit !== undefined || offset !== undefined || withTotal) {
+      const r = await repo.searchLinkTypes({ keyword, limit, offset });
+      return res.json(withTotal ? r : r.items);
+    }
     const list = await repo.listLinkTypes();
     res.json(list);
   } catch (e: any) {
@@ -1041,7 +1057,7 @@ const agentRuntime: AgentRuntime = {
   listFunctions: () => repo.listFunctions(),
   listActions: () => repo.listActions(),
   listRules: () => repo.listRules(),
-  listObjectTypes: (opts) => repo.listObjectTypes(opts),
+  listObjectTypes: (opts) => repo.searchObjectTypes(opts ?? {}),
   invokeFunction: async (name, args) => {
     const sb = await getSandbox();
     await registerDbFunctions(repo, sb);
@@ -1100,7 +1116,7 @@ const agentRuntime: AgentRuntime = {
     });
   },
   // 关系建模：读取关系类型列表 / 单个对象类型完整定义
-  listLinkTypes: () => repo.listLinkTypes(),
+  listLinkTypes: (opts) => repo.searchLinkTypes(opts ?? {}),
   getObjectType: (apiName: string) => repo.getObjectType(apiName),
   // 派生/函数建模：注册函数（存在则更新 body）
   createFunction: async (def: { apiName: string; displayName: string; description?: string; body: string }) => {

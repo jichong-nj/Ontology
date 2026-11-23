@@ -20,7 +20,7 @@ export interface AgentRuntime {
   listFunctions(): Promise<Array<{ apiName: string; displayName: string; description?: string; inputs: unknown }>>;
   listActions(): Promise<Array<{ apiName: string; displayName: string; effect?: unknown }>>;
   listRules(): Promise<Array<{ apiName: string; displayName: string; enabled: boolean }>>;
-  listObjectTypes(opts?: { objectTypes?: string[] }): Promise<Array<{ apiName: string; displayName: string; description?: string }>>;
+  listObjectTypes(opts?: { objectTypes?: string[]; keyword?: string; limit?: number; offset?: number }): Promise<unknown>;
   invokeFunction(name: string, args: Record<string, unknown>): Promise<unknown>;
   triggerAction(name: string, args: Record<string, unknown>): Promise<unknown>;
   runRules(): Promise<unknown>;
@@ -34,7 +34,7 @@ export interface AgentRuntime {
   // 数据源建模：列出已接入的 S1 数据源（供"引入某表建对象类型"流程选源）
   listSourceConnections(): Promise<Array<{ id: string; displayName: string; dbType?: string; database?: string }>>;
   // 关系建模：关系类型列表 / 单个对象类型完整定义（含属性映射）
-  listLinkTypes(): Promise<unknown>;
+  listLinkTypes(opts?: { keyword?: string; limit?: number; offset?: number }): Promise<unknown>;
   getObjectType(apiName: string): Promise<unknown>;
   // 派生/函数建模：注册函数、给对象类型加属性、计算派生属性验证
   createFunction(def: { apiName: string; displayName: string; description?: string; body: string }): Promise<unknown>;
@@ -142,8 +142,17 @@ function allToolSpecs(): ToolSpec[] {
       type: 'function',
       function: {
         name: 'list_object_types',
-        description: '列出定本体中所有对象类型（返回完整列表）。只依据本工具真实返回的类型作答，不得臆测或补充未出现的类型。',
-        parameters: { type: 'object', properties: {}, required: [] },
+        description: '列出本体中的对象类型（apiName/显示名/描述）。支持 keyword 模糊搜索与 limit/offset 分页；' +
+          '返回 { total, count, hasMore, items }。对象类型较多时请先用 keyword 缩小范围，只依据本工具真实返回的类型作答，不得臆测。',
+        parameters: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string', description: '按 apiName/显示名模糊过滤（可选）' },
+            limit: { type: 'number', description: '返回条数，默认 100，上限 500' },
+            offset: { type: 'number', description: '偏移量，默认 0' },
+          },
+          required: [],
+        },
       },
     },
     {
@@ -337,8 +346,17 @@ function allToolSpecs(): ToolSpec[] {
       type: 'function',
       function: {
         name: 'list_link_types',
-        description: '列出当前本体中已存在的关系类型（apiName/显示名/源对象/目标对象/基数），用于关系建模前避免重复。',
-        parameters: { type: 'object', properties: {}, required: [] },
+        description: '列出当前本体中已存在的关系类型（apiName/显示名/源对象/目标对象/基数），用于关系建模前避免重复。' +
+          '支持 keyword 模糊搜索与 limit/offset 分页，返回 { total, count, hasMore, items }。',
+        parameters: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string', description: '按 apiName/显示名模糊过滤（可选）' },
+            limit: { type: 'number', description: '返回条数，默认 100，上限 500' },
+            offset: { type: 'number', description: '偏移量，默认 0' },
+          },
+          required: [],
+        },
       },
     },
     {
@@ -408,7 +426,13 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
     trigger_action: async (a: any) => rt.triggerAction(a.name, a.args ?? {}),
     list_rules: async () => rt.listRules(),
     run_rules: async () => rt.runRules(),
-    list_object_types: async () => rt.listObjectTypes({ objectTypes: allowed }),
+    list_object_types: async (a: any) => {
+      const r: any = await rt.listObjectTypes({
+        objectTypes: allowed, keyword: a?.keyword, limit: a?.limit, offset: a?.offset,
+      });
+      if (Array.isArray(r)) return r;
+      return { total: r.total, count: r.items.length, hasMore: (a?.offset ?? 0) + r.items.length < r.total, items: r.items };
+    },
     get_instances: async (a: any) => {
       const err = deny(a.objectType);
       if (err) return err;
@@ -439,7 +463,11 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
       return rt.runSql(a.sql, allow, a.limit);
     },
     list_source_connections: async () => rt.listSourceConnections(),
-    list_link_types: async () => rt.listLinkTypes(),
+    list_link_types: async (a: any) => {
+      const r: any = await rt.listLinkTypes({ keyword: a?.keyword, limit: a?.limit, offset: a?.offset });
+      if (Array.isArray(r)) return r;
+      return { total: r.total, count: r.items.length, hasMore: (a?.offset ?? 0) + r.items.length < r.total, items: r.items };
+    },
     inspect_object_type: async (a: any) => rt.getObjectType(a.apiName),
     create_function: async (a: any) =>
       rt.createFunction({ apiName: a.apiName, displayName: a.displayName, description: a.description, body: a.body }),

@@ -58,6 +58,105 @@ export class PostgresMetadataRepository implements MetadataRepository {
     }));
   }
 
+  // 对象类型检索：keyword 模糊匹配 apiName/displayName，支持 limit/offset 分页
+  async searchObjectTypes(opts?: {
+    objectTypes?: string[];
+    keyword?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ total: number; items: ObjectType[] }> {
+    const params: unknown[] = [];
+    const wheres: string[] = [];
+    if (opts?.objectTypes && opts.objectTypes.length > 0) {
+      params.push(opts.objectTypes);
+      wheres.push(`api_name = ANY($${params.length})`);
+    }
+    const kw = (opts?.keyword ?? '').trim();
+    if (kw) {
+      params.push(`%${kw}%`);
+      wheres.push(`(api_name ILIKE $${params.length} OR display_name ILIKE $${params.length})`);
+    }
+    const whereSql = wheres.length ? `WHERE ${wheres.join(' AND ')}` : '';
+    const limit = Math.min(Math.max(Number(opts?.limit) || 100, 1), 500);
+    const offset = Math.max(Number(opts?.offset) || 0, 0);
+    const { rows: cnt } = await this.pool.query(
+      `SELECT count(*)::int AS n FROM object_type ${whereSql}`,
+      params,
+    );
+    const { rows } = await this.pool.query(
+      `SELECT api_name, display_name, description, properties, source_connection_id, source_table,
+              child_table_mappings, title_property,
+              version, created_at, updated_at,
+              COALESCE((SELECT array_agg(interface_api_name)
+                        FROM object_interface WHERE object_api_name = o.api_name), ARRAY[]::text[]) AS implements_interfaces
+       FROM object_type o ${whereSql} ORDER BY api_name
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset],
+    );
+    return {
+      total: cnt[0]?.n ?? 0,
+      items: rows.map((r: any) => ({
+        apiName: r.api_name,
+        displayName: r.display_name,
+        description: r.description,
+        properties: r.properties,
+        implementsInterfaces: r.implements_interfaces,
+        sourceConnectionId: r.source_connection_id ?? undefined,
+        sourceTable: r.source_table ?? undefined,
+        childTableMappings: r.child_table_mappings ?? undefined,
+        titleProperty: r.title_property ?? undefined,
+        version: r.version,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      })),
+    };
+  }
+
+  // 关系类型检索：keyword 模糊匹配 apiName/displayName，支持 limit/offset 分页
+  async searchLinkTypes(opts?: {
+    keyword?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ total: number; items: LinkType[] }> {
+    const params: unknown[] = [];
+    const wheres: string[] = [];
+    const kw = (opts?.keyword ?? '').trim();
+    if (kw) {
+      params.push(`%${kw}%`);
+      wheres.push(`(api_name ILIKE $1 OR display_name ILIKE $1)`);
+    }
+    const whereSql = wheres.length ? `WHERE ${wheres.join(' AND ')}` : '';
+    const limit = Math.min(Math.max(Number(opts?.limit) || 100, 1), 500);
+    const offset = Math.max(Number(opts?.offset) || 0, 0);
+    const { rows: cnt } = await this.pool.query(
+      `SELECT count(*)::int AS n FROM link_type ${whereSql}`,
+      params,
+    );
+    const { rows } = await this.pool.query(
+      `SELECT * FROM link_type ${whereSql} ORDER BY api_name
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset],
+    );
+    return {
+      total: cnt[0]?.n ?? 0,
+      items: rows.map((r: any) => ({
+        apiName: r.api_name,
+        displayName: r.display_name,
+        sourceType: r.source_type,
+        targetType: r.target_type,
+        cardinality: r.cardinality,
+        sourceCardinality: r.source_cardinality || 'one',
+        targetCardinality: r.target_cardinality || 'many',
+        primaryKey: r.primary_key || undefined,
+        foreignKey: r.foreign_key || undefined,
+        pluralName: r.plural_name || undefined,
+        visibility: r.visibility || 'Normal',
+        instanceSource: r.instance_source,
+        version: r.version,
+      })),
+    };
+  }
+
   async getObjectType(apiName: string): Promise<ObjectType | null> {
     const { rows } = await this.pool.query(
       `SELECT api_name, display_name, description, properties, source_connection_id, source_table,
