@@ -36,6 +36,10 @@ export interface AgentRuntime {
   // 关系建模：关系类型列表 / 单个对象类型完整定义（含属性映射）
   listLinkTypes(): Promise<unknown>;
   getObjectType(apiName: string): Promise<unknown>;
+  // 派生/函数建模：注册函数、给对象类型加属性、计算派生属性验证
+  createFunction(def: { apiName: string; displayName: string; description?: string; body: string }): Promise<unknown>;
+  upsertObjectTypeProperty(apiName: string, property: Record<string, unknown>): Promise<unknown>;
+  computeDerived(objectType: string, property: string, rid: string): Promise<unknown>;
   // 数据源建模：列出某 schema 下的全部表名（只读）
   listSourceTables(connId: string, schema?: string): Promise<unknown>;
   // 数据源建模：读取某数据源中一张表的完整结构 + 样例行（不落库，只供分析）
@@ -67,7 +71,7 @@ const TOOL_GROUPS: Record<string, string[]> = {
   // 受限 NL2SQL：LLM 生成只读 SELECT，在 S1 源库白名单表内执行（不回写源）
   sql: ['run_sql'],
   // 数据源建模：列出数据源 / 读取源表结构与样例（只读；创建动作需用户在前端确认）
-  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type'],
+  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type', 'create_function', 'add_object_type_property', 'compute_derived', 'invoke_function'],
 };
 
 function allToolSpecs(): ToolSpec[] {
@@ -264,6 +268,74 @@ function allToolSpecs(): ToolSpec[] {
     {
       type: 'function',
       function: {
+        name: 'create_function',
+        description:
+          '注册（或更新）一个 Ontology 函数。函数体必须是 TypeScript 源码，形如 "return async (args, ctx) => { ... }"；' +
+          'ctx 提供 ctx.repo（读写仓库）、ctx.objects(objectType)（取实例）、ctx.links(linkType)（取关系边）。' +
+          '用于实现多跳统计（平台声明式派生只支持单跳，多跳必须用函数）、或把计算结果写回实例属性。',
+        parameters: {
+          type: 'object',
+          properties: {
+            apiName: { type: 'string', description: '函数 apiName（PascalCase 或 camelCase，唯一）' },
+            displayName: { type: 'string', description: '显示名' },
+            description: { type: 'string', description: '函数说明' },
+            body: { type: 'string', description: 'TS 源码，形如 return async (args, ctx) => { ... }' },
+          },
+          required: ['apiName', 'displayName', 'body'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'add_object_type_property',
+        description:
+          '给已存在的对象类型新增/更新一个属性（按 apiName 覆盖）。可创建派生属性：' +
+          'derived=true 且 reducerFn=<已注册函数 apiName>；派生属性不写源库、每次计算时调用函数。' +
+          '不要给源表不存在的列编造 sourceMapping。',
+        parameters: {
+          type: 'object',
+          properties: {
+            apiName: { type: 'string', description: '对象类型 apiName，如 Organization' },
+            property: {
+              type: 'object',
+              description: '属性定义：{apiName, displayName, type, required, derived, reducerFn}',
+              properties: {
+                apiName: { type: 'string' },
+                displayName: { type: 'string' },
+                type: { type: 'string', description: 'string/integer/float/boolean/date/timestamp' },
+                required: { type: 'boolean' },
+                derived: { type: 'boolean' },
+                reducerFn: { type: 'string', description: '派生属性引用的函数 apiName' },
+              },
+              required: ['apiName', 'displayName', 'type'],
+            },
+          },
+          required: ['apiName', 'property'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'compute_derived',
+        description:
+          '计算某个派生属性在指定实例上的值（用于创建后验证）。objectType + property + rid（如 Organization:1）。' +
+          '若属性不是派生属性或未绑定函数会报错。',
+        parameters: {
+          type: 'object',
+          properties: {
+            objectType: { type: 'string' },
+            property: { type: 'string', description: '派生属性 apiName' },
+            rid: { type: 'string', description: '对象实例 rid，如 Organization:1' },
+          },
+          required: ['objectType', 'property', 'rid'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'list_link_types',
         description: '列出当前本体中已存在的关系类型（apiName/显示名/源对象/目标对象/基数），用于关系建模前避免重复。',
         parameters: { type: 'object', properties: {}, required: [] },
@@ -369,6 +441,10 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
     list_source_connections: async () => rt.listSourceConnections(),
     list_link_types: async () => rt.listLinkTypes(),
     inspect_object_type: async (a: any) => rt.getObjectType(a.apiName),
+    create_function: async (a: any) =>
+      rt.createFunction({ apiName: a.apiName, displayName: a.displayName, description: a.description, body: a.body }),
+    add_object_type_property: async (a: any) => rt.upsertObjectTypeProperty(a.apiName, a.property),
+    compute_derived: async (a: any) => rt.computeDerived(a.objectType, a.property, a.rid),
     list_source_tables: async (a: any) => rt.listSourceTables(a.connId, a.schema),
     inspect_source_table: async (a: any) =>
       rt.inspectSourceTable(a.connId, a.schema || 'public', a.table),

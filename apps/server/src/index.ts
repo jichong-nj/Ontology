@@ -1102,6 +1102,59 @@ const agentRuntime: AgentRuntime = {
   // 关系建模：读取关系类型列表 / 单个对象类型完整定义
   listLinkTypes: () => repo.listLinkTypes(),
   getObjectType: (apiName: string) => repo.getObjectType(apiName),
+  // 派生/函数建模：注册函数（存在则更新 body）
+  createFunction: async (def: { apiName: string; displayName: string; description?: string; body: string }) => {
+    if (!def?.apiName || !/^[A-Za-z][A-Za-z0-9_]*$/.test(def.apiName)) {
+      throw new Error('apiName 必填，且只能以字母开头、仅含字母数字下划线');
+    }
+    if (!def.body || !/return\s+(async\s*)?\(args,\s*ctx\)\s*=>/.test(def.body)) {
+      throw new Error('函数体必须是 TS 源码，形如 "return async (args, ctx) => { ... }"');
+    }
+    const existing = await repo.getFunction(def.apiName);
+    if (existing) {
+      await repo.updateFunction(def.apiName, {
+        displayName: def.displayName, description: def.description ?? '', body: def.body,
+        language: 'typescript', entry: 'main',
+      });
+      return { ok: true, updated: true, apiName: def.apiName };
+    }
+    await repo.createFunction({
+      apiName: def.apiName, displayName: def.displayName, language: 'typescript', entry: 'main',
+      inputs: [], outputs: [], description: def.description ?? '', body: def.body, version: 1,
+      createdAt: '', updatedAt: '',
+    } as any);
+    return { ok: true, created: true, apiName: def.apiName };
+  },
+  // 派生/函数建模：给对象类型新增/更新属性（按 apiName 覆盖，保留其它属性）
+  upsertObjectTypeProperty: async (apiName: string, property: Record<string, unknown>) => {
+    const ot = await repo.getObjectType(apiName);
+    if (!ot) throw new Error(`对象类型不存在: ${apiName}`);
+    const p: any = {
+      apiName: property.apiName,
+      displayName: property.displayName ?? property.apiName,
+      type: property.type ?? 'integer',
+      required: !!property.required,
+    };
+    if (property.derived) p.derived = true;
+    if (property.reducerFn) p.reducerFn = property.reducerFn;
+    if (property.sourceMapping) p.sourceMapping = property.sourceMapping;
+    if (!p.apiName) throw new Error('property.apiName 必填');
+    const props = ot.properties.filter((x) => x.apiName !== p.apiName);
+    props.push(p);
+    await repo.updateObjectType(apiName, { ...ot, properties: props } as any);
+    return {
+      ok: true, apiName, property: p.apiName,
+      replaced: ot.properties.some((x) => x.apiName === p.apiName),
+      totalProperties: props.length,
+    };
+  },
+  // 派生/函数建模：计算派生属性（验证用）
+  computeDerived: async (objectType: string, property: string, rid: string) => {
+    const sb = await getSandbox();
+    await registerDbFunctions(repo, sb);
+    const { value } = await repo.computeDerived(objectType, property, rid, sb);
+    return { objectType, property, rid, value };
+  },
   // 数据源建模：列出某 schema 下的全部表名（只读）
   listSourceTables: async (connId: string, schema?: string) => {
     const conn = await store.getSourceConnection(connId);
@@ -1733,6 +1786,24 @@ const MODELING_PROMPT = `
    - cardinality 取 one-to-one / one-to-many / many-to-many；
    - 只支持"外键值 = 目标对象主键值"的关联；若需要跨键 join（如 emp_code→id），必须明确说明做不到。
 3. 告知用户"确认后点击「确认创建」将创建关系类型并同步关系实例"，然后停止。
+
+## 派生属性 / 统计类属性（当用户要"员工数/人数/统计值"时）
+先判断用途，再选路径：
+- **只需实时问答** → 直接 run_sql 算，不建属性。
+- **要成为对象类型的属性、且在 Explore 列表可见** → **预计算**（推荐）：
+  1) create_function 写计算函数，函数体用 ctx.links()/ctx.objects() 多跳统计，并用 ctx.repo.writeObjectPatch() 把结果写入实例属性；
+  2) invoke_function 执行一次；
+  3) get_instances 抽样验证。
+- **只需详情页/接口可查** → **函数派生**：
+  1) create_function 写计算函数（只返回数值，不写库）；
+  2) add_object_type_property 加属性：{apiName, displayName, type:'integer', derived:true, reducerFn:<函数名>}；
+  3) compute_derived 验证若干实例。
+硬约束：
+- 平台**声明式派生只支持单跳**（countLinks/avg/sum…），两跳及以上必须用函数；
+- 源表没有的列**不得**编造 sourceMapping；
+- 函数体必须 "return async (args, ctx) => {...}"，args 含 objectType/objectRid/property；
+- 关系方向：ctx.links(lt) 返回 [{sourceRid, targetRid}]，按关系类型的源/目标端语义过滤；
+- 递归（含下级）必须做环保护与深度上限。
 `;
 
 // 注入建模提示词（不影响未启用 modeling 的 Agent）
