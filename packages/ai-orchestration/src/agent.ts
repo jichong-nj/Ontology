@@ -38,7 +38,11 @@ export interface AgentRuntime {
   listLinkTypes(opts?: { keyword?: string; limit?: number; offset?: number }): Promise<unknown>;
   getObjectType(apiName: string): Promise<unknown>;
   // 派生/函数建模：注册函数、给对象类型加属性、计算派生属性验证
-  createFunction(def: { apiName: string; displayName: string; description?: string; body: string }): Promise<unknown>;
+  createFunction(def: {
+    apiName: string; displayName: string; description?: string; body: string;
+    kind?: 'query' | 'edit'; pure?: boolean;
+    inputs?: Array<Record<string, unknown>>; outputSpec?: Array<Record<string, unknown>>;
+  }): Promise<unknown>;
   deleteFunction(apiName: string): Promise<unknown>;
   upsertObjectTypeProperty(apiName: string, property: Record<string, unknown>): Promise<unknown>;
   computeDerived(objectType: string, property: string, rid: string): Promise<unknown>;
@@ -338,6 +342,22 @@ function allToolSpecs(): ToolSpec[] {
             displayName: { type: 'string', description: '显示名' },
             description: { type: 'string', description: '函数说明' },
             body: { type: 'string', description: 'TS 源码，形如 return async (args, ctx) => { ... }' },
+            kind: {
+              type: 'string',
+              enum: ['query', 'edit'],
+              description: 'query=只读计算（可做派生属性/规则条件，沙箱禁止写对象）；edit=可写对象/关系（应通过 Action 触发）。默认 edit。',
+            },
+            pure: { type: 'boolean', description: '是否无副作用（query 恒 true）' },
+            inputs: {
+              type: 'array',
+              description: '入参定义：[{name,type,required,description,valueType?,allowedValues?}]',
+              items: { type: 'object' },
+            },
+            outputSpec: {
+              type: 'array',
+              description: '出参定义：[{name?,type,valueType?,description?}]；valueType 存在时会校验返回值',
+              items: { type: 'object' },
+            },
           },
           required: ['apiName', 'displayName', 'body'],
         },
@@ -649,7 +669,7 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
     },
     inspect_object_type: async (a: any) => rt.getObjectType(a.apiName),
     create_function: async (a: any) =>
-      rt.createFunction({ apiName: a.apiName, displayName: a.displayName, description: a.description, body: a.body }),
+      rt.createFunction({ apiName: a.apiName, displayName: a.displayName, description: a.description, body: a.body, kind: a.kind, pure: a.pure, inputs: a.inputs, outputSpec: a.outputSpec }),
     delete_function: async (a: any) => rt.deleteFunction(a.apiName),
     add_object_type_property: async (a: any) => rt.upsertObjectTypeProperty(a.apiName, a.property),
     list_value_types: async () => rt.listValueTypes(),

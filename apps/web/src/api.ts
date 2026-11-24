@@ -221,6 +221,9 @@ export interface FunctionInput {
   name: string;
   type: string;
   required?: boolean;
+  description?: string;
+  valueType?: string;
+  allowedValues?: { value: string; label?: string; description?: string }[];
 }
 export interface OntologyFunction {
   apiName: string;
@@ -229,6 +232,9 @@ export interface OntologyFunction {
   entry: string;
   inputs: FunctionInput[];
   outputs: string[];
+  outputSpec?: { name?: string; type: string; valueType?: string; description?: string }[];
+  kind?: 'query' | 'edit';
+  pure?: boolean;
   description?: string | null; // 函数说明：作用、入参含义、使用场景
   body?: string | null;     // 函数体源码（TS：运行时编译注册；空则沿用 seed 注入实现，此时只读不可编辑）
   version: number;

@@ -18,6 +18,7 @@ import {
   startScheduler,
   buildSandbox,
   registerDbFunctions,
+  runWithReadOnly,
 } from '@ontology/enterprise-biz';
 import { RuleScheduler } from '@ontology/ontology-core';
 import { AIPAgent, trimHistory, estimateTokens } from '@ontology/ai-orchestration';
@@ -300,7 +301,7 @@ app.get('/api/s2/object-types/:apiName/derived/:propApiName', async (req, res) =
     if (!rid) return res.status(400).json({ error: '缺少 rid 查询参数（对象实例标识）' });
     const sandbox = await getSandbox();
     await registerDbFunctions(repo, sandbox);
-    const result = await repo.computeDerived(apiName, propApiName, rid, sandbox);
+    const result = await runWithReadOnly(() => repo.computeDerived(apiName, propApiName, rid, sandbox));
     res.json(result);
   } catch (e: any) {
     res.status(400).json({ error: e.message });
@@ -331,13 +332,18 @@ app.post('/api/s2/functions', async (req, res) => {
     if (!def?.apiName || !def?.displayName || !def?.language || !def?.entry) {
       return res.status(400).json({ error: 'apiName/displayName/language/entry 必填' });
     }
+    const kind: 'query' | 'edit' = def.kind === 'query' ? 'query' : 'edit';
+    const outputSpec = Array.isArray(def.outputSpec) && def.outputSpec.length ? def.outputSpec : undefined;
     const fn: OntologyFunction = {
       apiName: def.apiName,
       displayName: def.displayName,
       language: def.language,
       entry: def.entry,
       inputs: def.inputs ?? [],
-      outputs: def.outputs ?? [],
+      outputs: def.outputs?.length ? def.outputs : (outputSpec?.map((o: any) => o.type) ?? []),
+      outputSpec,
+      kind,
+      pure: def.pure ?? (kind === 'query'),
       description: def.description ?? null,
       body: def.body ?? null,
       version: def.version ?? 1,
@@ -449,15 +455,10 @@ app.post('/api/s2/actions/:apiName/trigger', async (req, res) => {
 // 触发一个 Ontology Function（如离职风险评估）。返回函数执行结果。
 app.post('/api/s2/functions/:fnApiName/invoke', async (req, res) => {
   try {
-    const fn = await repo.getFunction(req.params.fnApiName);
-    if (!fn) return res.status(404).json({ error: '函数未注册' });
-    // 每次 invoke 前刷新 DB 函数体（让前端新建/修改的函数即时生效）
-    const sandbox = await getSandbox();
-    await registerDbFunctions(repo, sandbox);
-    const result = await sandbox.execute(req.params.fnApiName, req.body ?? {});
+    const { fn, result } = await executeRegisteredFunction(req.params.fnApiName, req.body ?? {});
     res.json({ ok: true, function: fn.apiName, result });
   } catch (e: any) {
-    res.status(400).json({ error: e.message });
+    res.status(e?.status ?? 400).json({ error: e.message });
   }
 });
 
@@ -983,7 +984,7 @@ async function getVtForValidation(apiName: string) {
 }
 
 async function recordValidationIssues(
-  source: 'write' | 'action',
+  source: 'write' | 'action' | 'function',
   issues: Array<{ objectType?: string; property?: string; value?: string; message: string }>,
   mode: 'warn' | 'reject',
 ): Promise<void> {
@@ -1031,6 +1032,68 @@ async function validateActionParams(action: any, args: Record<string, unknown>) 
     }
   }
   return issues;
+}
+
+// 函数输出类型检查
+function checkOutputType(type: string, v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  switch (type) {
+    case 'string': return typeof v === 'string' ? null : '应为字符串';
+    case 'integer': return Number.isInteger(Number(v)) ? null : '应为整数';
+    case 'float': return Number.isFinite(Number(v)) ? null : '应为数字';
+    case 'boolean': return typeof v === 'boolean' ? null : '应为布尔值';
+    case 'array': return Array.isArray(v) ? null : '应为数组';
+    case 'object': return typeof v === 'object' ? null : '应为对象';
+    default: return null;
+  }
+}
+
+// 函数输出校验（outputSpec[0]：type + valueType）
+async function validateFunctionResult(fn: any, result: unknown) {
+  const issues: Array<{ property: string; value: string; message: string }> = [];
+  const spec = fn.outputSpec?.[0];
+  const type = spec?.type ?? (fn.outputs?.[0] as string | undefined);
+  if (type) {
+    const msg = checkOutputType(type, result);
+    if (msg) issues.push({ property: 'result', value: String(JSON.stringify(result) ?? ''), message: msg });
+  }
+  if (spec?.valueType && result !== null && result !== undefined && typeof result !== 'object') {
+    const vt = await getVtForValidation(String(spec.valueType));
+    const allowed = vt?.allowedValues;
+    if (Array.isArray(allowed) && allowed.length && !allowed.some((a: any) => String(a.value) === String(result))) {
+      issues.push({ property: 'result', value: String(result), message: `不在允许值 [${allowed.map((a: any) => a.value).join(', ')}]` });
+    }
+  }
+  return issues;
+}
+
+// 统一执行已注册函数：输入校验 → 只读隔离（query）→ 输出校验
+async function executeRegisteredFunction(name: string, args: Record<string, unknown>) {
+  const fn = await repo.getFunction(name);
+  if (!fn) throw new Error(`函数未注册: ${name}`);
+  const inputIssues = await validateActionParams({ parameters: fn.inputs ?? [] }, args);
+  if (inputIssues.length) {
+    await recordValidationIssues('function', inputIssues.map((i) => ({ objectType: name, ...i })), 'reject');
+    const err: any = new Error(`参数校验失败: ${inputIssues.map((i) => `${i.property}: ${i.message}`).join('; ')}`);
+    err.status = 400;
+    throw err;
+  }
+  const sb = await getSandbox();
+  await registerDbFunctions(repo, sb);
+  const run = () => sb.execute(name, args);
+  const result = fn.kind === 'query' ? await runWithReadOnly(run) : await run();
+  const outputIssues = await validateFunctionResult(fn, result);
+  if (outputIssues.length) {
+    const mode = WRITE_VALIDATION === 'reject' ? 'reject' : 'warn';
+    await recordValidationIssues('function', outputIssues.map((i) => ({ objectType: name, ...i })), mode);
+    if (mode === 'reject') {
+      const err: any = new Error(`输出校验失败: ${outputIssues.map((i) => `${i.property}: ${i.message}`).join('; ')}`);
+      err.status = 400;
+      throw err;
+    }
+    console.warn('[validate] 函数输出校验失败', name, outputIssues.map((i) => i.message).join('; '));
+  }
+  return { fn, result };
 }
 
 repo.setPatchValidator(async (objectType, patch, _actor, delta) => {
@@ -1388,9 +1451,8 @@ const agentRuntime: AgentRuntime = {
   listRules: (opts) => repo.searchRules(opts ?? {}),
   listObjectTypes: (opts) => repo.searchObjectTypes(opts ?? {}),
   invokeFunction: async (name, args) => {
-    const sb = await getSandbox();
-    await registerDbFunctions(repo, sb);
-    return sb.execute(name, args);
+    const { result } = await executeRegisteredFunction(name, (args ?? {}) as Record<string, unknown>);
+    return result;
   },
   triggerAction: async (name, args) => {
     const action = await repo.getAction(name);
@@ -1456,27 +1518,37 @@ const agentRuntime: AgentRuntime = {
     };
   },
   // 派生/函数建模：注册函数（存在则更新 body）
-  createFunction: async (def: { apiName: string; displayName: string; description?: string; body: string }) => {
+  createFunction: async (def: {
+    apiName: string; displayName: string; description?: string; body: string;
+    kind?: 'query' | 'edit'; pure?: boolean;
+    inputs?: Array<Record<string, unknown>>; outputSpec?: Array<Record<string, unknown>>;
+  }) => {
     if (!def?.apiName || !/^[A-Za-z][A-Za-z0-9_]*$/.test(def.apiName)) {
       throw new Error('apiName 必填，且只能以字母开头、仅含字母数字下划线');
     }
     if (!def.body || !/return\s+(async\s*)?\(args,\s*ctx\)\s*=>/.test(def.body)) {
       throw new Error('函数体必须是 TS 源码，形如 "return async (args, ctx) => { ... }"');
     }
+    const kind: 'query' | 'edit' = def.kind === 'query' ? 'query' : 'edit';
+    const pure = def.pure ?? (kind === 'query');
     const existing = await repo.getFunction(def.apiName);
+    const outputSpec = def.outputSpec as any[] | undefined;
+    const outputs = outputSpec?.length ? outputSpec.map((o) => String(o.type)) : (existing?.outputs ?? []);
+    const inputs = def.inputs ?? existing?.inputs ?? [];
     if (existing) {
       await repo.updateFunction(def.apiName, {
         displayName: def.displayName, description: def.description ?? '', body: def.body,
-        language: 'typescript', entry: 'main',
-      });
-      return { ok: true, updated: true, apiName: def.apiName };
+        language: 'typescript', entry: 'main', kind, pure, inputs: inputs as any, outputs, outputSpec,
+      } as any);
+      return { ok: true, updated: true, apiName: def.apiName, kind, pure };
     }
     await repo.createFunction({
       apiName: def.apiName, displayName: def.displayName, language: 'typescript', entry: 'main',
-      inputs: [], outputs: [], description: def.description ?? '', body: def.body, version: 1,
+      inputs: inputs as any, outputs, outputSpec, kind, pure,
+      description: def.description ?? '', body: def.body, version: 1,
       createdAt: '', updatedAt: '',
     } as any);
-    return { ok: true, created: true, apiName: def.apiName };
+    return { ok: true, created: true, apiName: def.apiName, kind, pure };
   },
   // 派生/函数建模：删除函数（被派生属性引用时拒绝）
   deleteFunction: async (apiName: string) => {
@@ -1486,7 +1558,9 @@ const agentRuntime: AgentRuntime = {
     const refs: string[] = [];
     for (const ot of types) {
       for (const p of ot.properties) {
-        if ((p as any).reducerFn === apiName) refs.push(`${ot.apiName}.${p.apiName}`);
+        if ((p as any).reducerFn === apiName || (p as any).derivation?.function === apiName) {
+          refs.push(`${ot.apiName}.${p.apiName}`);
+        }
       }
     }
     if (refs.length) {
@@ -1516,8 +1590,10 @@ const agentRuntime: AgentRuntime = {
     if (p.derivation) {
       if (p.derivation.kind === 'function') {
         if (!p.derivation.function) throw new Error('derivation.function 必填');
-        if (!(await repo.getFunction(String(p.derivation.function)))) {
-          throw new Error(`派生函数不存在: ${p.derivation.function}（请先 create_function）`);
+        const fn = await repo.getFunction(String(p.derivation.function));
+        if (!fn) throw new Error(`派生函数不存在: ${p.derivation.function}（请先 create_function）`);
+        if (fn.kind !== 'query') {
+          throw new Error(`派生属性只能引用 query 函数；${fn.apiName} 是 ${fn.kind ?? 'edit'} 函数（可通过 Action 触发）`);
         }
       } else if (p.derivation.kind === 'linkAggregation') {
         if (p.derivation.linkType && !(await repo.getLinkType(String(p.derivation.linkType)))) {
@@ -1610,7 +1686,8 @@ const agentRuntime: AgentRuntime = {
   computeDerived: async (objectType: string, property: string, rid: string) => {
     const sb = await getSandbox();
     await registerDbFunctions(repo, sb);
-    const { value } = await repo.computeDerived(objectType, property, rid, sb);
+    // 派生属性必须是只读计算
+    const { value } = await runWithReadOnly(() => repo.computeDerived(objectType, property, rid, sb));
     return { objectType, property, rid, value };
   },
   // 数据源建模：列出某 schema 下的全部表名（只读）
@@ -2338,6 +2415,8 @@ const MODELING_PROMPT = `
 - 写入前先检查实例数：若读取结果为 0 而源表有数据，立即停止并报告，不要继续写。
 - writeObjectPatch 返回 undefined 表示成功（写入无返回值），不要当作失败；落库结果用 get_instances 复核。
 - 探测/临时函数用完可用 delete_function 清理；若函数仍被派生属性（reducerFn）引用会被拒绝，需先解绑。
+- 函数分两类：query=只读计算（可做派生属性/规则条件，沙箱禁止写对象）；edit=可写对象/关系（应通过 Action 触发）。
+  create_function 传 kind；派生属性只能引用 query 函数，否则 add_object_type_property 会拒绝。
 - 平台生成型对象（无 sourceTable，如 Alert）的实例可用 delete_instance 删除（会级联关系边）；
   源映射型对象禁止删除实例。删除前先向用户确认 objectType 与 rid。
 - 属性语义：add_object_type_property 支持 description / allowedValues / valueType / unit / format / defaultValue / derivation，

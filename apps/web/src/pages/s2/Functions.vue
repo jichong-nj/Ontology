@@ -26,7 +26,7 @@ function goToHelp() {
 
 const form = reactive<OntologyFunction>({
   apiName: '', displayName: '', language: 'typescript', entry: 'main',
-  inputs: [], outputs: [], description: '', body: '', version: 1,
+  inputs: [], outputs: [], description: '', body: '', version: 1, kind: 'edit', pure: false,
 });
 const viewFn = ref<OntologyFunction | null>(null);
 
@@ -49,7 +49,7 @@ function openCreate() {
   editing.value = null;
   Object.assign(form, {
     apiName: '', displayName: '', language: 'typescript', entry: 'main',
-    inputs: [], outputs: [], description: '', body: BODY_TEMPLATE, version: 1,
+    inputs: [], outputs: [], description: '', body: BODY_TEMPLATE, version: 1, kind: 'edit', pure: false,
   });
   dialogVisible.value = true;
 }
@@ -59,6 +59,7 @@ function openEdit(fn: OntologyFunction) {
   Object.assign(form, {
     apiName: fn.apiName, displayName: fn.displayName, language: fn.language,
     entry: fn.entry, inputs: fn.inputs ?? [], outputs: fn.outputs ?? [],
+    kind: fn.kind ?? 'edit', pure: fn.pure ?? false,
     description: fn.description ?? '', body: fn.body ?? '', version: fn.version,
   });
   dialogVisible.value = true;
@@ -84,6 +85,8 @@ async function save() {
       await s2functions.update(editing.value, {
         displayName: form.displayName, language: form.language, entry: form.entry,
         inputs: form.inputs, outputs: form.outputs, description: form.description, body: form.body,
+        kind: form.kind, pure: form.kind === 'query' ? true : form.pure,
+        outputSpec: (form.outputs ?? []).map((t: string, i: number) => ({ name: `out${i + 1}`, type: t })),
       });
       ElMessage.success('已更新');
     } else {
@@ -117,6 +120,11 @@ onMounted(load);
       <ElTable :data="list" v-loading="loading" stripe>
         <ElTableColumn prop="displayName" label="显示名" />
         <ElTableColumn prop="apiName" label="API 名称" />
+        <ElTableColumn label="类型" width="100">
+          <template #default="{ row }">
+            <ElTag size="small" :type="row.kind === 'query' ? 'success' : 'warning'">{{ row.kind || 'edit' }}</ElTag>
+          </template>
+        </ElTableColumn>
         <ElTableColumn prop="language" label="语言" width="120">
           <template #default="{ row }"><ElTag size="small">{{ row.language }}</ElTag></template>
         </ElTableColumn>
@@ -171,6 +179,16 @@ onMounted(load);
           </ElSelect>
         </ElFormItem>
         <ElFormItem label="入口"><ElInput v-model="form.entry" placeholder="main" /></ElFormItem>
+        <ElFormItem label="函数类型">
+          <ElSelect v-model="form.kind" style="width: 220px">
+            <ElOption label="query（只读计算）" value="query" />
+            <ElOption label="edit（可写对象/关系）" value="edit" />
+          </ElSelect>
+          <span class="io-hint">query 可绑定派生属性/规则条件，沙箱禁止写；edit 应通过 Action 触发</span>
+        </ElFormItem>
+        <ElFormItem label="无副作用" v-if="form.kind === 'edit'">
+          <ElSwitch v-model="form.pure" />
+        </ElFormItem>
         <ElFormItem label="函数说明">
           <ElInput v-model="form.description" type="textarea" :rows="3"
             placeholder="描述函数作用、入参含义、使用场景，便于他人理解与使用" />
@@ -253,6 +271,7 @@ onMounted(load);
 .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .toolbar h2 { display: flex; align-items: center; gap: 6px; margin: 0; }
 .io-list { display: flex; flex-direction: column; gap: 8px; }
+.io-hint { margin-left: 8px; font-size: 12px; color: var(--text-muted); }
 .io-row { display: flex; gap: 8px; align-items: center; }
 
 .edit-fn-title {

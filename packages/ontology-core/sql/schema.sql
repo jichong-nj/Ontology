@@ -141,7 +141,11 @@ CREATE TABLE ontology_function (
   description TEXT,
   -- 函数体源码（TS：运行时 new Function 编译注册；为空则沿用 seed 注入的注册式实现，此时只读不可编辑）。python 暂不支持运行时执行。
   body     TEXT,
-  version  INT NOT NULL
+  version  INT NOT NULL,
+  -- 行为语义：query=只读计算；edit=可写对象/关系（应通过 Action 触发）
+  kind     TEXT NOT NULL DEFAULT 'edit',
+  pure     BOOLEAN NOT NULL DEFAULT false,
+  output_spec JSONB
 );
 
 CREATE TABLE interface_method_impl (

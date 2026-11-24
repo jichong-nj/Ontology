@@ -3,6 +3,7 @@
 //
 // 既可作为 CLI 运行（npm run bootstrap），也可被 apps/server 在启动时调用。
 import { Pool } from 'pg';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { PostgresMetadataRepository, rid as mkRid } from '@ontology/ontology-core';
 import {
   PostgresMappingStore,
@@ -610,14 +611,31 @@ export async function seedExtensionInstances(repo: PostgresMetadataRepository): 
 }
 
 // 注册业务函数到沙箱（供运行时 invoke）
+// 只读执行上下文：用于 kind=query 的函数（禁止写对象/关系）
+const readOnlyStorage = new AsyncLocalStorage<boolean>();
+export function runWithReadOnly<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  return readOnlyStorage.run(true, fn);
+}
+export function isReadOnlyExecution(): boolean {
+  return !!readOnlyStorage.getStore();
+}
+
 export function buildSandbox(repo: PostgresMetadataRepository): TypeScriptFunctionSandbox {
   const sandbox = new TypeScriptFunctionSandbox();
   // 安全代理：禁止沙箱函数执行破坏性清空/删除（曾导致实例被清空的事故）。
   // 重置实例请走平台同步接口。其它方法绑定原 repo 后返回。
   const BLOCKED = new Set(['clearObjectWrites', 'clearLinkInstances', 'deleteObjectType', 'deleteLinkType', 'deleteFunction',
   'createRule', 'updateRule', 'deleteRule', 'createAction', 'updateAction', 'deleteAction']);
+  const WRITE_METHODS = new Set(['writeObjectPatch', 'createLinkInstance', 'deleteObjectWrite', 'deleteLinkInstancesForRid']);
   const safeRepo = new Proxy(repo, {
     get(target, prop, receiver) {
+      if (typeof prop === 'string' && WRITE_METHODS.has(prop) && isReadOnlyExecution()) {
+        return async () => {
+          throw new Error(
+            `只读函数（kind=query）禁止调用 ${prop}；需要写操作请改用 edit 函数并通过 Action 触发`,
+          );
+        };
+      }
       if (typeof prop === 'string' && BLOCKED.has(prop)) {
         return async () => {
           throw new Error(

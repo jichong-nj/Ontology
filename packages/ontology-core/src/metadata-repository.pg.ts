@@ -1081,6 +1081,9 @@ export class PostgresMetadataRepository implements MetadataRepository {
       entry: r.entry,
       inputs: r.inputs,
       outputs: r.outputs,
+      outputSpec: r.output_spec ?? undefined,
+      kind: r.kind ?? 'edit',
+      pure: r.pure ?? false,
       description: r.description ?? null,
       body: r.body,
       version: r.version,
@@ -1139,10 +1142,11 @@ export class PostgresMetadataRepository implements MetadataRepository {
 
   async createFunction(def: OntologyFunction): Promise<void> {
     await this.pool.query(
-      `INSERT INTO ontology_function (api_name, display_name, language, entry, inputs, outputs, description, body, version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `INSERT INTO ontology_function (api_name, display_name, language, entry, inputs, outputs, description, body, version, kind, pure, output_spec)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        ON CONFLICT (api_name) DO NOTHING`,
-      [def.apiName, def.displayName, def.language, def.entry, JSON.stringify(def.inputs), JSON.stringify(def.outputs), def.description ?? null, def.body ?? null, def.version ?? 1],
+      [def.apiName, def.displayName, def.language, def.entry, JSON.stringify(def.inputs), JSON.stringify(def.outputs), def.description ?? null, def.body ?? null, def.version ?? 1,
+       def.kind ?? 'edit', def.pure ?? (def.kind === 'query'), JSON.stringify(def.outputSpec ?? null)],
     );
   }
 
@@ -1152,13 +1156,14 @@ export class PostgresMetadataRepository implements MetadataRepository {
     let i = 1;
     const map: Record<string, string> = {
       displayName: 'display_name', language: 'language', entry: 'entry',
-      inputs: 'inputs', outputs: 'outputs', description: 'description', body: 'body', version: 'version',
+      inputs: 'inputs', outputs: 'outputs', outputSpec: 'output_spec', kind: 'kind', pure: 'pure',
+      description: 'description', body: 'body', version: 'version',
     };
     for (const [k, col] of Object.entries(map)) {
       if (k in patch) {
         sets.push(`${col} = $${i++}`);
         let v = (patch as any)[k];
-        if (k === 'inputs' || k === 'outputs') v = JSON.stringify(v);
+        if (k === 'inputs' || k === 'outputs' || k === 'outputSpec') v = JSON.stringify(v);
         vals.push(v);
       }
     }
@@ -1183,6 +1188,9 @@ export class PostgresMetadataRepository implements MetadataRepository {
       entry: r.entry,
       inputs: r.inputs,
       outputs: r.outputs,
+      outputSpec: r.output_spec ?? undefined,
+      kind: r.kind ?? 'edit',
+      pure: r.pure ?? false,
       description: r.description ?? null,
       body: r.body,
       version: r.version,
@@ -1200,6 +1208,9 @@ export class PostgresMetadataRepository implements MetadataRepository {
       entry: r.entry,
       inputs: r.inputs,
       outputs: r.outputs,
+      outputSpec: r.output_spec ?? undefined,
+      kind: r.kind ?? 'edit',
+      pure: r.pure ?? false,
       description: r.description ?? null,
       body: r.body,
       version: r.version,

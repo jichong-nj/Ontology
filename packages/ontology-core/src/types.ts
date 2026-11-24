@@ -264,6 +264,14 @@ export interface ActionPrecondition {
   message: string; // 不满足时返回的说明
 }
 
+// 函数输出（类型化）：type 必填，valueType 可选（引用值类型做结果约束）
+export interface FunctionOutput {
+  name?: string;
+  type: PropertyType;
+  valueType?: string;
+  description?: string;
+}
+
 export interface OntologyFunction {
   apiName: string;
   displayName: string;
@@ -272,6 +280,11 @@ export interface OntologyFunction {
   entry: string;
   inputs: ActionParameter[];
   outputs: PropertyType[];
+  // 类型化输出（优先于 outputs；含 valueType 时可校验返回值）
+  outputSpec?: FunctionOutput[];
+  // 行为语义：query=只读计算；edit=可写对象/关系（应通过 Action 触发）
+  kind?: 'query' | 'edit';
+  pure?: boolean;                       // 无副作用（kind=query 时恒 true）
   // 函数说明：描述函数作用、入参含义、使用场景，便于其他开发者/使用者理解。
   description?: string | null;
   // 函数体源码（TS：运行时 new Function 编译注册；空则沿用 seed 注入的注册式实现，此时为只读、不可在线编辑）。python 暂不支持运行时执行。
