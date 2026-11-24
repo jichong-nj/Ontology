@@ -694,6 +694,14 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
   } as Record<string, (args: any) => Promise<unknown>>;
 }
 
+// 供 MCP 复用：返回启用工具的 JSON Schema 列表与执行映射（与内置智能体同一套）
+export function buildAgentTools(rt: AgentRuntime, cfg: AIPAgentConfig): {
+  specs: ToolSpec[];
+  toolMap: Record<string, (args: any) => Promise<unknown>>;
+} {
+  return { specs: selectTools(cfg.enabledTools ?? []), toolMap: buildToolMap(rt, cfg) };
+}
+
 function selectTools(enabled: string[]): ToolSpec[] {
   const allowed = new Set<string>();
   for (const g of enabled) {

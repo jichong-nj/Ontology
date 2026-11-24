@@ -6,13 +6,15 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "mcp": "node mcp-stdio.mjs"
   },
   "dependencies": {
-    "@ontology/ontology-core": "*",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@ontology/ai-orchestration": "*",
     "@ontology/data-integration": "*",
     "@ontology/enterprise-biz": "*",
-    "@ontology/ai-orchestration": "*",
+    "@ontology/ontology-core": "*",
     "express": "^4.19.2",
     "pg": "^8.12.0"
   },

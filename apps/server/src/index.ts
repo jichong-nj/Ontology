@@ -21,8 +21,11 @@ import {
   runWithReadOnly,
 } from '@ontology/enterprise-biz';
 import { RuleScheduler } from '@ontology/ontology-core';
-import { AIPAgent, trimHistory, estimateTokens } from '@ontology/ai-orchestration';
+import { AIPAgent, trimHistory, estimateTokens, buildAgentTools } from '@ontology/ai-orchestration';
 import type { AgentRuntime, ActiveModelRef } from '@ontology/ai-orchestration';
+import { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { ListToolsRequestSchema, CallToolRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { OpenAICompatibleLLM, heuristicIsReasoning } from '@ontology/ai-orchestration';
 import type { AIPAgentConfig, AIPProvider, AIPModel } from '@ontology/ontology-core';
 
@@ -2360,6 +2363,61 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
 
 // 健康检查
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+// ---------- MCP 端点：把内置智能体的工具集暴露给外部客户端 ----------
+// 说明：工具集与内置智能体一致（默认全部工具组），通过 MCP Streamable HTTP 调用。
+// 安全：如设置 MCP_TOKEN，则要求 Authorization: Bearer <token>；默认仅监听本机。
+const MCP_TOOL_GROUPS = (process.env.MCP_TOOL_GROUPS || 'functions,actions,rules,explore,alerts,sql,modeling')
+  .split(',').map((x) => x.trim()).filter(Boolean);
+const mcpAgentCfg = {
+  id: 'mcp', name: 'MCP', providerId: '', modelId: '', systemPrompt: '',
+  temperature: 0, maxSteps: 1, enabledTools: MCP_TOOL_GROUPS, objectTypes: [],
+} as any;
+const { specs: mcpSpecs, toolMap: mcpToolMap } = buildAgentTools(agentRuntime, mcpAgentCfg);
+const mcpTools = mcpSpecs.map((sp) => ({
+  name: sp.function.name,
+  description: sp.function.description ?? '',
+  inputSchema: (sp.function.parameters as any) ?? { type: 'object', properties: {} },
+}));
+
+function createMcpServer(): McpServer {
+  const server = new McpServer(
+    { name: 'ontology-mcp', version: '0.1.0' },
+    { capabilities: { tools: {} } },
+  );
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: mcpTools }));
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+    const handler = mcpToolMap[name];
+    if (!handler) throw new McpError(ErrorCode.MethodNotFound, `未知工具: ${name}`);
+    try {
+      const result = await handler((args ?? {}) as Record<string, unknown>);
+      const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      return { content: [{ type: 'text' as const, text }] };
+    } catch (e: any) {
+      return { content: [{ type: 'text' as const, text: `ERROR: ${e.message}` }], isError: true };
+    }
+  });
+  return server;
+}
+
+app.post('/mcp', async (req, res) => {
+  const token = process.env.MCP_TOKEN;
+  if (token && req.headers.authorization !== `Bearer ${token}`) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+  const server = createMcpServer();
+  res.on('close', () => { void transport.close(); void server.close(); });
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (e: any) {
+    if (!res.headersSent) res.status(500).json({ error: e.message });
+  }
+});
+app.get('/mcp', (_req, res) => res.status(405).json({ error: 'Method Not Allowed（使用 POST）' }));
+app.delete('/mcp', (_req, res) => res.status(405).json({ error: 'Method Not Allowed（无状态模式）' }));
 
 // 校验失败记录（健康观测）
 app.get('/api/s2/validation-issues', async (req, res) => {
