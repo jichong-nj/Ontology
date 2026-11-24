@@ -203,6 +203,9 @@ export interface ActionParameter {
   name: string;
   type: PropertyType;
   required: boolean;
+  description?: string;
+  allowedValues?: PropertyAllowedValue[];
+  valueType?: string;       // 引用值类型约束
 }
 
 // 动作效果（与"告警"正交；告警只是 effect 的一种副作用，非必选）：

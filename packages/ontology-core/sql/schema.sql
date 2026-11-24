@@ -47,6 +47,18 @@ CREATE TABLE shared_property (
 );
 
 -- 值类型：语义类型 + 约束（对齐 Palantir Value Types）
+-- 写入/参数校验失败记录（健康观测）
+CREATE TABLE validation_issue (
+  id          BIGSERIAL PRIMARY KEY,
+  source      TEXT NOT NULL,          -- write | action
+  object_type TEXT,
+  property    TEXT,
+  value       TEXT,
+  message     TEXT NOT NULL,
+  mode        TEXT NOT NULL,          -- warn | reject
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE value_type (
   api_name        TEXT PRIMARY KEY,
   display_name    TEXT NOT NULL,

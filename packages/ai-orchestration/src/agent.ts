@@ -47,6 +47,7 @@ export interface AgentRuntime {
   // 自动化：创建动作（effect 指向已注册函数）与规则（触发 + 条件函数 + 动作）
   createAction(def: {
     apiName: string; displayName: string; description?: string; effectFunction: string;
+    parameters?: Array<Record<string, unknown>>;
     preconditions?: Array<Record<string, unknown>>;
   }): Promise<unknown>;
   createRule(def: {
@@ -435,6 +436,11 @@ function allToolSpecs(): ToolSpec[] {
             displayName: { type: 'string' },
             description: { type: 'string' },
             effectFunction: { type: 'string', description: '已注册函数 apiName（动作执行时调用）' },
+            parameters: {
+              type: 'array',
+              description: '参数定义（可选）：[{name,type,required,description,valueType?,allowedValues?}]；触发时按约束校验',
+              items: { type: 'object' },
+            },
           },
           required: ['apiName', 'displayName', 'effectFunction'],
         },
@@ -613,7 +619,7 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
     },
     create_action: async (a: any) => rt.createAction({
       apiName: a.apiName, displayName: a.displayName, description: a.description,
-      effectFunction: a.effectFunction, preconditions: a.preconditions,
+      effectFunction: a.effectFunction, parameters: a.parameters, preconditions: a.preconditions,
     }),
     create_rule: async (a: any) => rt.createRule({
       apiName: a.apiName, displayName: a.displayName, enabled: a.enabled,

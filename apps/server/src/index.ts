@@ -432,6 +432,11 @@ app.post('/api/s2/actions/:apiName/trigger', async (req, res) => {
     if (action.effect?.kind !== 'function') {
       return res.status(400).json({ error: `仅支持 function 类型动作，当前为 ${action.effect?.kind}` });
     }
+    const issues = await validateActionParams(action, req.body ?? {});
+    if (issues.length) {
+      await recordValidationIssues('action', issues.map((i) => ({ objectType: action.apiName, ...i })), 'reject');
+      return res.status(400).json({ error: issues.map((i) => `${i.property}: ${i.message}`).join('; '), issues });
+    }
     const sandbox = await getSandbox();
     await registerDbFunctions(repo, sandbox);
     const result = await sandbox.execute(action.effect.ref, req.body ?? {});
@@ -967,11 +972,62 @@ async function getVtForValidation(apiName: string) {
   return vt;
 }
 
+async function recordValidationIssues(
+  source: 'write' | 'action',
+  issues: Array<{ objectType?: string; property?: string; value?: string; message: string }>,
+  mode: 'warn' | 'reject',
+): Promise<void> {
+  if (!issues.length) return;
+  try {
+    for (const it of issues) {
+      await pool.query(
+        `INSERT INTO validation_issue (source, object_type, property, value, message, mode)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [source, it.objectType ?? null, it.property ?? null, it.value ?? null, it.message, mode],
+      );
+    }
+  } catch (e: any) {
+    console.error('[validate] 记录校验问题失败', e.message);
+  }
+}
+
+async function validateActionParams(action: any, args: Record<string, unknown>) {
+  const issues: Array<{ property: string; value: string; message: string }> = [];
+  for (const p of action.parameters ?? []) {
+    const v = (args ?? {})[p.name];
+    if (p.required && (v === undefined || v === null || v === '')) {
+      issues.push({ property: p.name, value: '', message: '缺少必填参数' });
+      continue;
+    }
+    if (v === undefined || v === null) continue;
+    const allowed = p.allowedValues?.length ? p.allowedValues : (p.valueType ? (await getVtForValidation(p.valueType))?.allowedValues : null);
+    if (Array.isArray(allowed) && allowed.length && !allowed.some((a: any) => String(a.value) === String(v))) {
+      issues.push({ property: p.name, value: String(v), message: `不在允许值 [${allowed.map((a: any) => a.value).join(', ')}]` });
+    }
+    const vt = p.valueType ? await getVtForValidation(p.valueType) : null;
+    if (vt?.constraint?.kind === 'range') {
+      const n = Number(v);
+      if (Number.isFinite(n)) {
+        if (vt.constraint.min !== undefined && n < vt.constraint.min) issues.push({ property: p.name, value: String(v), message: `小于最小值 ${vt.constraint.min}` });
+        if (vt.constraint.max !== undefined && n > vt.constraint.max) issues.push({ property: p.name, value: String(v), message: `大于最大值 ${vt.constraint.max}` });
+      }
+    } else if (vt?.constraint?.kind === 'regex' && vt.constraint.pattern) {
+      try { if (!new RegExp(vt.constraint.pattern).test(String(v))) issues.push({ property: p.name, value: String(v), message: `不匹配 /${vt.constraint.pattern}/` }); } catch { /* ignore */ }
+    }
+    if (p.type === 'integer' && !Number.isInteger(Number(v))) issues.push({ property: p.name, value: String(v), message: '应为整数' });
+    if (p.type === 'float' && !Number.isFinite(Number(v))) issues.push({ property: p.name, value: String(v), message: '应为数字' });
+    if (p.type === 'boolean' && typeof v !== 'boolean' && !['true', 'false'].includes(String(v))) {
+      issues.push({ property: p.name, value: String(v), message: '应为布尔值' });
+    }
+  }
+  return issues;
+}
+
 repo.setPatchValidator(async (objectType, patch) => {
   if (WRITE_VALIDATION === 'off') return;
   const ot = await getOtForValidation(objectType);
   if (!ot) return;
-  const errors: string[] = [];
+  const issues: Array<{ property: string; value: string; message: string }> = [];
   for (const p of ot.properties ?? []) {
     if (p.derived) continue;
     if (!(p.apiName in patch)) continue;
@@ -981,24 +1037,26 @@ repo.setPatchValidator(async (objectType, patch) => {
     const allowed = p.allowedValues ?? vt?.allowedValues;
     if (Array.isArray(allowed) && allowed.length) {
       const ok = allowed.some((a: any) => String(a.value) === String(v));
-      if (!ok) errors.push(`${p.apiName}=${JSON.stringify(v)} 不在允许值 [${allowed.map((a: any) => a.value).join(', ')}]`);
+      if (!ok) issues.push({ property: p.apiName, value: String(v), message: `不在允许值 [${allowed.map((a: any) => a.value).join(', ')}]` });
     }
     const c = vt?.constraint;
     if (c?.kind === 'range') {
       const n = Number(v);
       if (Number.isFinite(n)) {
-        if (c.min !== undefined && n < c.min) errors.push(`${p.apiName}=${v} 小于最小值 ${c.min}`);
-        if (c.max !== undefined && n > c.max) errors.push(`${p.apiName}=${v} 大于最大值 ${c.max}`);
+        if (c.min !== undefined && n < c.min) issues.push({ property: p.apiName, value: String(v), message: `小于最小值 ${c.min}` });
+        if (c.max !== undefined && n > c.max) issues.push({ property: p.apiName, value: String(v), message: `大于最大值 ${c.max}` });
       }
     } else if (c?.kind === 'regex' && c.pattern) {
       try {
-        if (!new RegExp(c.pattern).test(String(v))) errors.push(`${p.apiName}=${JSON.stringify(v)} 不匹配 /${c.pattern}/`);
+        if (!new RegExp(c.pattern).test(String(v))) issues.push({ property: p.apiName, value: String(v), message: `不匹配 /${c.pattern}/` });
       } catch { /* 忽略非法正则 */ }
     }
   }
-  if (!errors.length) return;
-  const msg = `写入校验失败 ${objectType}: ${errors.join('; ')}`;
-  if (WRITE_VALIDATION === 'reject') throw new Error(msg);
+  if (!issues.length) return;
+  const mode = WRITE_VALIDATION === 'reject' ? 'reject' : 'warn';
+  await recordValidationIssues('write', issues.map((i) => ({ objectType, ...i })), mode);
+  const msg = `写入校验失败 ${objectType}: ${issues.map((i) => `${i.property}=${JSON.stringify(i.value)} ${i.message}`).join('; ')}`;
+  if (mode === 'reject') throw new Error(msg);
   console.warn('[validate]', msg);
 });
 console.log(`[validate] 写入校验模式: ${WRITE_VALIDATION}`);
@@ -1425,7 +1483,7 @@ const agentRuntime: AgentRuntime = {
       apiName: def.apiName,
       displayName: def.displayName ?? def.apiName,
       kind: 'standard',
-      parameters: [],
+      parameters: def.parameters ?? [],
       validationRules: [],
       preconditions: def.preconditions ?? [],
       effect: { kind: 'function', ref: def.effectFunction },
@@ -2102,6 +2160,19 @@ app.post('/api/aip/agent/:id/stream', async (req, res) => {
 
 // 健康检查
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+// 校验失败记录（健康观测）
+app.get('/api/s2/validation-issues', async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
+    const { rows } = await pool.query(
+      `SELECT * FROM validation_issue ORDER BY id DESC LIMIT $1`, [limit],
+    );
+    res.json(rows);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ---------- 系统维护：手动重新灌入业务数据 ----------
 // 等价于启动时的 bootstrap（S1 数据源 + S2 定义 + S3 实例全量重推），但由用户显式触发。
