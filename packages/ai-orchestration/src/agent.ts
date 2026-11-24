@@ -26,7 +26,7 @@ export interface AgentRuntime {
   triggerAction(name: string, args: Record<string, unknown>): Promise<unknown>;
   runRules(): Promise<unknown>;
   listAlerts(opts?: { keyword?: string; limit?: number; offset?: number }): Promise<unknown>;
-  getInstances(objectType: string, opts?: { filter?: unknown[]; pageSize?: number; pageToken?: string }): Promise<unknown>;
+  getInstances(objectType: string, opts?: { filter?: unknown[]; orderBy?: string; order?: 'asc' | 'desc'; pageSize?: number; pageToken?: string }): Promise<unknown>;
   getObjectLinks(objectType: string, objectRid: string): Promise<unknown>;
   aggregate(objectType: string, property: string, topN?: number): Promise<unknown>;
   histogram(objectType: string, property: string, buckets?: number): Promise<unknown>;
@@ -224,8 +224,10 @@ function allToolSpecs(): ToolSpec[] {
                 required: ['property', 'operator'],
               },
             },
-            pageSize: { type: 'number', description: '每页条数，默认 100，上限 1000' },
-            pageToken: { type: 'string', description: '上一页返回的 nextPageToken；首页不传' },
+            orderBy: { type: 'string', description: '排序属性 apiName（必须在该对象类型上已定义；数值属性按数值排序）' },
+            order: { type: 'string', enum: ['asc', 'desc'], description: '排序方向，默认 asc；TopN 用 desc + pageSize' },
+            pageSize: { type: 'number', description: '每页条数，默认 100，上限 1000；TopN 时作为 limit' },
+            pageToken: { type: 'string', description: '上一页返回的 nextPageToken；首页不传（与 orderBy 不能同时使用）' },
           },
           required: ['objectType'],
         },
@@ -637,6 +639,8 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
       if (err) return err;
       return rt.getInstances(a.objectType, {
         filter: a.filter,
+        orderBy: a.orderBy,
+        order: a.order,
         pageSize: a.pageSize,
         pageToken: a.pageToken,
       });

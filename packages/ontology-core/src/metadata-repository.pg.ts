@@ -730,6 +730,8 @@ export class PostgresMetadataRepository implements MetadataRepository {
     objectType: string,
     opts?: {
       filter?: InstanceFilter[];
+      orderBy?: string;
+      order?: 'asc' | 'desc';
       pageSize?: number;
       pageToken?: string;
     },
@@ -776,6 +778,23 @@ export class PostgresMetadataRepository implements MetadataRepository {
       }
     });
 
+    // 排序：属性名白名单校验（按对象类型定义），数值属性按 numeric 排序
+    let orderClause = 'object_rid ASC';
+    if (opts?.orderBy) {
+      if (opts.pageToken) {
+        throw new Error('orderBy 暂不支持游标分页；请用 pageSize 限制条数（TopN）');
+      }
+      const ot = await this.getObjectType(objectType);
+      const prop = ot?.properties.find((p) => p.apiName === opts.orderBy);
+      if (!prop) throw new Error(`未知排序属性: ${opts.orderBy}`);
+      params.push(opts.orderBy);
+      const ph = `$${params.length}`;
+      const numeric = prop.type === 'integer' || prop.type === 'float';
+      const expr = numeric ? `(patch->>${ph})::numeric` : `(patch->>${ph})`;
+      const dir = opts.order === 'asc' ? 'ASC' : 'DESC';
+      orderClause = `${expr} ${dir} NULLS LAST, object_rid ASC`;
+    }
+
     if (opts?.pageToken) {
       params.push(opts.pageToken);
       wheres.push(`object_rid > $${params.length}`);
@@ -789,7 +808,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
                  FROM object_write
                 WHERE ${wheres.join(' AND ')}
                 ORDER BY object_rid, id DESC) t
-        ORDER BY object_rid
+        ORDER BY ${orderClause}
         LIMIT $${params.length}`,
       params,
     );

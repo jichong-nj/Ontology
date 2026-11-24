@@ -1379,9 +1379,11 @@ app.get('/api/s2/explore/instances/:objectType/query', async (req, res) => {
   try {
     const { objectType } = req.params;
     const filter = req.query.filter ? JSON.parse(String(req.query.filter)) : undefined;
+    const orderBy = req.query.orderBy ? String(req.query.orderBy) : undefined;
+    const order = req.query.order === 'desc' ? 'desc' : req.query.order === 'asc' ? 'asc' : undefined;
     const pageSize = req.query.pageSize ? Number(req.query.pageSize) : undefined;
     const pageToken = req.query.pageToken ? String(req.query.pageToken) : undefined;
-    const result = await repo.listInstances(objectType, { filter, pageSize, pageToken });
+    const result = await repo.listInstances(objectType, { filter, orderBy, order, pageSize, pageToken });
     res.json(result);
   } catch (e: any) {
     res.status(400).json({ error: e.message });
