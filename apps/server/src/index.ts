@@ -1041,8 +1041,13 @@ repo.setPatchValidator(async (objectType, patch) => {
   const issues: Array<{ property: string; value: string; message: string }> = [];
   for (const p of ot.properties ?? []) {
     if (p.derived) continue;
-    if (!(p.apiName in patch)) continue;
     const v = (patch as any)[p.apiName];
+    // 必填校验：针对合并后的完整实例（patch 已包含历史值）
+    if (p.required && (v === undefined || v === null || v === '')) {
+      issues.push({ property: p.apiName, value: '', message: '缺少必填属性' });
+      continue;
+    }
+    if (!(p.apiName in patch)) continue;
     if (v === null || v === undefined) continue;
     const vt = p.valueType ? await getVtForValidation(p.valueType) : null;
     const allowed = p.allowedValues ?? vt?.allowedValues;

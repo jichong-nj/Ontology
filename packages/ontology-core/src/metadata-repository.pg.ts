@@ -582,9 +582,16 @@ export class PostgresMetadataRepository implements MetadataRepository {
   async writeObjectPatch(objectType: string, objectRid: string, patch: unknown, actor: string): Promise<void> {
     // RID 规范化：裸 RID 自动补类型前缀（兼容旧调用方/沙箱函数），保证全局唯一。
     const normRid = ensureRid(objectType, objectRid);
-    // 写入前校验（值类型/枚举约束）；validator 抛错即拒绝写入
+    // 写入前校验：先取现有 patch 做浅合并（与 SQL 的 patch || EXCLUDED.patch 一致），
+    // 再交给 validator 校验完整实例（可判断必填字段）；validator 抛错即拒绝写入。
     if (this.patchValidator) {
-      await this.patchValidator(objectType, (patch ?? {}) as Record<string, unknown>, actor);
+      const { rows } = await this.pool.query(
+        `SELECT patch FROM object_write WHERE object_type=$1 AND object_rid=$2`,
+        [objectType, normRid],
+      );
+      const existing = (rows[0]?.patch ?? {}) as Record<string, unknown>;
+      const merged = { ...existing, ...((patch ?? {}) as Record<string, unknown>) };
+      await this.patchValidator(objectType, merged, actor);
     }
     // 每实例一行：存在则合并 patch（修改单个属性不覆盖其他属性），不存在则插入。
     await this.pool.query(
