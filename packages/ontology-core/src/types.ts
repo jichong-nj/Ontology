@@ -36,6 +36,9 @@ export interface PropertyDef {
   description?: string;                 // 属性语义说明
   allowedValues?: PropertyAllowedValue[]; // 枚举取值（可选）
   valueType?: string;                   // 引用值类型 apiName（可选；约束在写入时校验）
+  unit?: string;                        // 单位（如 小时、元）
+  format?: string;                      // 展示格式（如 date、percent、currency）
+  defaultValue?: unknown;               // 同步时缺失值的默认填充
   derived?: boolean;
   // 派生属性的两种计算方式（二选一）：
   // - reducerFn: 引用一个 OntologyFunction.apiName，由函数引擎计算（推荐，可复用、可沙箱）；

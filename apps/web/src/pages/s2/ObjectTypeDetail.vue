@@ -322,11 +322,17 @@ const semanticTarget = ref<any>(null);
 const semanticDesc = ref('');
 const semanticEnum = ref('');
 const semanticValueType = ref('');
+const semanticUnit = ref('');
+const semanticFormat = ref('');
+const semanticDefault = ref('');
 const valueTypeList = ref<any[]>([]);
 
 async function openSemantic(p: any) {
   semanticTarget.value = p;
   semanticValueType.value = p.valueType || '';
+  semanticUnit.value = p.unit || '';
+  semanticFormat.value = p.format || '';
+  semanticDefault.value = p.defaultValue === undefined || p.defaultValue === null ? '' : String(p.defaultValue);
   try { valueTypeList.value = await valtype.list(); } catch { valueTypeList.value = []; }
   semanticDesc.value = p.description || '';
   semanticEnum.value = (p.allowedValues ?? [])
@@ -349,6 +355,14 @@ function saveSemantic() {
     });
   p.allowedValues = list.length ? list : undefined;
   p.valueType = semanticValueType.value || undefined;
+  p.unit = semanticUnit.value.trim() || undefined;
+  p.format = semanticFormat.value.trim() || undefined;
+  if (semanticDefault.value === '') {
+    p.defaultValue = undefined;
+  } else {
+    const raw = semanticDefault.value;
+    try { p.defaultValue = JSON.parse(raw); } catch { p.defaultValue = raw; }
+  }
   semanticVisible.value = false;
 }
 
@@ -755,6 +769,13 @@ watch(() => route.params.apiName, load);
         <ElFormItem label="说明">
           <ElInput v-model="semanticDesc" type="textarea" :rows="2" placeholder="该属性的业务含义，例如：告警级别" />
         </ElFormItem>
+        <div class="semantic-row">
+          <ElFormItem label="单位" class="grow"><ElInput v-model="semanticUnit" placeholder="如 小时、元" /></ElFormItem>
+          <ElFormItem label="展示格式" class="grow"><ElInput v-model="semanticFormat" placeholder="如 date、percent、currency" /></ElFormItem>
+        </div>
+        <ElFormItem label="默认值（同步时缺失填充；数字/布尔按 JSON 解析）">
+          <ElInput v-model="semanticDefault" placeholder="如 0 / active / true" />
+        </ElFormItem>
         <ElFormItem label="枚举取值（每行：value|label|说明）">
           <ElInput v-model="semanticEnum" type="textarea" :rows="4"
             placeholder="high|高风险|需要立即处理&#10;low|低风险|仅观察" />
@@ -858,6 +879,8 @@ watch(() => route.params.apiName, load);
 }
 .detail-empty { color: var(--text-muted); padding: var(--space-6); }
 
+.semantic-row { display: flex; gap: 8px; }
+.semantic-row .grow { flex: 1; }
 .semantic-hint { font-size: 12px; color: var(--text-muted); margin: 0 0 8px; }
 .edit-grid {
   display: grid;

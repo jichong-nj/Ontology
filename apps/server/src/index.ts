@@ -677,6 +677,13 @@ async function syncObjectInstances(
     for (const p of mapped) {
       patch[p.apiName] = coerceValue(row[p.sourceMapping as string], p.type);
     }
+    // 默认值填充（仅当属性缺失/为空时）
+    for (const p of ot.properties) {
+      if (p.derived) continue;
+      if (p.defaultValue !== undefined && (patch[p.apiName] === undefined || patch[p.apiName] === null)) {
+        patch[p.apiName] = p.defaultValue;
+      }
+    }
     await repo.writeObjectPatch(apiName, `${apiName}:${String(ridVal)}`, patch, 'sync:source');
     written++;
   }
@@ -710,6 +717,10 @@ app.post('/api/s2/object-types/from-draft', async (req, res) => {
         sourceMapping: p.sourceMapping,
         description: p.description,
         allowedValues: Array.isArray(p.allowedValues) ? p.allowedValues : undefined,
+        valueType: p.valueType,
+        unit: p.unit,
+        format: p.format,
+        defaultValue: p.defaultValue,
       })),
       implementsInterfaces: [],
       sourceConnectionId: draft.sourceConnectionId,
