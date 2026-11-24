@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref, reactive, computed, nextTick, watch } from 'vue';
+import { onMounted, ref, reactive, computed, nextTick } from 'vue';
 import { ElCard, ElButton, ElIcon, ElTag, ElMessage, ElDialog, ElForm, ElFormItem, ElInput, ElSwitch, ElSelect, ElOption, ElMessageBox, ElTable, ElTableColumn, ElCollapse, ElCollapseItem } from 'element-plus';
 import { Refresh, Bell, Plus, Edit, Delete, Switch as SwitchIcon } from '@element-plus/icons-vue';
 import { s2, s2functions, s2actions } from '@/api';
+import RuleExpressionBuilder from '@/components/RuleExpressionBuilder.vue';
 import { tryRequest } from '@/utils/error';
 
 interface RuleItem {
@@ -66,29 +67,12 @@ const form = reactive({
   paramsText: '{\n  "threshold": 0.8,\n  "leaveDeduct": 10,\n  "workDeduct": 10,\n  "leaveBase": 1\n}',
 });
 
-// 声明式条件构建器
-const condForm = reactive({
-  kind: 'function' as 'function' | 'property' | 'aggregate' | 'all' | 'any',
-  objectType: '',
-  property: '',
-  aggregation: 'count' as 'count' | 'sum' | 'avg' | 'min' | 'max',
-  operator: 'gt' as 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq',
-  value: '',
-  subs: [] as any[],
-});
-const OPERATORS = [
-  { value: 'gt', label: '>' }, { value: 'gte', label: '>=' },
-  { value: 'lt', label: '<' }, { value: 'lte', label: '<=' },
-  { value: 'eq', label: '=' }, { value: 'neq', label: '!=' },
-];
-const AGGREGATIONS = ['count', 'sum', 'avg', 'min', 'max'];
+// 条件：函数 / 表达式（表达式支持属性/聚合比较与 AND/OR 嵌套）
+const condKind = ref<'function' | 'expression'>('function');
+const expr = ref<any>(null);
 
 function propsOf(apiName: string) {
   return objectTypes.value.find((o) => o.apiName === apiName)?.properties ?? [];
-}
-function propLabel(apiName: string): string {
-  const p = propsOf(condForm.objectType).find((x) => x.apiName === apiName);
-  return p?.displayName ?? apiName;
 }
 function parseCondValue(v: string): unknown {
   const t = (v ?? '').trim();
@@ -97,64 +81,53 @@ function parseCondValue(v: string): unknown {
   if (t === 'true' || t === 'false') return t === 'true';
   return t;
 }
-function fillCondForm(cond?: any) {
-  condForm.subs = [];
-  if (!cond) {
-    Object.assign(condForm, { kind: 'function', objectType: objectTypes.value[0]?.apiName ?? '', property: '', aggregation: 'count', operator: 'gt', value: '' });
-    return;
-  }
-  Object.assign(condForm, {
-    kind: cond.kind ?? 'function',
-    objectType: cond.objectType ?? objectTypes.value[0]?.apiName ?? '',
-    property: cond.property ?? '',
-    aggregation: cond.aggregation ?? 'count',
-    operator: cond.operator ?? 'gt',
-    value: cond.value === undefined || cond.value === null ? '' : String(cond.value),
-  });
-  if (cond.kind === 'all' || cond.kind === 'any') {
-    condForm.subs = cond.conditions.map((c: any) => ({
-      kind: c.kind === 'aggregate' ? 'aggregate' : 'property',
-      objectType: c.objectType ?? objectTypes.value[0]?.apiName ?? '',
-      property: c.property ?? '',
-      aggregation: c.aggregation ?? 'count',
-      operator: c.operator ?? 'gt',
-      value: c.value === undefined || c.value === null ? '' : String(c.value),
-    }));
+function fillCondition(cond?: any) {
+  if (cond && ['property', 'aggregate', 'all', 'any'].includes(cond.kind)) {
+    condKind.value = 'expression';
+    expr.value = cond;
+  } else {
+    condKind.value = 'function';
+    expr.value = null;
   }
 }
-watch(() => condForm.kind, (kind) => {
-  if ((kind === 'property' || kind === 'aggregate') && !condForm.objectType) {
-    condForm.objectType = objectTypes.value[0]?.apiName ?? '';
+function normalizeNode(n: any): any {
+  if (!n) return n;
+  if (n.kind === 'all' || n.kind === 'any') {
+    return { kind: n.kind, conditions: (n.conditions ?? []).map(normalizeNode) };
   }
-});
+  if (n.kind === 'aggregate') {
+    const aggregation = n.aggregation ?? 'count';
+    return {
+      kind: 'aggregate', objectType: n.objectType, aggregation,
+      ...(aggregation !== 'count' && n.property ? { property: n.property } : {}),
+      operator: n.operator ?? 'gt', value: Number(n.value),
+    };
+  }
+  return { kind: 'property', objectType: n.objectType, property: n.property, operator: n.operator ?? 'gt', value: parseCondValue(String(n.value ?? '')) };
+}
+function conditionPayload(): any {
+  return condKind.value === 'expression' ? normalizeNode(expr.value) : null;
+}
+function exprPropNode(): { objectType: string; property: string } | null {
+  const walk = (n: any): any => {
+    if (!n) return null;
+    if (n.kind === 'property' && n.property) return n;
+    if (n.kind === 'all' || n.kind === 'any') {
+      for (const c of n.conditions ?? []) {
+        const r = walk(c);
+        if (r) return r;
+      }
+    }
+    return null;
+  };
+  return walk(expr.value);
+}
+function exprPropLabel(): string {
+  const n = exprPropNode();
+  if (!n) return '';
+  return propsOf(n.objectType).find((p) => p.apiName === n.property)?.displayName ?? n.property;
+}
 
-function addSubCondition() {
-  condForm.subs.push({ kind: 'property', objectType: condForm.objectType || objectTypes.value[0]?.apiName || '', property: '', aggregation: 'count', operator: 'gt', value: '' });
-}
-function buildSubCondition(s: any): any {
-  if (s.kind === 'aggregate') {
-    return {
-      kind: 'aggregate', objectType: s.objectType, aggregation: s.aggregation,
-      ...(s.aggregation !== 'count' ? { property: s.property } : {}),
-      operator: s.operator, value: Number(s.value),
-    };
-  }
-  return { kind: 'property', objectType: s.objectType, property: s.property, operator: s.operator, value: parseCondValue(s.value) };
-}
-function buildCondition(): any {
-  if (condForm.kind === 'function') return undefined;
-  if (condForm.kind === 'property') {
-    return { kind: 'property', objectType: condForm.objectType, property: condForm.property, operator: condForm.operator, value: parseCondValue(condForm.value) };
-  }
-  if (condForm.kind === 'aggregate') {
-    return {
-      kind: 'aggregate', objectType: condForm.objectType, aggregation: condForm.aggregation,
-      ...(condForm.aggregation !== 'count' ? { property: condForm.property } : {}),
-      operator: condForm.operator, value: Number(condForm.value),
-    };
-  }
-  return { kind: condForm.kind, conditions: condForm.subs.map(buildSubCondition) };
-}
 const paramsForm = reactive<Record<string, string>>({}); // 表单视图：键=input.name, 值=字符串
 const showJson = ref(false); // 是否展开高级 JSON 编辑
 const paramsError = ref('');
@@ -242,7 +215,7 @@ function openCreate() {
     targetObjectType: 'Alert',
     paramsText: '{\n  "threshold": 0.8\n}',
   });
-  fillCondForm(undefined);
+  fillCondition(undefined);
   paramsError.value = '';
   dialogVisible.value = true;
   syncFormFromParams(); // 用所选函数(inputs)与默认 params 初始化结构化表单
@@ -262,7 +235,7 @@ async function openEdit(rule: RuleItem) {
     targetObjectType: rule.targetObjectType,
     paramsText: JSON.stringify(rule.params ?? {}, null, 2),
   });
-  fillCondForm(rule.condition);
+  fillCondition(rule.condition);
   paramsError.value = '';
   dialogVisible.value = true;
   syncFormFromParams(); // 用规则已存 params 回填结构化表单
@@ -282,10 +255,8 @@ async function save() {
   }
   if (paramsError.value) return;
   if (!form.apiName.trim()) { paramsError.value = '规则名(apiName)必填'; return; }
-  if (condForm.kind === 'function' && !form.conditionFunction) { paramsError.value = '请选择条件函数'; return; }
-  if (condForm.kind === 'property' && (!condForm.objectType || !condForm.property)) { paramsError.value = '属性条件需选择对象类型与属性'; return; }
-  if (condForm.kind === 'aggregate' && (!condForm.objectType || (condForm.aggregation !== 'count' && !condForm.property))) { paramsError.value = '聚合条件需选择对象类型与属性'; return; }
-  if ((condForm.kind === 'all' || condForm.kind === 'any') && condForm.subs.length === 0) { paramsError.value = '组合条件至少需要一个子条件'; return; }
+  if (condKind.value === 'function' && !form.conditionFunction) { paramsError.value = '请选择条件函数'; return; }
+  if (condKind.value === 'expression' && !expr.value) { paramsError.value = '请配置表达式条件'; return; }
   if (!form.actionApiName) { paramsError.value = '请选择落地动作'; return; }
 
   const trigger =
@@ -300,8 +271,8 @@ async function save() {
         displayName: form.displayName,
         enabled: form.enabled,
         trigger,
-        condition: condForm.kind === 'function' ? null : buildCondition(),
-        ...(condForm.kind === 'function' ? { conditionFunction: form.conditionFunction } : { conditionFunction: null }),
+        condition: conditionPayload(),
+        ...(condKind.value === 'function' ? { conditionFunction: form.conditionFunction } : { conditionFunction: null }),
         actionApiName: form.actionApiName,
         targetObjectType: form.targetObjectType,
         params,
@@ -313,9 +284,9 @@ async function save() {
         displayName: form.displayName || form.apiName.trim(),
         enabled: form.enabled,
         trigger,
-        ...(condForm.kind === 'function'
+        ...(condKind.value === 'function'
           ? { conditionFunction: form.conditionFunction }
-          : { condition: buildCondition() }),
+          : { condition: conditionPayload() }),
         actionApiName: form.actionApiName,
         targetObjectType: form.targetObjectType,
         params,
@@ -337,14 +308,14 @@ async function previewRule() {
   previewing.value = true;
   previewResult.value = null;
   await tryRequest(async () => {
-    if (condForm.kind === 'function') {
+    if (condKind.value === 'function') {
       if (!form.conditionFunction) { ElMessage.warning('请先选择条件函数'); return; }
       const res = await s2functions.invoke(form.conditionFunction, params);
       const result = (res as any).result ?? res;
       const flagged = Array.isArray(result?.flagged) ? result.flagged : [];
       previewResult.value = { count: flagged.length, items: flagged.slice(0, 20) };
     } else {
-      const res = await s2.previewRuleCondition(buildCondition(), params);
+      const res = await s2.previewRuleCondition(conditionPayload(), params);
       previewResult.value = { count: res.count, items: res.items ?? [] };
     }
     await nextTick();
@@ -445,15 +416,12 @@ onMounted(load);
           <div class="hint">当该对象类型发生写入(object_write)时，触发规则条件评估。</div>
         </ElFormItem>
         <ElFormItem label="条件类型">
-          <ElRadioGroup v-model="condForm.kind">
+          <ElRadioGroup v-model="condKind">
             <ElRadioButton value="function">函数</ElRadioButton>
-            <ElRadioButton value="property">属性比较</ElRadioButton>
-            <ElRadioButton value="aggregate">聚合阈值</ElRadioButton>
-            <ElRadioButton value="all">全部满足</ElRadioButton>
-            <ElRadioButton value="any">任一满足</ElRadioButton>
+            <ElRadioButton value="expression">表达式</ElRadioButton>
           </ElRadioGroup>
         </ElFormItem>
-        <ElFormItem v-if="condForm.kind === 'function'" label="条件函数" required>
+        <ElFormItem v-if="condKind === 'function'" label="条件函数" required>
           <ElSelect v-model="form.conditionFunction" placeholder="选择评估函数" style="width:100%" @change="syncFormFromParams">
             <ElOption v-for="f in functions" :key="f.apiName" :label="`${f.displayName} (${f.apiName})`" :value="f.apiName" />
           </ElSelect>
@@ -461,69 +429,8 @@ onMounted(load);
             {{ functions.find(f=>f.apiName===form.conditionFunction)?.description }}
           </div>
         </ElFormItem>
-        <template v-else-if="condForm.kind === 'property'">
-          <ElFormItem label="对象类型" required>
-            <ElSelect v-model="condForm.objectType" style="width:100%" @change="condForm.property = ''">
-              <ElOption v-for="o in objectTypes" :key="o.apiName" :label="`${o.displayName} (${o.apiName})`" :value="o.apiName" />
-            </ElSelect>
-          </ElFormItem>
-          <ElFormItem label="属性" required>
-            <ElSelect v-model="condForm.property" filterable placeholder="选择属性" style="width:100%">
-              <ElOption v-for="p in propsOf(condForm.objectType)" :key="p.apiName" :label="`${p.displayName} (${p.apiName})`" :value="p.apiName" />
-            </ElSelect>
-          </ElFormItem>
-          <ElFormItem label="条件" required>
-            <ElSelect v-model="condForm.operator" style="width: 120px">
-              <ElOption v-for="op in OPERATORS" :key="op.value" :label="op.label" :value="op.value" />
-            </ElSelect>
-            <ElInput v-model="condForm.value" placeholder="比较值（数字或文本）" style="width: 240px; margin-left: 8px" />
-          </ElFormItem>
-        </template>
-        <template v-else-if="condForm.kind === 'aggregate'">
-          <ElFormItem label="对象类型" required>
-            <ElSelect v-model="condForm.objectType" style="width:100%" @change="condForm.property = ''">
-              <ElOption v-for="o in objectTypes" :key="o.apiName" :label="`${o.displayName} (${o.apiName})`" :value="o.apiName" />
-            </ElSelect>
-          </ElFormItem>
-          <ElFormItem label="聚合" required>
-            <ElSelect v-model="condForm.aggregation" style="width: 120px">
-              <ElOption v-for="a in AGGREGATIONS" :key="a" :label="a" :value="a" />
-            </ElSelect>
-            <ElSelect v-if="condForm.aggregation !== 'count'" v-model="condForm.property" filterable placeholder="属性" style="width: 220px; margin-left: 8px">
-              <ElOption v-for="p in propsOf(condForm.objectType)" :key="p.apiName" :label="`${p.displayName} (${p.apiName})`" :value="p.apiName" />
-            </ElSelect>
-          </ElFormItem>
-          <ElFormItem label="阈值" required>
-            <ElSelect v-model="condForm.operator" style="width: 120px">
-              <ElOption v-for="op in OPERATORS" :key="op.value" :label="op.label" :value="op.value" />
-            </ElSelect>
-            <ElInput v-model="condForm.value" type="number" placeholder="阈值" style="width: 180px; margin-left: 8px" />
-          </ElFormItem>
-        </template>
-        <ElFormItem v-else :label="condForm.kind === 'all' ? '全部满足' : '任一满足'">
-          <div style="width: 100%">
-            <div v-for="(sub, i) in condForm.subs" :key="i" class="sub-cond">
-              <ElSelect v-model="sub.kind" style="width: 96px">
-                <ElOption label="属性" value="property" />
-                <ElOption label="聚合" value="aggregate" />
-              </ElSelect>
-              <ElSelect v-model="sub.objectType" style="width: 150px" @change="sub.property = ''">
-                <ElOption v-for="o in objectTypes" :key="o.apiName" :label="`${o.displayName} (${o.apiName})`" :value="o.apiName" />
-              </ElSelect>
-              <ElSelect v-if="sub.kind === 'aggregate'" v-model="sub.aggregation" style="width: 96px">
-                <ElOption v-for="a in AGGREGATIONS" :key="a" :label="a" :value="a" />
-              </ElSelect>
-              <ElSelect v-if="sub.kind === 'property' || sub.aggregation !== 'count'" v-model="sub.property" filterable placeholder="属性" style="width: 150px">
-                <ElOption v-for="p in propsOf(sub.objectType)" :key="p.apiName" :label="`${p.displayName} (${p.apiName})`" :value="p.apiName" />
-              </ElSelect>
-              <ElSelect v-model="sub.operator" style="width: 80px">
-                <ElOption v-for="op in OPERATORS" :key="op.value" :label="op.label" :value="op.value" />
-              </ElSelect>
-              <ElInput v-model="sub.value" placeholder="值" style="width: 100px" />
-              <ElButton text type="danger" @click="condForm.subs.splice(i, 1)">删除</ElButton>
-            </div>
-            <ElButton size="small" @click="addSubCondition">+ 子条件</ElButton>
-          </div>
+        <ElFormItem v-else label="表达式">
+          <RuleExpressionBuilder v-model="expr" :object-types="objectTypes" />
         </ElFormItem>
         <ElFormItem label="落地动作" required>
           <ElSelect v-model="form.actionApiName" placeholder="选择生成告警的动作" style="width:100%">
@@ -542,7 +449,7 @@ onMounted(load);
         </ElFormItem>
 
         <!-- 条件参数：可视化结构化表单（仅函数条件需要） -->
-        <ElFormItem v-if="condForm.kind === 'function'" label="条件参数">
+        <ElFormItem v-if="condKind === 'function'" label="条件参数">
           <div class="params-wrap">
             <div v-if="selectedFnInputs.length === 0" class="hint">该函数无需参数。</div>
             <div v-else class="param-grid">
@@ -563,11 +470,11 @@ onMounted(load);
           <div style="width: 100%">
             <div class="param-actions">
               <ElButton size="small" :loading="previewing" @click="previewRule">预览命中对象</ElButton>
-              <ElButton v-if="condForm.kind === 'function'" size="small" link type="primary" @click="showJson = !showJson">
+              <ElButton v-if="condKind === 'function'" size="small" link type="primary" @click="showJson = !showJson">
                 {{ showJson ? '收起高级' : '高级(JSON)' }}
               </ElButton>
             </div>
-            <div v-if="showJson && condForm.kind === 'function'">
+            <div v-if="showJson && condKind === 'function'">
               <ElInput v-model="form.paramsText" type="textarea" :rows="6" placeholder='JSON 对象，如 {"threshold":0.8}' @input="syncFormFromParams" />
               <div class="hint">高级：直接编辑参数 JSON。与上方表单双向同步。</div>
             </div>
@@ -587,8 +494,8 @@ onMounted(load);
             <ElTableColumn label="级别" width="90">
               <template #default="{ row }">{{ row.level ?? '—' }}</template>
             </ElTableColumn>
-            <ElTableColumn v-if="condForm.kind === 'property' && condForm.property" :label="propLabel(condForm.property)" width="120">
-              <template #default="{ row }">{{ row[condForm.property] ?? '—' }}</template>
+            <ElTableColumn v-if="exprPropNode()" :label="exprPropLabel()" width="120">
+              <template #default="{ row }">{{ row[exprPropNode()!.property] ?? '—' }}</template>
             </ElTableColumn>
             <ElTableColumn v-if="previewHasField(['leaveDays', 'annualLeaveDays'])" label="请假天数" width="100">
               <template #default="{ row }">{{ row.leaveDays ?? row.annualLeaveDays ?? '—' }}</template>
