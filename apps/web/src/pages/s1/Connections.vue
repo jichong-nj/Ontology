@@ -215,7 +215,7 @@ async function submit() {
     connectionMeta: meta,
     secretRef: form.secretRef || `secret://${form.displayName}`,
     // 状态：刚测过且成功 → connected；否则保持（编辑时沿用旧值）/ pending
-    status: testResult?.ok
+    status: testResult.value?.ok
       ? 'connected'
       : (isEdit.value ? (conns.value.find((c) => c.id === editingId.value)?.status ?? 'pending') : 'pending'),
     icon: form.icon,

@@ -103,6 +103,7 @@ export function parseDerivedSpec(reducer?: string): DerivedSpec | null {
 export type PatchValidator = (objectType: string, patch: Record<string, unknown>, actor: string) => void | Promise<void>;
 
 export interface ObjectType {
+  icon?: string;           // 展示图标（可选，非持久化字段）
   apiName: string;         // 全局唯一、不可变
   displayName: string;
   description?: string;

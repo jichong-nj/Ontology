@@ -18,8 +18,8 @@ export default defineConfig({
         changeOrigin: true,
         // 关键：禁用 http-proxy 对响应的缓冲，否则 SSE 流会被攒齐后一次性转发到前端
         buffer: false,
-        configure: (proxy) => {
-          proxy.on('proxyRes', (proxyRes) => {
+        configure: (proxy: any) => {
+          proxy.on('proxyRes', (proxyRes: any) => {
             const contentType = proxyRes.headers['content-type'] || '';
             if (contentType.includes('text/event-stream')) {
               proxyRes.headers['cache-control'] = 'no-cache, no-transform';
@@ -28,7 +28,7 @@ export default defineConfig({
             }
           });
         },
-      },
+      } as any,
     },
   },
 });

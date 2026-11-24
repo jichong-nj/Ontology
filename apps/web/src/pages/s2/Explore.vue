@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox, ElButton, ElInput, ElTable, ElTableColumn, ElTag, ElCard, ElEmpty, ElBreadcrumb, ElBreadcrumbItem, ElTooltip, ElIcon, ElDescriptions, ElDescriptionsItem, ElDivider, ElSelect, ElOption, ElLoadingDirective as vLoading } from 'element-plus';
 import { ArrowLeft, Search, Link, InfoFilled } from '@element-plus/icons-vue';
 import { s2, s2link, s2explore, type ObjectLink } from '@/api';
-import type { ObjectType, LinkType, PropertyDef } from '@/api';
+import type { ObjectType, LinkType } from '@/api';
 import { tryRequest } from '@/utils/error';
 import PropertyChartCard from './PropertyChartCard.vue';
 
@@ -75,7 +75,7 @@ function updateChartKind(apiName: string, kind: ChartItem['kind']) {
   }
 }
 
-function getPropDef(apiName: string): PropertyDef | undefined {
+function getPropDef(apiName: string): any {
   return currentObjectType.value?.properties.find((p) => p.apiName === apiName);
 }
 
@@ -440,7 +440,7 @@ const graphEdges = computed(() => {
                   :key="p.apiName"
                   :label="`${p.displayName || p.apiName} (${p.apiName})`"
                   :value="p.apiName"
-                  :disabled="charts.includes(p.apiName)"
+                  :disabled="charts.some((c) => c.apiName === p.apiName)"
                 />
               </ElSelect>
               <span class="chart-canvas-hint">添加属性后，下方展示该属性的分布图表（数值→直方图，其它→计数条形图）</span>

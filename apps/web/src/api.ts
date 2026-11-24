@@ -178,6 +178,7 @@ export interface ChildTableMapping {
   aggregations: ChildAggregation[];
 }
 export interface ObjectType {
+  icon?: string;
   apiName: string;
   displayName: string;
   description?: string;
@@ -236,8 +237,9 @@ import type {
   ActionEffect,
   ActionPrecondition,
   ActionType,
+  PropertyDef,
 } from '@ontology/ontology-core';
-export type { ActionParameter, ActionEffect, ActionPrecondition, ActionType };
+export type { ActionParameter, ActionEffect, ActionPrecondition, ActionType, PropertyDef };
 
 export const s2 = {
   listObjectTypes: () => http.get<ObjectType[]>('/s2/object-types').then((r) => r.data),

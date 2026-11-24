@@ -174,8 +174,10 @@
 import { ref, reactive, onMounted, nextTick, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
+import { useRouter } from 'vue-router';
 import { aip as api, s2, AIPAgentConfigDTO, AIPConversationDTO, AIPMessageDTO } from '../api';
 
+const router = useRouter();
 const md = new MarkdownIt({ html: false, linkify: true, breaks: false });
 function renderMd(s: string): string {
   return md.render(s ?? '');
@@ -216,6 +218,10 @@ async function loadAgents() {
   }
   await loadConfig();
   await loadConversations();
+}
+
+function openConfig() {
+  router.push('/aip/agents');
 }
 
 async function loadConfig() {
@@ -383,7 +389,7 @@ async function send() {
   await nextTick();
   scrollDown();
 
-  const aiMsg = reactive({ role: 'ai' as const, content: '', timeline: [] as any[], curThink: '' });
+  const aiMsg = reactive({ role: 'ai' as const, content: '', timeline: [] as any[], curThink: '', draft: undefined as any, stopped: false });
   messages.value.push(aiMsg);
   streaming.value = true;
 
@@ -487,9 +493,10 @@ function pretty(v: unknown): string {
 }
 
 // 计算当前时间线条目之前共有几次思考，用于「思考 N」序号
-function thinkIndex(timeline: any[], cur: number): number {
+function thinkIndex(timeline: any[] | undefined, cur: number): number {
+  const list = timeline ?? [];
   let n = 0;
-  for (let k = 0; k <= cur; k++) if (timeline[k]?.kind === 'thought') n++;
+  for (let k = 0; k <= cur; k++) if (list[k]?.kind === 'thought') n++;
   return n;
 }
 
