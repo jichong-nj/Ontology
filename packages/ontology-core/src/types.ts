@@ -22,11 +22,19 @@ export interface InstanceQuery {
   pageToken?: string;   // 上一页 nextPageToken（按 object_rid 游标）
 }
 
+export interface PropertyAllowedValue {
+  value: string;          // 实际存储值（如 'high'）
+  label?: string;         // 展示名（如 '高风险'）
+  description?: string;   // 该取值的含义
+}
+
 export interface PropertyDef {
   apiName: string;
   displayName: string;
   type: PropertyType;
   required: boolean;
+  description?: string;                 // 属性语义说明
+  allowedValues?: PropertyAllowedValue[]; // 枚举取值（可选；P0 仅元数据，不强制校验）
   derived?: boolean;
   // 派生属性的两种计算方式（二选一）：
   // - reducerFn: 引用一个 OntologyFunction.apiName，由函数引擎计算（推荐，可复用、可沙箱）；

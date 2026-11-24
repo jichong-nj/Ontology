@@ -316,6 +316,37 @@ async function removeProp(i: number) {
   }
 }
 
+// 属性语义（说明 + 枚举取值）编辑
+const semanticVisible = ref(false);
+const semanticTarget = ref<any>(null);
+const semanticDesc = ref('');
+const semanticEnum = ref('');
+
+function openSemantic(p: any) {
+  semanticTarget.value = p;
+  semanticDesc.value = p.description || '';
+  semanticEnum.value = (p.allowedValues ?? [])
+    .map((v: any) => [v.value, v.label ?? '', v.description ?? ''].join('|'))
+    .join('\n');
+  semanticVisible.value = true;
+}
+
+function saveSemantic() {
+  const p = semanticTarget.value;
+  if (!p) return;
+  p.description = semanticDesc.value.trim() || undefined;
+  const list = semanticEnum.value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [value, label, description] = line.split('|').map((x) => x.trim());
+      return { value, ...(label ? { label } : {}), ...(description ? { description } : {}) };
+    });
+  p.allowedValues = list.length ? list : undefined;
+  semanticVisible.value = false;
+}
+
 async function saveEdit() {
   if (!obj.value) return;
   saving.value = true;
@@ -523,6 +554,7 @@ watch(() => route.params.apiName, load);
             <ElSwitch v-model="p.required" style="--el-switch-on-color: #67c23a" :disabled="!!p.sharedRef && !p.overridden" title="是否必填" />
           </div>
           <div class="wizard-prop-row__ops">
+            <ElButton text @click="openSemantic(p)" title="编辑说明与枚举取值">语义</ElButton>
             <ElButton text type="danger" @click="removeProp(editForm.properties.indexOf(p))" title="移除该属性">
               <ElIcon><Delete /></ElIcon>
             </ElButton>
@@ -705,6 +737,24 @@ watch(() => route.params.apiName, load);
       </template>
     </ElDialog>
   </div>
+
+    <!-- 属性语义（说明 + 枚举取值）编辑 -->
+    <ElDialog v-model="semanticVisible" title="属性语义" width="520px">
+      <p class="semantic-hint">属性：<span class="mono">{{ semanticTarget?.apiName }}</span>（保存对象类型后生效）</p>
+      <ElForm label-position="top">
+        <ElFormItem label="说明">
+          <ElInput v-model="semanticDesc" type="textarea" :rows="2" placeholder="该属性的业务含义，例如：告警级别" />
+        </ElFormItem>
+        <ElFormItem label="枚举取值（每行：value|label|说明）">
+          <ElInput v-model="semanticEnum" type="textarea" :rows="4"
+            placeholder="high|高风险|需要立即处理&#10;low|低风险|仅观察" />
+        </ElFormItem>
+      </ElForm>
+      <template #footer>
+        <ElButton @click="semanticVisible = false">取消</ElButton>
+        <ElButton type="primary" @click="saveSemantic">确定</ElButton>
+      </template>
+    </ElDialog>
 </template>
 
 <style scoped>
@@ -798,6 +848,7 @@ watch(() => route.params.apiName, load);
 }
 .detail-empty { color: var(--text-muted); padding: var(--space-6); }
 
+.semantic-hint { font-size: 12px; color: var(--text-muted); margin: 0 0 8px; }
 .edit-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

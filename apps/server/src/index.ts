@@ -703,6 +703,8 @@ app.post('/api/s2/object-types/from-draft', async (req, res) => {
         type: p.type ?? 'string',
         required: !!p.required,
         sourceMapping: p.sourceMapping,
+        description: p.description,
+        allowedValues: Array.isArray(p.allowedValues) ? p.allowedValues : undefined,
       })),
       implementsInterfaces: [],
       sourceConnectionId: draft.sourceConnectionId,
@@ -2043,6 +2045,8 @@ const MODELING_PROMPT = `
 \`\`\`
    - type 只能是 string/integer/float/boolean/date/timestamp；
    - apiName 用 PascalCase，属性 apiName 用 camelCase，displayName 用中文；
+   - 枚举型字段（status/level/type 等）请给属性加 description 与 allowedValues：
+     allowedValues=[{value:'high',label:'高风险',description:'…'}]，便于规则/动作与 AI 对齐取值；
    - sourceMapping 必须填源表真实列名。
 5. 最后告知用户："确认后点击下方「确认创建」将创建对象类型并同步实例。"然后停止，
    不要自行创建、不要调用其他写操作。
