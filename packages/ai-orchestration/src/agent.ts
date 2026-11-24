@@ -401,6 +401,25 @@ function allToolSpecs(): ToolSpec[] {
                 unit: { type: 'string', description: '单位，如 小时/元' },
                 format: { type: 'string', description: '展示格式，如 date/percent/currency' },
                 defaultValue: { description: '同步时缺失值的默认填充' },
+                derivation: {
+                  type: 'object',
+                  description:
+                    '派生口径：{kind: linkAggregation|expression|function, function?, args?, resultNote?, ' +
+                    'linkType?, direction?, targetProperty?, aggregation?, expression?}。' +
+                    'function 模式必须引用已存在的函数；resultNote 写口径边界（如"仅统计 approved"）。',
+                  properties: {
+                    kind: { type: 'string', enum: ['linkAggregation', 'expression', 'function'] },
+                    function: { type: 'string', description: '函数 apiName（kind=function）' },
+                    args: { type: 'object', description: '参数绑定，如 {orgId:"$id"}' },
+                    resultNote: { type: 'string', description: '口径说明/过滤边界' },
+                    linkType: { type: 'string' },
+                    direction: { type: 'string', enum: ['source', 'target'] },
+                    targetProperty: { type: 'string' },
+                    aggregation: { type: 'string', enum: ['count', 'countDistinct', 'avg', 'sum', 'min', 'max', 'collect'] },
+                    expression: { type: 'string' },
+                  },
+                  required: ['kind'],
+                },
               },
               required: ['apiName', 'displayName', 'type'],
             },

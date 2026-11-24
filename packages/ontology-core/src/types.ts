@@ -22,6 +22,23 @@ export interface InstanceQuery {
   pageToken?: string;   // 上一页 nextPageToken（按 object_rid 游标）
 }
 
+// 派生属性的口径定义（值语义在 PropertyDef，算法语义在函数，绑定语义在这里）
+export interface PropertyDerivation {
+  kind: 'linkAggregation' | 'expression' | 'function';
+  // function 模式
+  function?: string;                    // 引用的函数 apiName
+  args?: Record<string, unknown>;       // 参数绑定（如 { orgId: '$id' }）
+  // linkAggregation 模式
+  linkType?: string;
+  direction?: 'source' | 'target';
+  targetProperty?: string;
+  aggregation?: 'count' | 'countDistinct' | 'avg' | 'sum' | 'min' | 'max' | 'collect';
+  // expression 模式
+  expression?: string;
+  // 口径说明（这次计算按什么边界/过滤条件）
+  resultNote?: string;
+}
+
 export interface PropertyAllowedValue {
   value: string;          // 实际存储值（如 'high'）
   label?: string;         // 展示名（如 '高风险'）
@@ -39,6 +56,7 @@ export interface PropertyDef {
   unit?: string;                        // 单位（如 小时、元）
   format?: string;                      // 展示格式（如 date、percent、currency）
   defaultValue?: unknown;               // 同步时缺失值的默认填充
+  derivation?: PropertyDerivation;      // 派生属性口径（function/linkAggregation/expression）
   derived?: boolean;
   // 派生属性的两种计算方式（二选一）：
   // - reducerFn: 引用一个 OntologyFunction.apiName，由函数引擎计算（推荐，可复用、可沙箱）；
@@ -100,7 +118,7 @@ export function parseDerivedSpec(reducer?: string): DerivedSpec | null {
 }
 
 // 写入 patch 的校验钩子（由 server 注入；可抛出异常拒绝写入）
-export type PatchValidator = (objectType: string, patch: Record<string, unknown>, actor: string) => void | Promise<void>;
+export type PatchValidator = (objectType: string, patch: Record<string, unknown>, actor: string, delta?: Record<string, unknown>) => void | Promise<void>;
 
 export interface ObjectType {
   icon?: string;           // 展示图标（可选，非持久化字段）

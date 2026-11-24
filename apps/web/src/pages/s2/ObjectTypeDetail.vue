@@ -366,6 +366,48 @@ function saveSemantic() {
   semanticVisible.value = false;
 }
 
+// 由结构化算子/函数引用生成派生口径（保留已有 resultNote/args）
+function buildDerivation(p: any): any {
+  const prev = p.derivation ?? {};
+  if (p.reducerFn) return { ...prev, kind: 'function', function: p.reducerFn };
+  if (p.reducer) {
+    try {
+      const spec = JSON.parse(p.reducer);
+      const aggMap: Record<string, string | undefined> = {
+        countLinks: spec.distinct ? 'countDistinct' : 'count',
+        avgLinks: 'avg', sumLinks: 'sum', minLinks: 'min', maxLinks: 'max', collectLinks: 'collect',
+      };
+      return {
+        ...prev,
+        kind: 'linkAggregation',
+        linkType: spec.linkType ?? prev.linkType,
+        direction: spec.side ?? prev.direction,
+        targetProperty: spec.prop ?? prev.targetProperty,
+        aggregation: aggMap[spec.op] ?? prev.aggregation,
+      };
+    } catch { return prev; }
+  }
+  return prev;
+}
+
+function setDerivation(p: any, patch: any) {
+  p.derivation = { ...(p.derivation ?? { kind: p.reducerFn ? 'function' : 'linkAggregation' }), ...patch };
+}
+
+function derivedArgsText(p: any): string {
+  const args = p.derivation?.args;
+  return args && Object.keys(args).length ? JSON.stringify(args) : '';
+}
+
+function setDerivedArgs(p: any, v: string) {
+  try {
+    const args = v.trim() ? JSON.parse(v) : {};
+    setDerivation(p, { args });
+  } catch {
+    ElMessage.warning('绑定参数需为合法 JSON，例如 {"orgId":"$id"}');
+  }
+}
+
 async function saveEdit() {
   if (!obj.value) return;
   saving.value = true;
@@ -377,12 +419,22 @@ async function saveEdit() {
       sourceConnectionId: editForm.sourceConnectionId || undefined,
       sourceTable: editForm.sourceTable || undefined,
       titleProperty: editForm.titleProperty || undefined,
-      properties: editForm.properties.map((p) => ({
-        apiName: p.apiName, displayName: p.displayName, type: p.type,
-        required: !!p.required,
-        ...(p.derived ? { derived: true, reducer: p.reducer } : {}),
-        ...(p.sharedRef ? { sharedRef: p.sharedRef, overridden: !!p.overridden } : {}),
-      })),
+      properties: editForm.properties.map((p: any) => {
+        // 保留全部语义字段（description/allowedValues/valueType/unit/format/defaultValue/derivation），
+        // 只做必要的规范化；避免编辑后丢失元数据。
+        const prop: any = { ...p };
+        delete prop.derivationSummary;
+        prop.required = !!prop.required;
+        if (prop.derived) {
+          prop.derived = true;
+          prop.derivation = buildDerivation(p);
+        } else {
+          delete prop.reducer;
+          delete prop.reducerFn;
+          delete prop.derivation;
+        }
+        return prop;
+      }),
       childTableMappings: editForm.childTableMappings.length
         ? editForm.childTableMappings.map((m) => ({
             table: m.table, parentKey: m.parentKey,
@@ -687,8 +739,16 @@ watch(() => route.params.apiName, load);
                   <span class="derived-label">函数说明</span>
                   <span class="derived-fn-desc">{{ functions.find(f=>f.apiName===derivedReducerFn(p))?.description || '（该函数暂无说明）' }}</span>
                 </div>
+                <div class="derived-row">
+                  <span class="derived-label">绑定参数</span>
+                  <ElInput :model-value="derivedArgsText(p)" placeholder='JSON，如 {"orgId":"$id"}' style="flex:1" @change="(v:string)=>setDerivedArgs(p,v)" />
+                </div>
               </template>
 
+              <div class="derived-row">
+                <span class="derived-label">口径说明</span>
+                <ElInput :model-value="p.derivation?.resultNote ?? ''" placeholder="例如：仅统计 status=active，不含下级组织" style="flex:1" @update:model-value="(v:string)=>setDerivation(p,{resultNote:v})" />
+              </div>
               <div class="derived-card__footer">
                 <ElCheckbox v-model="p.derived" @change="(v:any)=>onToggleDerived(p, !!v)">保持为派生属性</ElCheckbox>
                 <div class="derived-card__footer-ops">

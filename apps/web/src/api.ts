@@ -129,6 +129,7 @@ export interface OntologyProperty {
   // 共享属性引用
   sharedRef?: string;          // 引用 SharedProperty.apiName
   overridden?: boolean;        // 本地覆盖共享基准
+  derivation?: any;            // 派生口径（function/linkAggregation/expression）
 }
 
 export interface SharedProperty {

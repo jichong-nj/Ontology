@@ -605,7 +605,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       );
       const existing = (rows[0]?.patch ?? {}) as Record<string, unknown>;
       const merged = { ...existing, ...((patch ?? {}) as Record<string, unknown>) };
-      await this.patchValidator(objectType, merged, actor);
+      await this.patchValidator(objectType, merged, actor, (patch ?? {}) as Record<string, unknown>);
     }
     // 每实例一行：存在则合并 patch（修改单个属性不覆盖其他属性），不存在则插入。
     await this.pool.query(

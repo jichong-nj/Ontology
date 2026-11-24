@@ -1033,13 +1033,19 @@ async function validateActionParams(action: any, args: Record<string, unknown>) 
   return issues;
 }
 
-repo.setPatchValidator(async (objectType, patch) => {
+repo.setPatchValidator(async (objectType, patch, _actor, delta) => {
   if (WRITE_VALIDATION === 'off') return;
   const ot = await getOtForValidation(objectType);
   if (!ot) return;
   const issues: Array<{ property: string; value: string; message: string }> = [];
   for (const p of ot.properties ?? []) {
-    if (p.derived) continue;
+    // 派生属性只读：由计算产生，不允许通过写入覆盖（先于派生跳过判断）
+    if (p.derived) {
+      if (delta && (p.apiName in delta)) {
+        issues.push({ property: p.apiName, value: JSON.stringify((delta as any)[p.apiName]), message: '派生属性不可写（由计算产生）' });
+      }
+      continue;
+    }
     const v = (patch as any)[p.apiName];
     // 必填校验：针对合并后的完整实例（patch 已包含历史值）
     if (p.required && (v === undefined || v === null || v === '')) {
@@ -1358,6 +1364,24 @@ app.get('/api/s2/explore/:objectType/histogram', async (req, res) => {
 
 // ---------- AIP 配置平台：Provider / Model / Agent 三层体系 ----------
 // 进程内运行时：把本体能力（函数/动作/规则/探索/告警）桥接给 Agent 工具调用。
+// 派生属性口径摘要（优先 derivation，其次兼容旧 reducer/reducerFn）
+function summarizePropertyDerivation(p: any): string | undefined {
+  if (p.derivation) {
+    const d = p.derivation;
+    if (d.kind === 'function') {
+      const args = d.args && Object.keys(d.args).length ? ` args=${JSON.stringify(d.args)}` : '';
+      return `函数 ${d.function}${args}${d.resultNote ? `（${d.resultNote}）` : ''}`;
+    }
+    if (d.kind === 'linkAggregation') {
+      return `${d.aggregation ?? 'count'}(${d.linkType ?? '?'} ${d.direction ?? '?'} → ${d.targetProperty ?? '?'})${d.resultNote ? `（${d.resultNote}）` : ''}`;
+    }
+    return `表达式 ${d.expression ?? '?'}${d.resultNote ? `（${d.resultNote}）` : ''}`;
+  }
+  if (p.reducerFn) return `函数 ${p.reducerFn}（未配置口径说明）`;
+  if (p.reducer) return `结构化算子 ${String(p.reducer).slice(0, 80)}`;
+  return undefined;
+}
+
 const agentRuntime: AgentRuntime = {
   listFunctions: (opts) => repo.searchFunctions(opts ?? {}),
   listActions: (opts) => repo.searchActions(opts ?? {}),
@@ -1422,7 +1446,15 @@ const agentRuntime: AgentRuntime = {
   },
   // 关系建模：读取关系类型列表 / 单个对象类型完整定义
   listLinkTypes: (opts) => repo.searchLinkTypes(opts ?? {}),
-  getObjectType: (apiName: string) => repo.getObjectType(apiName),
+  getObjectType: async (apiName: string) => {
+    const ot = await repo.getObjectType(apiName);
+    if (!ot) return ot;
+    // 给智能体返回可读口径（不落库，仅展示）
+    return {
+      ...ot,
+      properties: ot.properties.map((p: any) => ({ ...p, derivationSummary: summarizePropertyDerivation(p) })),
+    };
+  },
   // 派生/函数建模：注册函数（存在则更新 body）
   createFunction: async (def: { apiName: string; displayName: string; description?: string; body: string }) => {
     if (!def?.apiName || !/^[A-Za-z][A-Za-z0-9_]*$/.test(def.apiName)) {
@@ -1477,9 +1509,23 @@ const agentRuntime: AgentRuntime = {
     p.required = property.required !== undefined ? !!property.required : !!existing?.required;
     for (const k of [
       'description', 'allowedValues', 'valueType', 'unit', 'format', 'defaultValue',
-      'derived', 'reducerFn', 'reducer', 'sourceMapping', 'sharedRef', 'overridden',
+      'derived', 'reducerFn', 'reducer', 'sourceMapping', 'sharedRef', 'overridden', 'derivation',
     ]) {
       if (property[k] !== undefined) p[k] = property[k];
+    }
+    if (p.derivation) {
+      if (p.derivation.kind === 'function') {
+        if (!p.derivation.function) throw new Error('derivation.function 必填');
+        if (!(await repo.getFunction(String(p.derivation.function)))) {
+          throw new Error(`派生函数不存在: ${p.derivation.function}（请先 create_function）`);
+        }
+      } else if (p.derivation.kind === 'linkAggregation') {
+        if (p.derivation.linkType && !(await repo.getLinkType(String(p.derivation.linkType)))) {
+          throw new Error(`关系类型不存在: ${p.derivation.linkType}`);
+        }
+      } else if (p.derivation.kind !== 'expression') {
+        throw new Error('derivation.kind 必须是 linkAggregation/function/expression');
+      }
     }
     if (p.valueType && !(await repo.getValueType(String(p.valueType)))) {
       throw new Error(`值类型不存在: ${p.valueType}（请先在 Value Types 建好，或改用 allowedValues 直接写枚举）`);
@@ -1547,7 +1593,7 @@ const agentRuntime: AgentRuntime = {
     return { ok: true, apiName: def.apiName, trigger: trig, enabled: def.enabled ?? true };
   },
   listValueTypes: async () => repo.listValueTypes(),
-  // 删除平台生成型对象的实例（级联关系边）
+// 删除平台生成型对象的实例（级联关系边）
   deleteInstance: async (objectType: string, objectRid: string) => {
     const ot = await repo.getObjectType(objectType);
     if (!ot) throw new Error(`对象类型不存在: ${objectType}`);
@@ -2294,8 +2340,10 @@ const MODELING_PROMPT = `
 - 探测/临时函数用完可用 delete_function 清理；若函数仍被派生属性（reducerFn）引用会被拒绝，需先解绑。
 - 平台生成型对象（无 sourceTable，如 Alert）的实例可用 delete_instance 删除（会级联关系边）；
   源映射型对象禁止删除实例。删除前先向用户确认 objectType 与 rid。
-- 属性语义：add_object_type_property 支持 description / allowedValues / valueType / unit / format / defaultValue，
-  按 apiName 合并（只覆盖传入字段）。valueType 必须引用已存在的值类型（先用 list_value_types 查看）；
+- 属性语义：add_object_type_property 支持 description / allowedValues / valueType / unit / format / defaultValue / derivation，
+  按 apiName 合并（只覆盖传入字段）。派生属性请写 derivation：
+  function 模式={kind:'function',function,args?,resultNote}；linkAggregation={kind:'linkAggregation',linkType,direction,targetProperty,aggregation,resultNote}。
+  派生属性只读，不能被 writeObjectPatch 覆盖。valueType 必须引用已存在的值类型（先用 list_value_types 查看）；
   不存在时直接用 allowedValues 写枚举，**不要编造** 「ForeignKey:xxx」「OrgType」这类未创建的值类型名。
 - 写入后用 inspect_object_type 复核属性字段（它返回完整定义，含 description/allowedValues/valueType）；
   若复查看不到，说明没落库，不要对用户声称"已补齐"。
