@@ -21,6 +21,7 @@ import {
   FunctionSandbox,
 } from './types';
 import { ensureRid } from './rid';
+import { emitObjectWrite } from './change-bus';
 import { Pool } from 'pg';
 
 export class PostgresMetadataRepository implements MetadataRepository {
@@ -586,6 +587,14 @@ export class PostgresMetadataRepository implements MetadataRepository {
        DO UPDATE SET patch = object_write.patch || EXCLUDED.patch, actor = EXCLUDED.actor`,
       [objectType, normRid, JSON.stringify(patch), actor],
     );
+    // 发布对象写入事件（供事件触发规则/订阅方消费）
+    emitObjectWrite({
+      objectType,
+      objectRid: normRid,
+      patch: (patch ?? {}) as Record<string, unknown>,
+      actor,
+      at: Date.now(),
+    });
   }
 
   async clearObjectWrites(objectType: string): Promise<void> {

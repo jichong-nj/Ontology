@@ -2,7 +2,7 @@
 // 连接 ontology 元数据库，暴露 REST 端点供前端消费。
 import express from 'express';
 import { Pool } from 'pg';
-import { PostgresMetadataRepository, TypeScriptFunctionSandbox } from '@ontology/ontology-core';
+import { PostgresMetadataRepository, TypeScriptFunctionSandbox, onObjectWrite } from '@ontology/ontology-core';
 import type { OntologyFunction, ActionType, AutomationRule } from '@ontology/ontology-core';
 import { PostgresMappingStore, MappingService } from '@ontology/data-integration';
 import {
@@ -47,6 +47,34 @@ async function getSandbox(): Promise<TypeScriptFunctionSandbox> {
   return sharedSandbox;
 }
 let ruleScheduler: import('@ontology/ontology-core').RuleScheduler | null = null;
+
+// ---------- 对象写入事件 → 事件触发规则（去抖） ----------
+// 只覆盖平台自身写入（同步/动作/函数）；源库直接变更需先同步进本体。
+const EVENT_DEBOUNCE_MS = 1000;
+const pendingWriteEvents = new Map<string, { rid: string; patch: Record<string, unknown>; timer: NodeJS.Timeout }>();
+let suppressEventsUntil = 0;
+
+onObjectWrite((e) => {
+  if (!ruleScheduler) return;                       // 没有调度器（无启用规则）直接忽略
+  if (Date.now() < suppressEventsUntil) return;     // 规则动作引发的写入不回灌，避免自激
+  const prev = pendingWriteEvents.get(e.objectType);
+  if (prev) clearTimeout(prev.timer);
+  const entry = { rid: e.objectRid, patch: e.patch, timer: undefined as unknown as NodeJS.Timeout };
+  entry.timer = setTimeout(async () => {
+    pendingWriteEvents.delete(e.objectType);
+    suppressEventsUntil = Date.now() + EVENT_DEBOUNCE_MS;
+    try {
+      const results = await ruleScheduler!.handleObjectWrite(e.objectType, entry.rid, entry.patch);
+      const fired = results.filter((r) => r.ran);
+      if (fired.length) {
+        console.log(`[scheduler] 对象写入事件 ${e.objectType}: ${fired.length} 条事件规则执行`);
+      }
+    } catch (err: any) {
+      console.error('[scheduler] 事件触发失败:', err.message);
+    }
+  }, EVENT_DEBOUNCE_MS);
+  pendingWriteEvents.set(e.objectType, entry);
+});
 
 // ---------- 数据重新灌入（S1/S2/S3 bootstrap 的可复用实现） ----------
 // 逐步执行并收集结果：单步失败不阻断后续步骤（如扩展域源表缺失时，核心数据仍能灌入）。
@@ -455,6 +483,7 @@ app.post('/api/s2/rules', async (req, res) => {
       return res.status(409).json({ error: `规则已存在: ${def.apiName}` });
     }
     await repo.createRule(def);
+    void startRuleSchedulerIfNeeded(); // 新增启用规则后自动拉起调度器
     res.json({ ok: true });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
@@ -492,6 +521,7 @@ app.put('/api/s2/rules/:apiName', async (req, res) => {
   try {
     const patch = req.body as Partial<AutomationRule>;
     await repo.updateRule(req.params.apiName, patch);
+    void startRuleSchedulerIfNeeded();
     res.json({ ok: true });
   } catch (e: any) {
     res.status(400).json({ error: e.message });

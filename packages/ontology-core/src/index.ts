@@ -1,6 +1,8 @@
 // S2 Ontology 内核 — 公共导出
 export * from './types';
 export { rid, ridParts, ensureRid } from './rid';
+export { onObjectWrite, emitObjectWrite } from './change-bus';
+export type { ObjectWriteEvent, ObjectWriteListener } from './change-bus';
 export { PostgresMetadataRepository } from './metadata-repository.pg';
 export { DefaultInterfaceMethodEngine } from './interface-method-engine';
 export { TypeScriptFunctionSandbox } from './function-sandbox';
