@@ -3,7 +3,7 @@
 // 与具体 HTTP 解耦：由 server 注入 Runtime（进程内直接调用 repo / sandbox / 调度器 / pool）。
 
 import { OpenAICompatibleLLM, type ChatMessage, type ToolSpec, type ToolCall } from './llm-gateway';
-import { parseXmlToolCalls } from './xml-tool-calls';
+import { parseXmlToolCalls, stripToolCallXml } from './xml-tool-calls';
 import type { AIPAgentConfig } from '@ontology/ontology-core';
 
 // 运行时激活的模型引用：包含模型名与其所属 provider 的接入点
@@ -44,6 +44,7 @@ export interface AgentRuntime {
   computeDerived(objectType: string, property: string, rid: string): Promise<unknown>;
   // 平台生成型对象的实例删除（带关系级联）
   deleteInstance(objectType: string, objectRid: string): Promise<unknown>;
+  listValueTypes(): Promise<unknown>;
   // 自动化：创建动作（effect 指向已注册函数）与规则（触发 + 条件函数 + 动作）
   createAction(def: {
     apiName: string; displayName: string; description?: string; effectFunction: string;
@@ -87,7 +88,7 @@ const TOOL_GROUPS: Record<string, string[]> = {
   // 受限 NL2SQL：LLM 生成只读 SELECT，在 S1 源库白名单表内执行（不回写源）
   sql: ['run_sql'],
   // 数据源建模：列出数据源 / 读取源表结构与样例（只读；创建动作需用户在前端确认）
-  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type', 'list_functions', 'create_function', 'delete_function', 'add_object_type_property', 'compute_derived', 'invoke_function', 'create_action', 'create_rule', 'delete_instance'],
+  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type', 'list_functions', 'create_function', 'delete_function', 'add_object_type_property', 'compute_derived', 'invoke_function', 'create_action', 'create_rule', 'delete_instance', 'list_value_types'],
 };
 
 function allToolSpecs(): ToolSpec[] {
@@ -360,6 +361,14 @@ function allToolSpecs(): ToolSpec[] {
     {
       type: 'function',
       function: {
+        name: 'list_value_types',
+        description: '列出现有值类型（Value Types）：apiName/基础类型/枚举或约束。给属性挂 valueType 前先查。',
+        parameters: { type: 'object', properties: {} },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'add_object_type_property',
         description:
           '给已存在的对象类型新增/更新一个属性（按 apiName 覆盖）。可创建派生属性：' +
@@ -371,7 +380,10 @@ function allToolSpecs(): ToolSpec[] {
             apiName: { type: 'string', description: '对象类型 apiName，如 Organization' },
             property: {
               type: 'object',
-              description: '属性定义：{apiName, displayName, type, required, derived, reducerFn}',
+              description:
+                '属性定义（按 apiName 合并，只覆盖传入字段）：{apiName, displayName, type, required, derived, reducerFn, ' +
+                'description, allowedValues, valueType, unit, format, defaultValue}。' +
+                '枚举字段用 allowedValues 或已存在的 valueType；不要编造 valueType 名称。',
               properties: {
                 apiName: { type: 'string' },
                 displayName: { type: 'string' },
@@ -379,6 +391,16 @@ function allToolSpecs(): ToolSpec[] {
                 required: { type: 'boolean' },
                 derived: { type: 'boolean' },
                 reducerFn: { type: 'string', description: '派生属性引用的函数 apiName' },
+                description: { type: 'string', description: '属性语义说明（写入后 inspect_object_type 可复核）' },
+                allowedValues: {
+                  type: 'array',
+                  description: '枚举取值：[{value,label,description}]',
+                  items: { type: 'object' },
+                },
+                valueType: { type: 'string', description: '已存在的值类型 apiName（用 list_value_types 查看）' },
+                unit: { type: 'string', description: '单位，如 小时/元' },
+                format: { type: 'string', description: '展示格式，如 date/percent/currency' },
+                defaultValue: { description: '同步时缺失值的默认填充' },
               },
               required: ['apiName', 'displayName', 'type'],
             },
@@ -611,6 +633,7 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
       rt.createFunction({ apiName: a.apiName, displayName: a.displayName, description: a.description, body: a.body }),
     delete_function: async (a: any) => rt.deleteFunction(a.apiName),
     add_object_type_property: async (a: any) => rt.upsertObjectTypeProperty(a.apiName, a.property),
+    list_value_types: async () => rt.listValueTypes(),
     compute_derived: async (a: any) => rt.computeDerived(a.objectType, a.property, a.rid),
     delete_instance: async (a: any) => {
       const err = deny(a.objectType);
@@ -719,11 +742,18 @@ export class AIPAgent {
       }
 
       // 本地模型可能把工具调用输出成 XML 文本：兜底解析成 tool_calls
-      if (!resp.toolCalls || resp.toolCalls.length === 0) {
+      {
         const parsed = parseXmlToolCalls(resp.content ?? '');
         if (parsed.calls.length) {
           console.warn('[agent] 检测到 XML 工具调用，已自动转换:', parsed.calls.map((c) => c.function.name).join(','));
-          resp = { ...resp, content: parsed.cleaned || null, toolCalls: parsed.calls };
+          // 即使网关已返回 toolCalls，也要把文本里的 XML 去掉，避免泄漏到回复
+          resp = {
+            ...resp,
+            content: parsed.cleaned || null,
+            toolCalls: resp.toolCalls?.length ? resp.toolCalls : parsed.calls,
+          };
+        } else if ((resp.content ?? '').includes('<tool_call')) {
+          resp = { ...resp, content: stripToolCallXml(resp.content ?? '') || null };
         }
       }
 
@@ -830,10 +860,13 @@ export class AIPAgent {
         let parsedCalls = toolCalls;
         let finalContent = contentBuf;
         const xmlParsed = parseXmlToolCalls(contentBuf);
-        if ((!parsedCalls || parsedCalls.length === 0) && xmlParsed.calls.length) {
+        if (xmlParsed.calls.length) {
           console.warn('[agent] 检测到 XML 工具调用(stream)，已自动转换:', xmlParsed.calls.map((c) => c.function.name).join(','));
-          parsedCalls = xmlParsed.calls;
+          // 即使网关已返回 toolCalls，也要剥离文本 XML，避免泄漏到回复
           finalContent = xmlParsed.cleaned;
+          if (!parsedCalls || parsedCalls.length === 0) parsedCalls = xmlParsed.calls;
+        } else if (finalContent.includes('<tool_call')) {
+          finalContent = stripToolCallXml(finalContent);
         }
         // 补发剩余正文（若剥离了 XML，只补发 cleaned 中尚未发出的部分）
         const flushTarget = finalContent === contentBuf ? contentBuf : finalContent;

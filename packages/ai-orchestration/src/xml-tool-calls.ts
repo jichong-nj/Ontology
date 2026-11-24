@@ -20,6 +20,16 @@ function parseScalar(raw: string): unknown {
   return s;
 }
 
+// 剥离残留的 XML 工具调用片段（完整块或未闭合的截断块）
+export function stripToolCallXml(content: string): string {
+  let out = (content ?? '')
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+    .replace(/<function=[^\s>]+\s*>[\s\S]*?<\/function>/g, '');
+  const idx = out.indexOf('<tool_call');
+  if (idx >= 0) out = out.slice(0, idx);
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 export function parseXmlToolCalls(content: string): ParsedXmlToolCalls {
   const src = content ?? '';
   if (!src.includes('<tool_call')) return { calls: [], cleaned: src };

@@ -1467,23 +1467,32 @@ const agentRuntime: AgentRuntime = {
   upsertObjectTypeProperty: async (apiName: string, property: Record<string, unknown>) => {
     const ot = await repo.getObjectType(apiName);
     if (!ot) throw new Error(`对象类型不存在: ${apiName}`);
-    const p: any = {
-      apiName: property.apiName,
-      displayName: property.displayName ?? property.apiName,
-      type: property.type ?? 'integer',
-      required: !!property.required,
-    };
-    if (property.derived) p.derived = true;
-    if (property.reducerFn) p.reducerFn = property.reducerFn;
-    if (property.sourceMapping) p.sourceMapping = property.sourceMapping;
-    if (!p.apiName) throw new Error('property.apiName 必填');
+    if (!property?.apiName) throw new Error('property.apiName 必填');
+    const existing = ot.properties.find((x) => x.apiName === property.apiName);
+    // 合并语义：以现有属性为底，仅覆盖显式传入的字段，避免"改说明"时丢掉类型/映射等元数据
+    const p: any = { ...(existing ?? {}) };
+    p.apiName = property.apiName;
+    p.displayName = property.displayName ?? existing?.displayName ?? property.apiName;
+    p.type = property.type ?? existing?.type ?? 'string';
+    p.required = property.required !== undefined ? !!property.required : !!existing?.required;
+    for (const k of [
+      'description', 'allowedValues', 'valueType', 'unit', 'format', 'defaultValue',
+      'derived', 'reducerFn', 'reducer', 'sourceMapping', 'sharedRef', 'overridden',
+    ]) {
+      if (property[k] !== undefined) p[k] = property[k];
+    }
+    if (p.valueType && !(await repo.getValueType(String(p.valueType)))) {
+      throw new Error(`值类型不存在: ${p.valueType}（请先在 Value Types 建好，或改用 allowedValues 直接写枚举）`);
+    }
     const props = ot.properties.filter((x) => x.apiName !== p.apiName);
     props.push(p);
     await repo.updateObjectType(apiName, { ...ot, properties: props } as any);
     return {
       ok: true, apiName, property: p.apiName,
-      replaced: ot.properties.some((x) => x.apiName === p.apiName),
+      replaced: !!existing,
       totalProperties: props.length,
+      semanticFields: ['description', 'allowedValues', 'valueType', 'unit', 'format', 'defaultValue']
+        .filter((k) => (p as any)[k] !== undefined),
     };
   },
   // 自动化：创建动作（引用已注册函数）
@@ -1537,6 +1546,7 @@ const agentRuntime: AgentRuntime = {
     console.log(`[aip] 已创建规则 ${def.apiName}（${trig.kind}）`);
     return { ok: true, apiName: def.apiName, trigger: trig, enabled: def.enabled ?? true };
   },
+  listValueTypes: async () => repo.listValueTypes(),
   // 删除平台生成型对象的实例（级联关系边）
   deleteInstance: async (objectType: string, objectRid: string) => {
     const ot = await repo.getObjectType(objectType);
@@ -2284,6 +2294,11 @@ const MODELING_PROMPT = `
 - 探测/临时函数用完可用 delete_function 清理；若函数仍被派生属性（reducerFn）引用会被拒绝，需先解绑。
 - 平台生成型对象（无 sourceTable，如 Alert）的实例可用 delete_instance 删除（会级联关系边）；
   源映射型对象禁止删除实例。删除前先向用户确认 objectType 与 rid。
+- 属性语义：add_object_type_property 支持 description / allowedValues / valueType / unit / format / defaultValue，
+  按 apiName 合并（只覆盖传入字段）。valueType 必须引用已存在的值类型（先用 list_value_types 查看）；
+  不存在时直接用 allowedValues 写枚举，**不要编造** 「ForeignKey:xxx」「OrgType」这类未创建的值类型名。
+- 写入后用 inspect_object_type 复核属性字段（它返回完整定义，含 description/allowedValues/valueType）；
+  若复查看不到，说明没落库，不要对用户声称"已补齐"。
 
 ## 调度与自动化（规则）
 - 规则 = trigger + conditionFunction + actionApiName：
