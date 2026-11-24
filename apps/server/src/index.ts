@@ -2,7 +2,7 @@
 // 连接 ontology 元数据库，暴露 REST 端点供前端消费。
 import express from 'express';
 import { Pool } from 'pg';
-import { PostgresMetadataRepository, TypeScriptFunctionSandbox, onObjectWrite, ensureRid } from '@ontology/ontology-core';
+import { PostgresMetadataRepository, TypeScriptFunctionSandbox, onObjectWrite, ensureRid, evaluateRuleCondition } from '@ontology/ontology-core';
 import type { OntologyFunction, ActionType, AutomationRule } from '@ontology/ontology-core';
 import { PostgresMappingStore, MappingService } from '@ontology/data-integration';
 import {
@@ -499,9 +499,61 @@ app.get('/api/s2/rules', async (req, res) => {
 });
 
 // 新建自动化规则（FDE 可自助配置，无需改码）
-// 规则定义校验：条件函数必须存在且为 query（只读）；动作必须存在；trigger 合法
+const CONDITION_OPERATORS = new Set(['gt', 'gte', 'lt', 'lte', 'eq', 'neq']);
+
+async function validateCondition(cond: any): Promise<void> {
+  if (!cond || typeof cond !== 'object') throw new Error('condition 必须是对象');
+  switch (cond.kind) {
+    case 'function': {
+      const fn = await repo.getFunction(cond.function);
+      if (!fn) throw new Error(`条件函数不存在: ${cond.function}`);
+      if (fn.kind !== 'query') {
+        throw new Error(`规则条件函数必须是 query（只读）函数；${fn.apiName} 是 ${fn.kind ?? 'edit'} 函数`);
+      }
+      return;
+    }
+    case 'property': {
+      const ot = await repo.getObjectType(cond.objectType);
+      if (!ot) throw new Error(`对象类型不存在: ${cond.objectType}`);
+      if (!ot.properties.some((p) => p.apiName === cond.property)) {
+        throw new Error(`属性不存在: ${cond.objectType}.${cond.property}`);
+      }
+      if (!CONDITION_OPERATORS.has(cond.operator)) throw new Error(`不支持的比较运算符: ${cond.operator}`);
+      return;
+    }
+    case 'aggregate': {
+      const ot = await repo.getObjectType(cond.objectType);
+      if (!ot) throw new Error(`对象类型不存在: ${cond.objectType}`);
+      if (!['count', 'sum', 'avg', 'min', 'max'].includes(cond.aggregation)) {
+        throw new Error(`不支持的聚合: ${cond.aggregation}`);
+      }
+      if (cond.aggregation !== 'count') {
+        if (!cond.property) throw new Error('聚合条件需要 property');
+        if (!ot.properties.some((p) => p.apiName === cond.property)) {
+          throw new Error(`属性不存在: ${cond.objectType}.${cond.property}`);
+        }
+      }
+      if (!CONDITION_OPERATORS.has(cond.operator)) throw new Error(`不支持的比较运算符: ${cond.operator}`);
+      return;
+    }
+    case 'all':
+    case 'any': {
+      if (!Array.isArray(cond.conditions) || cond.conditions.length === 0) {
+        throw new Error(`${cond.kind} 条件至少需要一个子条件`);
+      }
+      for (const sub of cond.conditions) await validateCondition(sub);
+      return;
+    }
+    default:
+      throw new Error(`不支持的条件类型: ${cond.kind}`);
+  }
+}
+
+// 规则定义校验：条件（声明式或函数）合法；动作必须存在；trigger 合法
 async function validateRuleDefinition(def: any): Promise<void> {
-  if (def.conditionFunction !== undefined) {
+  if (def.condition !== undefined) {
+    if (def.condition !== null) await validateCondition(def.condition);
+  } else if (def.conditionFunction !== undefined) {
     const fn = await repo.getFunction(def.conditionFunction);
     if (!fn) throw new Error(`条件函数不存在: ${def.conditionFunction}`);
     if (fn.kind !== 'query') {
@@ -525,6 +577,9 @@ app.post('/api/s2/rules', async (req, res) => {
   try {
     const def = req.body as AutomationRule;
     if (!def?.apiName) return res.status(400).json({ error: 'apiName 必填' });
+    if (!def.condition && !def.conditionFunction) {
+      return res.status(400).json({ error: '需要 condition（声明式条件）或 conditionFunction' });
+    }
     await validateRuleDefinition(def);
     if (await repo.getRule(def.apiName)) {
       return res.status(409).json({ error: `规则已存在: ${def.apiName}` });
@@ -538,6 +593,25 @@ app.post('/api/s2/rules', async (req, res) => {
 });
 
 // 手动触发全部自动化规则（后台定时任务的手动入口）
+// 规则条件预览（声明式条件求值，不执行动作）
+app.post('/api/s2/rules/preview', async (req, res) => {
+  try {
+    const cond = req.body?.condition;
+    if (!cond) return res.status(400).json({ error: '缺少 condition' });
+    await validateCondition(cond);
+    const sb = await getSandbox();
+    await registerDbFunctions(repo, sb);
+    const result = await evaluateRuleCondition(
+      repo, cond,
+      (name, args) => runWithReadOnly(() => sb.execute(name, args)) as Promise<unknown>,
+      req.body?.params,
+    );
+    res.json({ matched: result.matched, count: result.items.length, items: result.items.slice(0, 20) });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 app.post('/api/s2/rules/run', async (_req, res) => {
   try {
     // 优先复用后台调度器；若后台未启动（如仅测试/轻量部署），按需构建设置了函数的调度器。

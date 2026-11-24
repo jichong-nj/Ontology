@@ -334,6 +334,10 @@ export interface MetadataRepository {
   // 读取某对象类型下所有实例的（最新一次 patch 合并后的）属性，供函数/动作读取实例数据
   listObjectProperties(objectType: string): Promise<{ objectRid: string; properties: Record<string, unknown> }[]>;
   // 实例查询（对齐 Palantir）：属性级条件过滤 + 游标分页
+  aggregateScalar(
+    objectType: string,
+    opts: { aggregation: 'count' | 'sum' | 'avg' | 'min' | 'max'; property?: string },
+  ): Promise<number>;
   listInstances(
     objectType: string,
     opts?: InstanceQuery,
@@ -379,6 +383,12 @@ export type RuleTrigger =
 
 // 自动化规则：通用的「满足条件就执行动作」编排单元（对齐 Palantir Watchdog + Action Type + Schedule）。
 // 规则本身不绑定"告警"语义——告警仅是 createDimissionAlert 这个 Action 的产物之一。
+export type RuleCondition =
+  | { kind: 'function'; function: string; params?: Record<string, unknown> }
+  | { kind: 'property'; objectType: string; property: string; operator: 'gt'|'gte'|'lt'|'lte'|'eq'|'neq'; value: unknown }
+  | { kind: 'aggregate'; objectType: string; aggregation: 'count'|'sum'|'avg'|'min'|'max'; property?: string; operator: 'gt'|'gte'|'lt'|'lte'|'eq'|'neq'; value: number }
+  | { kind: 'all' | 'any'; conditions: RuleCondition[] };
+
 export interface AutomationRule {
   apiName: string;
   displayName: string;
@@ -387,7 +397,10 @@ export interface AutomationRule {
   // 替代原 intervalSeconds 单一字段，使触发方式与条件/动作正交。
   trigger: RuleTrigger;
   // 可配置的条件评估函数（必须是已注册的 OntologyFunction apiName），返回 { flagged: [{rid, ...}] }
-  conditionFunction: string;
+  // 声明式条件存在时可不填
+  conditionFunction?: string;
+  // 声明式条件（property / aggregate / all / any / function）；为空则回退 conditionFunction
+  condition?: RuleCondition;
   // 可配置的动作：命中后由该 Action 落地（写对象/通知/审批等）。
   actionApiName: string;
   // 传入条件函数的参数（如 threshold）

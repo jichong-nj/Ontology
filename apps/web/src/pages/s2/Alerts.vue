@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref, reactive, computed } from 'vue';
-import { ElCard, ElButton, ElIcon, ElTag, ElMessage, ElDialog, ElForm, ElFormItem, ElInput, ElSwitch, ElSelect, ElOption, ElMessageBox } from 'element-plus';
+import { onMounted, ref, reactive, computed, nextTick, watch } from 'vue';
+import { ElCard, ElButton, ElIcon, ElTag, ElMessage, ElDialog, ElForm, ElFormItem, ElInput, ElSwitch, ElSelect, ElOption, ElMessageBox, ElTable, ElTableColumn, ElCollapse, ElCollapseItem } from 'element-plus';
 import { Refresh, Bell, Plus, Edit, Delete, Switch as SwitchIcon } from '@element-plus/icons-vue';
 import { s2, s2functions, s2actions } from '@/api';
 import { tryRequest } from '@/utils/error';
@@ -10,7 +10,8 @@ interface RuleItem {
   displayName: string;
   enabled: boolean;
   trigger: { kind: 'schedule' | 'event'; intervalSeconds?: number; on?: string; objectType?: string; conditionProperty?: string };
-  conditionFunction: string;
+  conditionFunction?: string;
+  condition?: any;
   actionApiName: string;
   params: Record<string, unknown>;
   targetObjectType: string;
@@ -22,7 +23,7 @@ interface FnInput { name: string; type: string; required: boolean }
 const rules = ref<RuleItem[]>([]);
 const functions = ref<{ apiName: string; displayName: string; inputs?: FnInput[]; description?: string }[]>([]);
 const actions = ref<{ apiName: string; displayName: string; preconditions?: { kind: string; property: string; message: string }[] }[]>([]);
-const objectTypes = ref<{ apiName: string; displayName: string }[]>([]);
+const objectTypes = ref<{ apiName: string; displayName: string; properties?: { apiName: string; displayName: string; type: string }[] }[]>([]);
 const loading = ref(false);
 const running = ref(false);
 
@@ -64,10 +65,106 @@ const form = reactive({
   // 参数有两种编辑视图：结构化表单(paramsForm) 与 高级 JSON(paramsText)，双向同步
   paramsText: '{\n  "threshold": 0.8,\n  "leaveDeduct": 10,\n  "workDeduct": 10,\n  "leaveBase": 1\n}',
 });
+
+// 声明式条件构建器
+const condForm = reactive({
+  kind: 'function' as 'function' | 'property' | 'aggregate' | 'all' | 'any',
+  objectType: '',
+  property: '',
+  aggregation: 'count' as 'count' | 'sum' | 'avg' | 'min' | 'max',
+  operator: 'gt' as 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq',
+  value: '',
+  subs: [] as any[],
+});
+const OPERATORS = [
+  { value: 'gt', label: '>' }, { value: 'gte', label: '>=' },
+  { value: 'lt', label: '<' }, { value: 'lte', label: '<=' },
+  { value: 'eq', label: '=' }, { value: 'neq', label: '!=' },
+];
+const AGGREGATIONS = ['count', 'sum', 'avg', 'min', 'max'];
+
+function propsOf(apiName: string) {
+  return objectTypes.value.find((o) => o.apiName === apiName)?.properties ?? [];
+}
+function propLabel(apiName: string): string {
+  const p = propsOf(condForm.objectType).find((x) => x.apiName === apiName);
+  return p?.displayName ?? apiName;
+}
+function parseCondValue(v: string): unknown {
+  const t = (v ?? '').trim();
+  if (t === '') return '';
+  if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
+  if (t === 'true' || t === 'false') return t === 'true';
+  return t;
+}
+function fillCondForm(cond?: any) {
+  condForm.subs = [];
+  if (!cond) {
+    Object.assign(condForm, { kind: 'function', objectType: objectTypes.value[0]?.apiName ?? '', property: '', aggregation: 'count', operator: 'gt', value: '' });
+    return;
+  }
+  Object.assign(condForm, {
+    kind: cond.kind ?? 'function',
+    objectType: cond.objectType ?? objectTypes.value[0]?.apiName ?? '',
+    property: cond.property ?? '',
+    aggregation: cond.aggregation ?? 'count',
+    operator: cond.operator ?? 'gt',
+    value: cond.value === undefined || cond.value === null ? '' : String(cond.value),
+  });
+  if (cond.kind === 'all' || cond.kind === 'any') {
+    condForm.subs = cond.conditions.map((c: any) => ({
+      kind: c.kind === 'aggregate' ? 'aggregate' : 'property',
+      objectType: c.objectType ?? objectTypes.value[0]?.apiName ?? '',
+      property: c.property ?? '',
+      aggregation: c.aggregation ?? 'count',
+      operator: c.operator ?? 'gt',
+      value: c.value === undefined || c.value === null ? '' : String(c.value),
+    }));
+  }
+}
+watch(() => condForm.kind, (kind) => {
+  if ((kind === 'property' || kind === 'aggregate') && !condForm.objectType) {
+    condForm.objectType = objectTypes.value[0]?.apiName ?? '';
+  }
+});
+
+function addSubCondition() {
+  condForm.subs.push({ kind: 'property', objectType: condForm.objectType || objectTypes.value[0]?.apiName || '', property: '', aggregation: 'count', operator: 'gt', value: '' });
+}
+function buildSubCondition(s: any): any {
+  if (s.kind === 'aggregate') {
+    return {
+      kind: 'aggregate', objectType: s.objectType, aggregation: s.aggregation,
+      ...(s.aggregation !== 'count' ? { property: s.property } : {}),
+      operator: s.operator, value: Number(s.value),
+    };
+  }
+  return { kind: 'property', objectType: s.objectType, property: s.property, operator: s.operator, value: parseCondValue(s.value) };
+}
+function buildCondition(): any {
+  if (condForm.kind === 'function') return undefined;
+  if (condForm.kind === 'property') {
+    return { kind: 'property', objectType: condForm.objectType, property: condForm.property, operator: condForm.operator, value: parseCondValue(condForm.value) };
+  }
+  if (condForm.kind === 'aggregate') {
+    return {
+      kind: 'aggregate', objectType: condForm.objectType, aggregation: condForm.aggregation,
+      ...(condForm.aggregation !== 'count' ? { property: condForm.property } : {}),
+      operator: condForm.operator, value: Number(condForm.value),
+    };
+  }
+  return { kind: condForm.kind, conditions: condForm.subs.map(buildSubCondition) };
+}
 const paramsForm = reactive<Record<string, string>>({}); // 表单视图：键=input.name, 值=字符串
 const showJson = ref(false); // 是否展开高级 JSON 编辑
 const paramsError = ref('');
-const previewResult = ref<{ count: number; rids: string[] } | null>(null);
+const previewResult = ref<{ count: number; items: any[] } | null>(null);
+// 预览表格按命中项实际字段决定列，避免出现整列空值
+function previewHasField(fields: string[]): boolean {
+  const items = previewResult.value?.items ?? [];
+  return items.some((it) => fields.some((f) => it?.[f] !== undefined && it?.[f] !== null && it?.[f] !== ''));
+}
+
 const previewing = ref(false);
 
 // 将结构化表单值写入 paramsText（数字类型按类型转换，其余保持字符串/原样）
@@ -106,7 +203,7 @@ async function load() {
       description: x.description ?? '',
     }));
     actions.value = ac.map((x: any) => ({ apiName: x.apiName, displayName: x.displayName ?? x.apiName, preconditions: x.preconditions ?? [] }));
-    objectTypes.value = ot.map((x: any) => ({ apiName: x.apiName, displayName: x.displayName ?? x.apiName }));
+    objectTypes.value = ot.map((x: any) => ({ apiName: x.apiName, displayName: x.displayName ?? x.apiName, properties: x.properties ?? [] }));
   });
 }
 
@@ -145,6 +242,7 @@ function openCreate() {
     targetObjectType: 'Alert',
     paramsText: '{\n  "threshold": 0.8\n}',
   });
+  fillCondForm(undefined);
   paramsError.value = '';
   dialogVisible.value = true;
   syncFormFromParams(); // 用所选函数(inputs)与默认 params 初始化结构化表单
@@ -164,6 +262,7 @@ async function openEdit(rule: RuleItem) {
     targetObjectType: rule.targetObjectType,
     paramsText: JSON.stringify(rule.params ?? {}, null, 2),
   });
+  fillCondForm(rule.condition);
   paramsError.value = '';
   dialogVisible.value = true;
   syncFormFromParams(); // 用规则已存 params 回填结构化表单
@@ -183,7 +282,10 @@ async function save() {
   }
   if (paramsError.value) return;
   if (!form.apiName.trim()) { paramsError.value = '规则名(apiName)必填'; return; }
-  if (!form.conditionFunction) { paramsError.value = '请选择条件函数'; return; }
+  if (condForm.kind === 'function' && !form.conditionFunction) { paramsError.value = '请选择条件函数'; return; }
+  if (condForm.kind === 'property' && (!condForm.objectType || !condForm.property)) { paramsError.value = '属性条件需选择对象类型与属性'; return; }
+  if (condForm.kind === 'aggregate' && (!condForm.objectType || (condForm.aggregation !== 'count' && !condForm.property))) { paramsError.value = '聚合条件需选择对象类型与属性'; return; }
+  if ((condForm.kind === 'all' || condForm.kind === 'any') && condForm.subs.length === 0) { paramsError.value = '组合条件至少需要一个子条件'; return; }
   if (!form.actionApiName) { paramsError.value = '请选择落地动作'; return; }
 
   const trigger =
@@ -198,11 +300,12 @@ async function save() {
         displayName: form.displayName,
         enabled: form.enabled,
         trigger,
-        conditionFunction: form.conditionFunction,
+        condition: condForm.kind === 'function' ? null : buildCondition(),
+        ...(condForm.kind === 'function' ? { conditionFunction: form.conditionFunction } : { conditionFunction: null }),
         actionApiName: form.actionApiName,
         targetObjectType: form.targetObjectType,
         params,
-      });
+      } as any);
       ElMessage.success('规则已更新');
     } else {
       await s2.createRule({
@@ -210,12 +313,14 @@ async function save() {
         displayName: form.displayName || form.apiName.trim(),
         enabled: form.enabled,
         trigger,
-        conditionFunction: form.conditionFunction,
+        ...(condForm.kind === 'function'
+          ? { conditionFunction: form.conditionFunction }
+          : { condition: buildCondition() }),
         actionApiName: form.actionApiName,
         targetObjectType: form.targetObjectType,
         params,
         version: 1,
-      });
+      } as any);
       ElMessage.success('规则已创建');
     }
     dialogVisible.value = false;
@@ -226,17 +331,24 @@ async function save() {
 
 // 预览条件函数命中：调用 function invoke 并展示将命中的对象（对标 Palantir 的 preview rule results）
 async function previewRule() {
-  if (!form.conditionFunction) { ElMessage.warning('请先选择条件函数'); return; }
   if (!showJson.value) syncParamsFromForm();
   let params: Record<string, unknown> = {};
   try { params = JSON.parse(form.paramsText || '{}'); } catch { ElMessage.warning('params 不是合法 JSON'); return; }
   previewing.value = true;
   previewResult.value = null;
   await tryRequest(async () => {
-    const res = await s2functions.invoke(form.conditionFunction, params);
-    const result = (res as any).result ?? res;
-    const flagged = Array.isArray(result?.flagged) ? result.flagged : [];
-    previewResult.value = { count: flagged.length, rids: flagged.slice(0, 50).map((f: any) => f.rid ?? f.objectRid ?? JSON.stringify(f)) };
+    if (condForm.kind === 'function') {
+      if (!form.conditionFunction) { ElMessage.warning('请先选择条件函数'); return; }
+      const res = await s2functions.invoke(form.conditionFunction, params);
+      const result = (res as any).result ?? res;
+      const flagged = Array.isArray(result?.flagged) ? result.flagged : [];
+      previewResult.value = { count: flagged.length, items: flagged.slice(0, 20) };
+    } else {
+      const res = await s2.previewRuleCondition(buildCondition(), params);
+      previewResult.value = { count: res.count, items: res.items ?? [] };
+    }
+    await nextTick();
+    document.querySelector('.preview')?.scrollIntoView({ block: 'nearest' });
   });
   previewing.value = false;
 }
@@ -306,7 +418,7 @@ onMounted(load);
     </ElCard>
 
     <!-- 新建 / 编辑 抽屉 -->
-    <ElDialog v-model="dialogVisible" :title="editing ? '编辑自动化规则' : '新建自动化规则'" width="560px">
+    <ElDialog v-model="dialogVisible" :title="editing ? '编辑自动化规则' : '新建自动化规则'" width="800px">
       <ElForm label-width="110px">
         <ElFormItem label="规则名" required>
           <ElInput v-model="form.apiName" :disabled="!!editing" placeholder="如 dimissionRiskRule" />
@@ -332,12 +444,85 @@ onMounted(load);
           </ElSelect>
           <div class="hint">当该对象类型发生写入(object_write)时，触发规则条件评估。</div>
         </ElFormItem>
-        <ElFormItem label="条件函数" required>
+        <ElFormItem label="条件类型">
+          <ElRadioGroup v-model="condForm.kind">
+            <ElRadioButton value="function">函数</ElRadioButton>
+            <ElRadioButton value="property">属性比较</ElRadioButton>
+            <ElRadioButton value="aggregate">聚合阈值</ElRadioButton>
+            <ElRadioButton value="all">全部满足</ElRadioButton>
+            <ElRadioButton value="any">任一满足</ElRadioButton>
+          </ElRadioGroup>
+        </ElFormItem>
+        <ElFormItem v-if="condForm.kind === 'function'" label="条件函数" required>
           <ElSelect v-model="form.conditionFunction" placeholder="选择评估函数" style="width:100%" @change="syncFormFromParams">
             <ElOption v-for="f in functions" :key="f.apiName" :label="`${f.displayName} (${f.apiName})`" :value="f.apiName" />
           </ElSelect>
           <div class="hint" v-if="functions.find(f=>f.apiName===form.conditionFunction)?.description">
             {{ functions.find(f=>f.apiName===form.conditionFunction)?.description }}
+          </div>
+        </ElFormItem>
+        <template v-else-if="condForm.kind === 'property'">
+          <ElFormItem label="对象类型" required>
+            <ElSelect v-model="condForm.objectType" style="width:100%" @change="condForm.property = ''">
+              <ElOption v-for="o in objectTypes" :key="o.apiName" :label="`${o.displayName} (${o.apiName})`" :value="o.apiName" />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="属性" required>
+            <ElSelect v-model="condForm.property" filterable placeholder="选择属性" style="width:100%">
+              <ElOption v-for="p in propsOf(condForm.objectType)" :key="p.apiName" :label="`${p.displayName} (${p.apiName})`" :value="p.apiName" />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="条件" required>
+            <ElSelect v-model="condForm.operator" style="width: 120px">
+              <ElOption v-for="op in OPERATORS" :key="op.value" :label="op.label" :value="op.value" />
+            </ElSelect>
+            <ElInput v-model="condForm.value" placeholder="比较值（数字或文本）" style="width: 240px; margin-left: 8px" />
+          </ElFormItem>
+        </template>
+        <template v-else-if="condForm.kind === 'aggregate'">
+          <ElFormItem label="对象类型" required>
+            <ElSelect v-model="condForm.objectType" style="width:100%" @change="condForm.property = ''">
+              <ElOption v-for="o in objectTypes" :key="o.apiName" :label="`${o.displayName} (${o.apiName})`" :value="o.apiName" />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="聚合" required>
+            <ElSelect v-model="condForm.aggregation" style="width: 120px">
+              <ElOption v-for="a in AGGREGATIONS" :key="a" :label="a" :value="a" />
+            </ElSelect>
+            <ElSelect v-if="condForm.aggregation !== 'count'" v-model="condForm.property" filterable placeholder="属性" style="width: 220px; margin-left: 8px">
+              <ElOption v-for="p in propsOf(condForm.objectType)" :key="p.apiName" :label="`${p.displayName} (${p.apiName})`" :value="p.apiName" />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="阈值" required>
+            <ElSelect v-model="condForm.operator" style="width: 120px">
+              <ElOption v-for="op in OPERATORS" :key="op.value" :label="op.label" :value="op.value" />
+            </ElSelect>
+            <ElInput v-model="condForm.value" type="number" placeholder="阈值" style="width: 180px; margin-left: 8px" />
+          </ElFormItem>
+        </template>
+        <ElFormItem v-else :label="condForm.kind === 'all' ? '全部满足' : '任一满足'">
+          <div style="width: 100%">
+            <div v-for="(sub, i) in condForm.subs" :key="i" class="sub-cond">
+              <ElSelect v-model="sub.kind" style="width: 96px">
+                <ElOption label="属性" value="property" />
+                <ElOption label="聚合" value="aggregate" />
+              </ElSelect>
+              <ElSelect v-model="sub.objectType" style="width: 150px" @change="sub.property = ''">
+                <ElOption v-for="o in objectTypes" :key="o.apiName" :label="`${o.displayName} (${o.apiName})`" :value="o.apiName" />
+              </ElSelect>
+              <ElSelect v-if="sub.kind === 'aggregate'" v-model="sub.aggregation" style="width: 96px">
+                <ElOption v-for="a in AGGREGATIONS" :key="a" :label="a" :value="a" />
+              </ElSelect>
+              <ElSelect v-if="sub.kind === 'property' || sub.aggregation !== 'count'" v-model="sub.property" filterable placeholder="属性" style="width: 150px">
+                <ElOption v-for="p in propsOf(sub.objectType)" :key="p.apiName" :label="`${p.displayName} (${p.apiName})`" :value="p.apiName" />
+              </ElSelect>
+              <ElSelect v-model="sub.operator" style="width: 80px">
+                <ElOption v-for="op in OPERATORS" :key="op.value" :label="op.label" :value="op.value" />
+              </ElSelect>
+              <ElInput v-model="sub.value" placeholder="值" style="width: 100px" />
+              <ElButton text type="danger" @click="condForm.subs.splice(i, 1)">删除</ElButton>
+            </div>
+            <ElButton size="small" @click="addSubCondition">+ 子条件</ElButton>
           </div>
         </ElFormItem>
         <ElFormItem label="落地动作" required>
@@ -356,36 +541,73 @@ onMounted(load);
           <ElInput v-model="form.targetObjectType" placeholder="如 Alert（仅写类动作需要）" />
         </ElFormItem>
 
-        <!-- 条件参数：可视化结构化表单（按所选函数的 inputs 自动生成控件），降低 FDE 门槛 -->
-        <ElFormItem label="条件参数">
+        <!-- 条件参数：可视化结构化表单（仅函数条件需要） -->
+        <ElFormItem v-if="condForm.kind === 'function'" label="条件参数">
           <div class="params-wrap">
             <div v-if="selectedFnInputs.length === 0" class="hint">该函数无需参数。</div>
-            <div v-for="inp in selectedFnInputs" :key="inp.name" class="param-row">
-              <label class="param-label">{{ inp.name }}<span v-if="inp.required" class="req">*</span></label>
-              <ElInput
-                v-model="paramsForm[inp.name]"
-                :type="inp.type === 'integer' || inp.type === 'float' ? 'number' : 'text'"
-                :placeholder="inp.type"
-                size="small"
-                @input="syncParamsFromForm"
-              />
-            </div>
-            <div class="param-actions">
-              <ElButton size="small" :loading="previewing" @click="previewRule">预览命中对象</ElButton>
-              <ElButton size="small" link type="primary" @click="showJson = !showJson">
-                {{ showJson ? '收起高级' : '高级(JSON)' }}
-              </ElButton>
-            </div>
-            <div v-if="showJson">
-              <ElInput v-model="form.paramsText" type="textarea" :rows="6" placeholder='JSON 对象，如 {"threshold":0.8}' @input="syncFormFromParams" />
-              <div class="hint">高级：直接编辑参数 JSON。与上方表单双向同步。</div>
-            </div>
-            <div v-if="previewResult" class="preview">
-              预计命中 <b>{{ previewResult.count }}</b> 个对象：
-              <span class="rids">{{ previewResult.rids.join(', ') || '无' }}</span>
+            <div v-else class="param-grid">
+              <div v-for="inp in selectedFnInputs" :key="inp.name" class="param-row">
+                <label class="param-label">{{ inp.name }}<span v-if="inp.required" class="req">*</span></label>
+                <ElInput
+                  v-model="paramsForm[inp.name]"
+                  :type="inp.type === 'integer' || inp.type === 'float' ? 'number' : 'text'"
+                  :placeholder="inp.type"
+                  size="small"
+                  @input="syncParamsFromForm"
+                />
+              </div>
             </div>
           </div>
         </ElFormItem>
+        <ElFormItem label="预览">
+          <div style="width: 100%">
+            <div class="param-actions">
+              <ElButton size="small" :loading="previewing" @click="previewRule">预览命中对象</ElButton>
+              <ElButton v-if="condForm.kind === 'function'" size="small" link type="primary" @click="showJson = !showJson">
+                {{ showJson ? '收起高级' : '高级(JSON)' }}
+              </ElButton>
+            </div>
+            <div v-if="showJson && condForm.kind === 'function'">
+              <ElInput v-model="form.paramsText" type="textarea" :rows="6" placeholder='JSON 对象，如 {"threshold":0.8}' @input="syncFormFromParams" />
+              <div class="hint">高级：直接编辑参数 JSON。与上方表单双向同步。</div>
+            </div>
+          </div>
+        </ElFormItem>
+        <div v-if="previewResult" class="preview preview--full">
+          <div class="preview__head">
+            <span>预计命中 <b>{{ previewResult.count }}</b> 个对象</span>
+            <span v-if="previewResult.count > previewResult.items.length" class="hint">
+              仅展示前 {{ previewResult.items.length }} 条
+            </span>
+          </div>
+          <ElTable v-if="previewResult.items.length" :data="previewResult.items" size="small" border max-height="260" class="preview__table">
+            <ElTableColumn label="员工" min-width="120">
+              <template #default="{ row }">{{ row.subjectName ?? row.name ?? row.subjectRid ?? row.rid ?? row.objectRid ?? '—' }}</template>
+            </ElTableColumn>
+            <ElTableColumn label="级别" width="90">
+              <template #default="{ row }">{{ row.level ?? '—' }}</template>
+            </ElTableColumn>
+            <ElTableColumn v-if="condForm.kind === 'property' && condForm.property" :label="propLabel(condForm.property)" width="120">
+              <template #default="{ row }">{{ row[condForm.property] ?? '—' }}</template>
+            </ElTableColumn>
+            <ElTableColumn v-if="previewHasField(['leaveDays', 'annualLeaveDays'])" label="请假天数" width="100">
+              <template #default="{ row }">{{ row.leaveDays ?? row.annualLeaveDays ?? '—' }}</template>
+            </ElTableColumn>
+            <ElTableColumn v-if="previewHasField(['managerName', 'to'])" label="收件人" min-width="140">
+              <template #default="{ row }">{{ row.managerName ? `${row.managerName}（${row.to ?? '—'}）` : (row.to ?? '—') }}</template>
+            </ElTableColumn>
+            <ElTableColumn label="说明" min-width="260" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.subject ?? row.message ?? (row.body ? String(row.body).split('\n')[0] : '—') }}</template>
+            </ElTableColumn>
+          </ElTable>
+          <div v-else class="hint">无命中对象</div>
+          <ElCollapse class="preview__json">
+            <ElCollapseItem title="高级（原始 JSON）" name="json">
+              <pre class="preview__code">{{ JSON.stringify(previewResult.items, null, 2) }}</pre>
+            </ElCollapseItem>
+          </ElCollapse>
+        </div>
+
         <div v-if="paramsError" class="params-error">{{ paramsError }}</div>
       </ElForm>
       <template #footer>
@@ -413,4 +635,18 @@ onMounted(load);
 .card-title { display: flex; align-items: center; gap: 6px; font-weight: 600; }
 .hint { color: var(--text-muted); font-size: 0.78rem; margin-top: 4px; line-height: 1.4; }
 .params-error { color: var(--el-color-danger); font-size: 0.82rem; margin-bottom: 8px; }
+
+.sub-cond { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.param-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; width: 100%; }
+.param-row { display: flex; flex-direction: column; gap: 4px; }
+.preview { margin-top: 12px; border-top: 1px solid var(--border, #e4e7ed); padding-top: 12px; }
+.preview--full { width: 100%; }
+.preview__head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.preview__table { width: 100%; }
+.preview__json { margin-top: 8px; }
+.preview__code {
+  margin: 0; padding: 8px; max-height: 220px; overflow: auto;
+  background: var(--el-fill-color-light, #f5f7fa); border-radius: 4px;
+  font-size: 12px; white-space: pre-wrap; word-break: break-all;
+}
 </style>

@@ -283,6 +283,8 @@ export const s2 = {
   deleteRule: (apiName: string) => http.delete(`/s2/rules/${apiName}`).then((r) => r.data),
   // 手动运行全部规则
   runRules: () => http.post<{ ok: boolean; results: unknown[] }>('/s2/rules/run').then((r) => r.data),
+  previewRuleCondition: (condition: any, params?: any) =>
+    http.post<{ matched: boolean; count: number; items: any[] }>('/s2/rules/preview', { condition, params }).then((r) => r.data),
   // 告警对象列表
   listAlerts: () => http.get<any[]>('/s2/alerts').then((r) => r.data),
   // 探索页图表配置：每对象类型一套独立的图表（属性 apiName + 图形样式 kind 有序列表）

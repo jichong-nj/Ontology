@@ -13,6 +13,7 @@
 // - Trigger 可配置：schedule（周期轮询）/ event（对象写入事件触发）。
 // - 源端只读，动作结果只写本体可写侧（object_write），不回写数据源。
 import type { MetadataRepository, FunctionSandbox, AutomationRule, ActionPrecondition } from './types';
+import { evaluateRuleCondition } from './rule-condition';
 
 export interface RuleSchedulerOptions {
   // 轮询间隔（毫秒）；schedule 触发器各自的 intervalSeconds 决定各自执行频率
@@ -124,14 +125,27 @@ export class RuleScheduler {
     this.lastRanAt.set(rule.apiName, now);
 
     try {
-      // 1) 可配置 Function：评估条件（隔离执行：条件函数应只读）
-      const output = this.executeCondition
-        ? await this.executeCondition(rule.conditionFunction, rule.params ?? {})
-        : await this.sandbox.execute(rule.conditionFunction, rule.params ?? {});
-      const flagged = extractFlagged(output);
+      // 1) 条件评估：
+      //    - 声明式条件（property/aggregate/all/any/function）走 evaluateRuleCondition；
+      //    - 旧规则回退 conditionFunction。
+      const runFn = (name: string, args: Record<string, unknown>) => this.executeCondition
+        ? this.executeCondition(name, args)
+        : this.sandbox.execute(name, args);
+
+      let flagged: FlaggedItem[];
+      let matched: boolean;
+      if (rule.condition) {
+        const result = await evaluateRuleCondition(this.repo, rule.condition, runFn, rule.params);
+        flagged = result.items as FlaggedItem[];
+        matched = result.matched;
+      } else {
+        const output = await runFn(rule.conditionFunction!, rule.params ?? {});
+        flagged = extractFlagged(output);
+        matched = flagged.length > 0;
+      }
       base.ran = true;
       base.flaggedCount = flagged.length;
-      if (flagged.length === 0) return base;
+      if (!matched) return base;
 
       // 2) 可配置 Action：落地（动作语义由 ActionType 决定，可能是生成告警/写对象/通知/审批等）
       const action = await this.repo.getAction(rule.actionApiName);
@@ -149,7 +163,7 @@ export class RuleScheduler {
           passed.push(item);
         }
       }
-      if (passed.length === 0) return base;
+      if (passed.length === 0 && flagged.length > 0) return base;
 
       const res = await this.sandbox.execute(rule.actionApiName, {
         rule: rule.apiName,

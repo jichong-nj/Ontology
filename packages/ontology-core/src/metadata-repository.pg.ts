@@ -859,6 +859,24 @@ export class PostgresMetadataRepository implements MetadataRepository {
    * 取每个实例最新 patch 中的属性值，GROUP BY 计数。
    * 若属性为派生属性，则实时计算各实例派生值后再聚合。
    */
+  // 标量聚合（条件评估用）：count/sum/avg/min/max，数值属性按 numeric 统计
+  async aggregateScalar(
+    objectType: string,
+    opts: { aggregation: 'count' | 'sum' | 'avg' | 'min' | 'max'; property?: string },
+  ): Promise<number> {
+    const { aggregation, property } = opts;
+    if (aggregation !== 'count' && !property) throw new Error('聚合需要 property');
+    const numeric = `(patch->>$2)::numeric`;
+    const sql = aggregation === 'count'
+      ? `SELECT count(*)::numeric AS v FROM object_write WHERE object_type=$1`
+      : `SELECT ${aggregation}(${numeric}) AS v
+           FROM object_write
+          WHERE object_type=$1 AND patch->>$2 ~ '^-?[0-9]+(\\.[0-9]+)?$'`;
+    const params = aggregation === 'count' ? [objectType] : [objectType, property];
+    const { rows } = await this.pool.query(sql, params);
+    return Number(rows[0]?.v ?? 0);
+  }
+
   async aggregateByProperty(
     objectType: string,
     property: string,
@@ -1255,11 +1273,12 @@ export class PostgresMetadataRepository implements MetadataRepository {
   async createRule(def: AutomationRule): Promise<void> {
     await this.pool.query(
       `INSERT INTO rule
-        (api_name, display_name, enabled, trigger, condition_function, action_api_name, params, target_object_type, version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        (api_name, display_name, enabled, trigger, condition_function, action_api_name, params, target_object_type, version, condition)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT (api_name) DO NOTHING`,
-      [def.apiName, def.displayName, def.enabled, JSON.stringify(def.trigger), def.conditionFunction,
-        def.actionApiName, JSON.stringify(def.params ?? {}), def.targetObjectType, def.version],
+      [def.apiName, def.displayName, def.enabled, JSON.stringify(def.trigger), def.conditionFunction ?? null,
+        def.actionApiName, JSON.stringify(def.params ?? {}), def.targetObjectType, def.version,
+        def.condition ? JSON.stringify(def.condition) : null],
     );
   }
 
@@ -1286,11 +1305,12 @@ export class PostgresMetadataRepository implements MetadataRepository {
       `UPDATE rule SET
         display_name = $2, enabled = $3, trigger = $4,
         condition_function = $5, action_api_name = $6, params = $7,
-        target_object_type = $8, version = $9
+        target_object_type = $8, version = $9, condition = $10
        WHERE api_name = $1`,
       [apiName, merged.displayName, merged.enabled, JSON.stringify(merged.trigger),
-        merged.conditionFunction, merged.actionApiName, JSON.stringify(merged.params ?? {}),
-        merged.targetObjectType, merged.version],
+        merged.conditionFunction || null, merged.actionApiName, JSON.stringify(merged.params ?? {}),
+        merged.targetObjectType, merged.version,
+        merged.condition ? JSON.stringify(merged.condition) : null],
     );
   }
 
@@ -1533,7 +1553,8 @@ function rowToRule(r: any): AutomationRule {
     displayName: r.display_name,
     enabled: r.enabled,
     trigger: r.trigger,
-    conditionFunction: r.condition_function,
+    conditionFunction: r.condition_function ?? '',
+    condition: r.condition ?? undefined,
     actionApiName: r.action_api_name,
     params: r.params,
     targetObjectType: r.target_object_type,
