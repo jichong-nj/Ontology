@@ -76,6 +76,10 @@
 
 ## 建模能力（详见 `docs/PALANTIR-PK-ALIGNMENT.md`）
 
+> **属性语义（P0–P3）已完成（2026-11-24）**：属性 description/allowedValues、值类型 ValueType（enum/range/regex）、
+> 写入校验（WRITE_VALIDATION=off|warn|reject）、动作参数约束、validation_issue 健康记录、
+> 属性 unit/format/defaultValue（同步填充）。
+
 ### B5. 自选主键 `primaryKeyProperty`
 - 允许对象类型用业务键（如 `emp_code`）作为主键，避免为跨键关联补冗余列。
 - 优先级：P0（该文档第 4 节）
