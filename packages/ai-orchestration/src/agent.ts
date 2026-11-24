@@ -42,6 +42,17 @@ export interface AgentRuntime {
   deleteFunction(apiName: string): Promise<unknown>;
   upsertObjectTypeProperty(apiName: string, property: Record<string, unknown>): Promise<unknown>;
   computeDerived(objectType: string, property: string, rid: string): Promise<unknown>;
+  // 自动化：创建动作（effect 指向已注册函数）与规则（触发 + 条件函数 + 动作）
+  createAction(def: {
+    apiName: string; displayName: string; description?: string; effectFunction: string;
+    preconditions?: Array<Record<string, unknown>>;
+  }): Promise<unknown>;
+  createRule(def: {
+    apiName: string; displayName: string; enabled?: boolean;
+    trigger: { kind: 'schedule'; intervalSeconds: number } | { kind: 'event'; on: 'object_write'; objectType: string };
+    conditionFunction: string; actionApiName: string;
+    params?: Record<string, unknown>; targetObjectType?: string;
+  }): Promise<unknown>;
   // 数据源建模：列出某 schema 下的全部表名（只读）
   listSourceTables(connId: string, schema?: string): Promise<unknown>;
   // 数据源建模：读取某数据源中一张表的完整结构 + 样例行（不落库，只供分析）
@@ -73,7 +84,7 @@ const TOOL_GROUPS: Record<string, string[]> = {
   // 受限 NL2SQL：LLM 生成只读 SELECT，在 S1 源库白名单表内执行（不回写源）
   sql: ['run_sql'],
   // 数据源建模：列出数据源 / 读取源表结构与样例（只读；创建动作需用户在前端确认）
-  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type', 'list_functions', 'create_function', 'delete_function', 'add_object_type_property', 'compute_derived', 'invoke_function'],
+  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type', 'list_functions', 'create_function', 'delete_function', 'add_object_type_property', 'compute_derived', 'invoke_function', 'create_action', 'create_rule'],
 };
 
 function allToolSpecs(): ToolSpec[] {
@@ -394,6 +405,59 @@ function allToolSpecs(): ToolSpec[] {
     {
       type: 'function',
       function: {
+        name: 'create_action',
+        description:
+          '创建动作（Action），effect 指向一个已注册函数。规则命中后由该动作落地（写对象/通知等）。' +
+          '创建前应先 list_functions 确认函数存在；action 会后台执行，创建前应向用户说明。',
+        parameters: {
+          type: 'object',
+          properties: {
+            apiName: { type: 'string', description: '动作 apiName' },
+            displayName: { type: 'string' },
+            description: { type: 'string' },
+            effectFunction: { type: 'string', description: '已注册函数 apiName（动作执行时调用）' },
+          },
+          required: ['apiName', 'displayName', 'effectFunction'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'create_rule',
+        description:
+          '创建自动化规则：trigger（schedule：intervalSeconds 最小 5；event：object_write + objectType）+ conditionFunction + actionApiName。' +
+          '条件函数必须返回 {flagged:[...]} 才会执行动作。事件触发只覆盖平台写入（同步/动作/函数），源库直接改动不会触发。' +
+          '规则创建后会自动在后台执行，请先向用户确认。',
+        parameters: {
+          type: 'object',
+          properties: {
+            apiName: { type: 'string' },
+            displayName: { type: 'string' },
+            enabled: { type: 'boolean', description: '默认 true' },
+            trigger: {
+              type: 'object',
+              description: "schedule: {kind:'schedule', intervalSeconds:number}；event: {kind:'event', on:'object_write', objectType:string}",
+              properties: {
+                kind: { type: 'string', enum: ['schedule', 'event'] },
+                intervalSeconds: { type: 'number' },
+                on: { type: 'string', enum: ['object_write'] },
+                objectType: { type: 'string' },
+              },
+              required: ['kind'],
+            },
+            conditionFunction: { type: 'string', description: '已注册函数 apiName' },
+            actionApiName: { type: 'string', description: '已注册动作 apiName' },
+            params: { type: 'object', description: '传给条件函数的参数' },
+            targetObjectType: { type: 'string', description: '动作落点对象类型（写对象类动作用）' },
+          },
+          required: ['apiName', 'displayName', 'trigger', 'conditionFunction', 'actionApiName'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'list_link_types',
         description: '列出当前本体中已存在的关系类型（apiName/显示名/源对象/目标对象/基数），用于关系建模前避免重复。' +
           '支持 keyword 模糊搜索与 limit/offset 分页，返回 { total, count, hasMore, items }。',
@@ -523,6 +587,15 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
     delete_function: async (a: any) => rt.deleteFunction(a.apiName),
     add_object_type_property: async (a: any) => rt.upsertObjectTypeProperty(a.apiName, a.property),
     compute_derived: async (a: any) => rt.computeDerived(a.objectType, a.property, a.rid),
+    create_action: async (a: any) => rt.createAction({
+      apiName: a.apiName, displayName: a.displayName, description: a.description,
+      effectFunction: a.effectFunction, preconditions: a.preconditions,
+    }),
+    create_rule: async (a: any) => rt.createRule({
+      apiName: a.apiName, displayName: a.displayName, enabled: a.enabled,
+      trigger: a.trigger, conditionFunction: a.conditionFunction, actionApiName: a.actionApiName,
+      params: a.params, targetObjectType: a.targetObjectType,
+    }),
     list_source_tables: async (a: any) => rt.listSourceTables(a.connId, a.schema),
     inspect_source_table: async (a: any) =>
       rt.inspectSourceTable(a.connId, a.schema || 'public', a.table),

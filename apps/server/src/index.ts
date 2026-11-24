@@ -1308,6 +1308,57 @@ const agentRuntime: AgentRuntime = {
       totalProperties: props.length,
     };
   },
+  // 自动化：创建动作（引用已注册函数）
+  createAction: async (def: any) => {
+    if (!def?.apiName || !/^[A-Za-z][A-Za-z0-9_]*$/.test(def.apiName)) throw new Error('动作 apiName 必填且只能含字母数字下划线');
+    if (!def.effectFunction) throw new Error('effectFunction 必填（指向已注册函数）');
+    if (!(await repo.getFunction(def.effectFunction))) {
+      throw new Error(`动作引用的函数不存在: ${def.effectFunction}（请先 create_function）`);
+    }
+    if (await repo.getAction(def.apiName)) throw new Error(`动作已存在: ${def.apiName}`);
+    await repo.createAction({
+      apiName: def.apiName,
+      displayName: def.displayName ?? def.apiName,
+      kind: 'standard',
+      parameters: [],
+      validationRules: [],
+      preconditions: def.preconditions ?? [],
+      effect: { kind: 'function', ref: def.effectFunction },
+      version: 1,
+    } as any);
+    return { ok: true, apiName: def.apiName, effectFunction: def.effectFunction };
+  },
+  // 自动化：创建规则（校验条件函数与动作存在）
+  createRule: async (def: any) => {
+    if (!def?.apiName || !/^[A-Za-z][A-Za-z0-9_]*$/.test(def.apiName)) throw new Error('规则 apiName 必填且只能含字母数字下划线');
+    const trig = def.trigger;
+    if (!trig || (trig.kind !== 'schedule' && trig.kind !== 'event')) throw new Error("trigger.kind 必须是 schedule 或 event");
+    if (trig.kind === 'schedule' && !(Number(trig.intervalSeconds) >= 5)) throw new Error('schedule 规则 intervalSeconds 需 ≥ 5');
+    if (trig.kind === 'event' && (trig.on !== 'object_write' || !trig.objectType)) {
+      throw new Error("event 规则需为 {kind:'event', on:'object_write', objectType:'<对象类型>'}");
+    }
+    if (!(await repo.getFunction(def.conditionFunction))) {
+      throw new Error(`条件函数不存在: ${def.conditionFunction}（请先 create_function）`);
+    }
+    if (!(await repo.getAction(def.actionApiName))) {
+      throw new Error(`动作不存在: ${def.actionApiName}（请先 create_action）`);
+    }
+    if (await repo.getRule(def.apiName)) throw new Error(`规则已存在: ${def.apiName}`);
+    await repo.createRule({
+      apiName: def.apiName,
+      displayName: def.displayName ?? def.apiName,
+      enabled: def.enabled ?? true,
+      trigger: trig,
+      conditionFunction: def.conditionFunction,
+      actionApiName: def.actionApiName,
+      params: def.params ?? {},
+      targetObjectType: def.targetObjectType ?? '',
+      version: 1,
+    } as any);
+    void startRuleSchedulerIfNeeded();
+    console.log(`[aip] 已创建规则 ${def.apiName}（${trig.kind}）`);
+    return { ok: true, apiName: def.apiName, trigger: trig, enabled: def.enabled ?? true };
+  },
   // 派生/函数建模：计算派生属性（验证用）
   computeDerived: async (objectType: string, property: string, rid: string) => {
     const sb = await getSandbox();
@@ -2025,6 +2076,16 @@ const MODELING_PROMPT = `
 - 写入前先检查实例数：若读取结果为 0 而源表有数据，立即停止并报告，不要继续写。
 - writeObjectPatch 返回 undefined 表示成功（写入无返回值），不要当作失败；落库结果用 get_instances 复核。
 - 探测/临时函数用完可用 delete_function 清理；若函数仍被派生属性（reducerFn）引用会被拒绝，需先解绑。
+
+## 调度与自动化（规则）
+- 规则 = trigger + conditionFunction + actionApiName：
+  - schedule：{kind:'schedule', intervalSeconds:number}（最小 5 秒，平台 10 秒 tick）；
+  - event：{kind:'event', on:'object_write', objectType:'Employee'}（对象写入事件）。
+- 条件函数必须返回 {flagged:[...]}；为空则不会执行动作。
+- 事件触发只覆盖平台写入（同步/动作/函数），源库直接改动不会触发，需先同步进本体。
+- 规则必须有动作（数据库外键约束）；动作通过 create_action 创建，effect 指向已注册函数。
+- 创建规则前先向用户说明"规则会在后台自动执行"，并确认参数（尤其 event 的 objectType）。
+- 典型用法：定时重算预计算属性（schedule）+ 条件函数返回空；或数据写入后自动生成告警（event）。
 `;
 
 // 工具调用格式约束：所有 Agent 统一追加（减少本地模型输出 XML 文本的概率）
