@@ -512,7 +512,7 @@ watch(() => route.params.apiName, load);
     <div v-else-if="!loading" class="detail-empty">未找到该对象类型。</div>
 
     <!-- 编辑弹窗 -->
-    <ElDialog v-model="editVisible" title="编辑对象类型" width="900px" top="5vh" destroy-on-close class="edit-obj-dialog">
+    <ElDialog v-model="editVisible" title="编辑对象类型" width="1100px" top="5vh" destroy-on-close class="edit-obj-dialog">
       <ElForm label-position="top">
         <ElFormItem label="显示名称"><ElInput v-model="editForm.displayName" /></ElFormItem>
         <ElFormItem label="描述"><ElInput v-model="editForm.description" type="textarea" :rows="2" /></ElFormItem>
@@ -900,7 +900,7 @@ watch(() => route.params.apiName, load);
 .wizard-prop-head,
 .wizard-prop-row--normal {
   display: grid;
-  grid-template-columns: 24px 1fr 1fr 120px 70px 44px;
+  grid-template-columns: 24px minmax(120px, 1fr) minmax(120px, 1fr) 110px 64px 116px;
   gap: var(--space-1);
   align-items: center;
 }
@@ -916,13 +916,14 @@ watch(() => route.params.apiName, load);
 .wizard-prop-head .col-ops { text-align: center; }
 .col-required-cell { display: flex; align-items: center; justify-content: center; }
 .wizard-prop-row--normal { margin-bottom: var(--space-1); }
-.wizard-prop-row__ops { display: flex; align-items: center; justify-content: center; gap: var(--space-1); }
+.wizard-prop-row__ops { display: flex; align-items: center; justify-content: center; gap: var(--space-1); white-space: nowrap; }
+.wizard-prop-row__ops :deep(.el-button) { padding: 4px 2px; }
 .col-shared { display: inline-flex; align-items: center; justify-content: center; }
 .prop-shared-icon { color: #67c23a; }
 .prop-shared-tag { margin-left: 4px; vertical-align: middle; }
 .wizard-prop-row {
   display: grid;
-  grid-template-columns: 24px 1fr 1fr 120px 70px 44px;
+  grid-template-columns: 24px minmax(120px, 1fr) minmax(120px, 1fr) 110px 64px 116px;
   gap: var(--space-1);
   margin-bottom: var(--space-1);
 }
@@ -1041,6 +1042,7 @@ watch(() => route.params.apiName, load);
   overflow: hidden !important;
 }
 .edit-obj-dialog :deep(.el-dialog) {
+  width: min(1100px, 95vw) !important;
   margin-top: 5vh !important;
   height: 82vh !important;
   max-height: 86vh !important;
@@ -1055,7 +1057,7 @@ watch(() => route.params.apiName, load);
   min-height: 0 !important;
   max-height: none !important;
   overflow-y: auto !important;
-  overflow-x: hidden !important;
+  overflow-x: auto !important;
   padding-right: var(--space-3) !important;
 }
 .edit-obj-dialog :deep(.el-dialog__footer) {
