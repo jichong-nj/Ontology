@@ -165,7 +165,9 @@ export class RuleScheduler {
       }
       if (passed.length === 0 && flagged.length > 0) return base;
 
-      const res = await this.sandbox.execute(rule.actionApiName, {
+      // 按 Action 的 effect 执行（effect.ref 才是函数名；action apiName 只是动作标识）
+      const effectRef = action.effect?.kind === 'function' ? (action.effect.ref ?? rule.actionApiName) : rule.actionApiName;
+      const res = await this.sandbox.execute(effectRef, {
         rule: rule.apiName,
         targetObjectType: rule.targetObjectType, // 动作落点对象类型（如 Alert），仅写类动作使用
         // 兼容旧动作函数体（读取 args.alertObjectType）；新函数体应优先读 targetObjectType。
