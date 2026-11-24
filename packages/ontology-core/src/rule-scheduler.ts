@@ -17,6 +17,8 @@ import type { MetadataRepository, FunctionSandbox, AutomationRule, ActionPrecond
 export interface RuleSchedulerOptions {
   // 轮询间隔（毫秒）；schedule 触发器各自的 intervalSeconds 决定各自执行频率
   tickMs?: number;
+  // 条件函数的执行包装（用于只读隔离等；默认直接 sandbox.execute）
+  executeCondition?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
 }
 
 // 一次规则执行的结果（供可观测/测试断言）
@@ -77,11 +79,13 @@ export class RuleScheduler {
   private tickMs: number;
   private repo: MetadataRepository;
   private sandbox: FunctionSandbox;
+  private executeCondition?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
 
   constructor(repo: MetadataRepository, sandbox: FunctionSandbox, opts: RuleSchedulerOptions = {}) {
     this.repo = repo;
     this.sandbox = sandbox;
     this.tickMs = opts.tickMs ?? 10_000;
+    this.executeCondition = opts.executeCondition;
   }
 
   start() {
@@ -120,8 +124,10 @@ export class RuleScheduler {
     this.lastRanAt.set(rule.apiName, now);
 
     try {
-      // 1) 可配置 Function：评估条件
-      const output = await this.sandbox.execute(rule.conditionFunction, rule.params ?? {});
+      // 1) 可配置 Function：评估条件（隔离执行：条件函数应只读）
+      const output = this.executeCondition
+        ? await this.executeCondition(rule.conditionFunction, rule.params ?? {})
+        : await this.sandbox.execute(rule.conditionFunction, rule.params ?? {});
       const flagged = extractFlagged(output);
       base.ran = true;
       base.flaggedCount = flagged.length;
@@ -157,6 +163,8 @@ export class RuleScheduler {
       return base;
     } catch (e: any) {
       base.error = e?.message ?? String(e);
+      // 规则失败必须可观测（后台 tick 不会把错误返回给调用方）
+      console.warn(`[rule] ${rule.apiName} 执行失败: ${base.error}`);
       return base;
     } finally {
       this.running.set(rule.apiName, false);

@@ -145,6 +145,18 @@ async function startRuleSchedulerIfNeeded() {
   }
 }
 
+// 函数新增/修改/删除后重建调度器 sandbox，避免规则执行时"未注册的函数实现"
+async function refreshRuleScheduler(reason: string): Promise<void> {
+  if (!ruleScheduler) return;
+  try {
+    ruleScheduler.stop();
+    ruleScheduler = await startScheduler(repo, 10_000);
+    console.log(`[scheduler] 已刷新（${reason}）`);
+  } catch (e: any) {
+    console.error('[scheduler] 刷新失败:', e.message);
+  }
+}
+
 // 启动时自动引导（当前已按需关闭，见文末 app.listen；需要恢复时取消注释即可）
 async function bootstrapEnterpriseBiz() {
   try {
@@ -353,6 +365,7 @@ app.post('/api/s2/functions', async (req, res) => {
     if (sharedSandbox && fn.body && fn.language === 'typescript') {
       await registerDbFunctions(repo, sharedSandbox);
     }
+    await refreshRuleScheduler(`函数 ${fn.apiName} 创建/更新`);
     res.status(201).json({ ok: true });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
@@ -366,6 +379,7 @@ app.put('/api/s2/functions/:apiName', async (req, res) => {
     if (sharedSandbox && (patch.body !== undefined || patch.language !== undefined)) {
       await registerDbFunctions(repo, sharedSandbox);
     }
+    await refreshRuleScheduler(`函数 ${req.params.apiName} 更新`);
     res.json({ ok: true });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
@@ -375,6 +389,7 @@ app.put('/api/s2/functions/:apiName', async (req, res) => {
 app.delete('/api/s2/functions/:apiName', async (req, res) => {
   try {
     await repo.deleteFunction(req.params.apiName);
+    await refreshRuleScheduler(`函数 ${req.params.apiName} 删除`);
     res.json({ ok: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -481,10 +496,33 @@ app.get('/api/s2/rules', async (req, res) => {
 });
 
 // 新建自动化规则（FDE 可自助配置，无需改码）
+// 规则定义校验：条件函数必须存在且为 query（只读）；动作必须存在；trigger 合法
+async function validateRuleDefinition(def: any): Promise<void> {
+  if (def.conditionFunction !== undefined) {
+    const fn = await repo.getFunction(def.conditionFunction);
+    if (!fn) throw new Error(`条件函数不存在: ${def.conditionFunction}`);
+    if (fn.kind !== 'query') {
+      throw new Error(`规则条件函数必须是 query（只读）函数；${fn.apiName} 是 ${fn.kind ?? 'edit'} 函数`);
+    }
+  }
+  if (def.actionApiName !== undefined && !(await repo.getAction(def.actionApiName))) {
+    throw new Error(`动作不存在: ${def.actionApiName}`);
+  }
+  if (def.trigger !== undefined) {
+    const t = def.trigger;
+    if (!t || (t.kind !== 'schedule' && t.kind !== 'event')) throw new Error('trigger.kind 必须是 schedule 或 event');
+    if (t.kind === 'schedule' && !(Number(t.intervalSeconds) >= 5)) throw new Error('schedule intervalSeconds 需 ≥ 5');
+    if (t.kind === 'event' && (t.on !== 'object_write' || !t.objectType)) {
+      throw new Error("event 规则需为 {kind:'event', on:'object_write', objectType:'<对象类型>'}");
+    }
+  }
+}
+
 app.post('/api/s2/rules', async (req, res) => {
   try {
     const def = req.body as AutomationRule;
     if (!def?.apiName) return res.status(400).json({ error: 'apiName 必填' });
+    await validateRuleDefinition(def);
     if (await repo.getRule(def.apiName)) {
       return res.status(409).json({ error: `规则已存在: ${def.apiName}` });
     }
@@ -503,7 +541,10 @@ app.post('/api/s2/rules/run', async (_req, res) => {
     let scheduler = ruleScheduler;
     if (!scheduler) {
       const sb = await getSandbox();
-      scheduler = new RuleScheduler(repo, sb, { tickMs: 999_999_999 });
+      scheduler = new RuleScheduler(repo, sb, {
+        tickMs: 999_999_999,
+        executeCondition: (name, args) => runWithReadOnly(() => sb.execute(name, args)),
+      });
     }
     const result = await scheduler.runAll();
     res.json({ ok: true, results: result });
@@ -526,6 +567,7 @@ app.get('/api/s2/rules/:apiName', async (req, res) => {
 app.put('/api/s2/rules/:apiName', async (req, res) => {
   try {
     const patch = req.body as Partial<AutomationRule>;
+    await validateRuleDefinition(patch);
     await repo.updateRule(req.params.apiName, patch);
     void startRuleSchedulerIfNeeded();
     res.json({ ok: true });
@@ -1466,7 +1508,10 @@ const agentRuntime: AgentRuntime = {
     let scheduler = ruleScheduler;
     if (!scheduler) {
       const sb = await getSandbox();
-      scheduler = new RuleScheduler(repo, sb, { tickMs: 999_999_999 });
+      scheduler = new RuleScheduler(repo, sb, {
+        tickMs: 999_999_999,
+        executeCondition: (name, args) => runWithReadOnly(() => sb.execute(name, args)),
+      });
     }
     return scheduler.runAll();
   },
@@ -1540,6 +1585,7 @@ const agentRuntime: AgentRuntime = {
         displayName: def.displayName, description: def.description ?? '', body: def.body,
         language: 'typescript', entry: 'main', kind, pure, inputs: inputs as any, outputs, outputSpec,
       } as any);
+      await refreshRuleScheduler(`函数 ${def.apiName} 更新（agent）`);
       return { ok: true, updated: true, apiName: def.apiName, kind, pure };
     }
     await repo.createFunction({
@@ -1548,6 +1594,7 @@ const agentRuntime: AgentRuntime = {
       description: def.description ?? '', body: def.body, version: 1,
       createdAt: '', updatedAt: '',
     } as any);
+    await refreshRuleScheduler(`函数 ${def.apiName} 创建（agent）`);
     return { ok: true, created: true, apiName: def.apiName, kind, pure };
   },
   // 派生/函数建模：删除函数（被派生属性引用时拒绝）
@@ -1567,6 +1614,7 @@ const agentRuntime: AgentRuntime = {
       throw new Error(`函数 ${apiName} 正被派生属性引用，不能删除：${refs.join(', ')}（请先移除属性或改绑其他函数）`);
     }
     await repo.deleteFunction(apiName);
+    await refreshRuleScheduler(`函数 ${apiName} 删除（agent）`);
     return { ok: true, deleted: apiName };
   },
   // 派生/函数建模：给对象类型新增/更新属性（按 apiName 覆盖，保留其它属性）
@@ -1646,8 +1694,12 @@ const agentRuntime: AgentRuntime = {
     if (trig.kind === 'event' && (trig.on !== 'object_write' || !trig.objectType)) {
       throw new Error("event 规则需为 {kind:'event', on:'object_write', objectType:'<对象类型>'}");
     }
-    if (!(await repo.getFunction(def.conditionFunction))) {
-      throw new Error(`条件函数不存在: ${def.conditionFunction}（请先 create_function）`);
+    {
+      const condFn = await repo.getFunction(def.conditionFunction);
+      if (!condFn) throw new Error(`条件函数不存在: ${def.conditionFunction}（请先 create_function）`);
+      if (condFn.kind !== 'query') {
+        throw new Error(`规则条件函数必须是 query（只读）函数；${condFn.apiName} 是 ${condFn.kind ?? 'edit'} 函数`);
+      }
     }
     if (!(await repo.getAction(def.actionApiName))) {
       throw new Error(`动作不存在: ${def.actionApiName}（请先 create_action）`);

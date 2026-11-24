@@ -687,7 +687,11 @@ export async function startScheduler(repo: PostgresMetadataRepository, tickMs = 
   const sandbox = buildSandbox(repo);
   // 用 DB 中可编辑的函数体覆盖 seed 版本（否则 FDE 在线修改的函数在调度器里不生效）
   await registerDbFunctions(repo, sandbox);
-  const scheduler = new RuleScheduler(repo, sandbox, { tickMs });
+  const scheduler = new RuleScheduler(repo, sandbox, {
+    tickMs,
+    // 条件函数只读隔离（query 语义）：防止规则条件在后台写对象
+    executeCondition: (name, args) => runWithReadOnly(() => sandbox.execute(name, args)),
+  });
   scheduler.start();
   return scheduler;
 }
