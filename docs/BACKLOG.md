@@ -26,6 +26,42 @@
 - 仍缺：定时同步调度、CDC、cron 表达式。
 - 2026-11-24：智能体已可创建函数/动作/规则（`create_function` / `create_action` / `create_rule`，带引用校验）；沙箱函数禁止直接建规则/动作（防绕过后门）。
 
+## 权限与审计
+
+> 策略：先做能力（工具集），权限延后；但**审计不能延后**——事后追溯是权限系统设计的输入。
+
+### B9. 工具调用审计（最高优先级）
+- **现状**：只有会话 `timeline` 记录工具调用，删会话即丢失，无法按"谁/何时/调了什么工具/改了什么"检索。
+- **建议**：新增 `agent_tool_call(id, agent_id, conversation_id, tool, args_json, ok, error, actor, created_at)`，
+  在 `buildToolMap` 的统一入口包装记录；保留结果摘要与耗时。
+- **理由**：没有审计就无法回答"谁通过智能体改了数据"，权限系统缺少事实依据。
+- **优先级**：高（约 0.5~1 天）
+
+### B10. 工具风险分级与确认机制
+- **现状**：所有工具平级，`create_rule` 会在后台自动执行，误建不易发现。
+- **建议**：工具标注 `read / write / admin`；admin 类（建规则、删函数、批量写）默认关闭或要求显式确认
+  （由前端确认后传 `confirm:true`，而不是让模型自行填写）。
+- **优先级**：中高
+
+### B11. 对象类型白名单统一收口
+- **现状**：仅 `get_instances` / `get_object_links` / `aggregate` / `histogram` 检查 Agent 的 `objectTypes` 白名单；
+  `inspect_object_type` / `add_object_type_property` / `compute_derived` / `create_function` 未检查。
+- **建议**：在工具入口统一做对象类型授权校验，避免后续加权限时逐个改。
+- **优先级**：中
+
+### B12. 身份占位
+- **现状**：写入 actor 只是字符串（`sync:source`、`fn:xxx`），无真实用户身份。
+- **建议**：工具入口解析 `X-User`（或临时 `demo-user`），写入审计与 `object_write.actor`；后续接 SSO 只替换解析逻辑。
+- **优先级**：中
+
+### B13. 权限模型（远期）
+- 主体：user / role / agent（服务账号）
+- 权限点：`object_type:read/write`、`function:invoke`、`action:trigger`、`rule:manage`、`sql:query(tables)`、`source:read`
+- 对象级：行级过滤 + 列级脱敏（Explore 与 API 同时生效，不能只在前端）
+- 审批：建规则、删除类型、批量写等高风险操作走审批
+- 审计：全量工具调用 + 数据访问 + SQL 记录
+- **实施顺序**：能力期（当前）→ 审计+风险分级 → 身份+RBAC → 对象级策略/审批 → 沙箱迁独立 worker（安全隔离）
+
 ## 关系与实例
 
 ### B3. 删除实例时未级联清理关系边
