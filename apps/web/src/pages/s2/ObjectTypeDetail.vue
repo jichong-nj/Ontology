@@ -1043,9 +1043,8 @@ watch(() => route.params.apiName, load);
 }
 .edit-obj-dialog :deep(.el-dialog) {
   width: min(1100px, 95vw) !important;
-  margin-top: 5vh !important;
-  height: 82vh !important;
-  max-height: 86vh !important;
+  height: auto !important;
+  max-height: 90vh !important;
   display: flex !important;
   flex-direction: column !important;
 }

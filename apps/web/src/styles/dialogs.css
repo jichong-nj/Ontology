@@ -1,0 +1,32 @@
+/* 全局弹窗规范：窗体固定居中、不可移动，只有内容区滚动 */
+.el-overlay-dialog {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  overflow: auto !important;
+}
+
+.el-dialog {
+  margin: 0 auto !important;            /* 覆盖各页面 top/margin-top，固定居中 */
+  max-height: 90vh !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.el-dialog__header {
+  flex: 0 0 auto !important;
+  cursor: default !important;           /* 不可拖动 */
+  user-select: none !important;
+}
+
+.el-dialog__body {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+}
+
+.el-dialog__footer {
+  flex: 0 0 auto !important;
+}
