@@ -24,7 +24,7 @@ function openCreate() {
   dialogVisible.value = true;
 }
 
-function openEdit(v: ValueTypeDTO) {
+function openEdit(v: any) {
   editing.value = v.apiName;
   form.value = {
     apiName: v.apiName, displayName: v.displayName, baseType: v.baseType,
@@ -33,7 +33,7 @@ function openEdit(v: ValueTypeDTO) {
     min: v.constraint?.min ?? '', max: v.constraint?.max ?? '', pattern: v.constraint?.pattern ?? '',
     failureMessage: v.failureMessage ?? '', example: v.example ?? '',
   };
-  allowedText.value = (v.allowedValues ?? []).map((x) => [x.value, x.label ?? '', x.description ?? ''].join('|')).join('\n');
+  allowedText.value = (v.allowedValues ?? []).map((x: any) => [x.value, x.label ?? '', x.description ?? ''].join('|')).join('\n');
   dialogVisible.value = true;
 }
 
@@ -61,7 +61,7 @@ async function save() {
   } catch (e: any) { ElMessage.error(e?.response?.data?.error || e?.message || '保存失败'); }
 }
 
-async function remove(v: ValueTypeDTO) {
+async function remove(v: any) {
   try {
     await ElMessageBox.confirm(`确定删除值类型「${v.displayName}」吗？引用它的属性将失去约束。`, '删除确认', { type: 'warning' });
   } catch { return; }
@@ -70,7 +70,7 @@ async function remove(v: ValueTypeDTO) {
   await load();
 }
 
-function constraintText(v: ValueTypeDTO): string {
+function constraintText(v: any): string {
   if (v.allowedValues?.length) return `枚举 ${v.allowedValues.length} 项`;
   if (v.constraint?.kind === 'range') return `范围 ${v.constraint.min ?? '-∞'} ~ ${v.constraint.max ?? '+∞'}`;
   if (v.constraint?.kind === 'regex') return `正则 /${v.constraint.pattern}/`;

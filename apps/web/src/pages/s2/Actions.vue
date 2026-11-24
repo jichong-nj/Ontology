@@ -17,6 +17,12 @@
           <span v-if="row.effect?.ref" class="ref">→ {{ row.effect.ref }}</span>
         </template>
       </el-table-column>
+      <el-table-column label="参数" width="200">
+        <template #default="{ row }">
+          <span v-if="row.parameters?.length">{{ row.parameters.map((p: any) => p.name).join(', ') }}</span>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="内嵌校验规则（preconditions）" min-width="280">
         <template #default="{ row }">
           <div v-if="row.preconditions?.length" class="precond-list">
@@ -61,6 +67,21 @@
           <el-input v-model="editing.effect.ref" :placeholder="editing.effect.kind === 'function' ? '函数 apiName' : '对象类型 apiName'" />
         </el-form-item>
 
+        <el-divider content-position="left">参数定义（触发时按约束校验）</el-divider>
+        <div v-for="(p, idx) in (editing?.parameters ?? [])" :key="'param-' + idx" class="param-editor">
+          <el-input v-model="p.name" placeholder="参数名" style="width: 130px" />
+          <el-select v-model="p.type" style="width: 110px">
+            <el-option v-for="t in dataTypes" :key="t" :label="t" :value="t" />
+          </el-select>
+          <el-switch v-model="p.required" active-text="必填" />
+          <el-select v-model="p.valueType" clearable placeholder="值类型（可选）" style="width: 160px">
+            <el-option v-for="vt in valueTypes" :key="vt.apiName" :label="vt.displayName" :value="vt.apiName" />
+          </el-select>
+          <el-input v-model="p.description" placeholder="参数说明" style="width: 150px" />
+          <el-button type="danger" size="small" circle @click="removeParameter(idx)">−</el-button>
+        </div>
+        <el-button size="small" @click="addParameter">+ 添加参数</el-button>
+
         <el-divider content-position="left">内嵌校验规则（动作执行前逐条校验）</el-divider>
         <div v-for="(p, idx) in (editing?.preconditions ?? [])" :key="idx" class="precond-editor">
           <el-select v-model="p.kind" style="width: 160px">
@@ -92,7 +113,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { s2actions } from '@/api';
+import { s2actions, valtype } from '@/api';
+import type { ValueTypeDTO } from '@/api';
 import type { ActionType, ActionPrecondition } from '@ontology/ontology-core';
 
 const actions = ref<ActionType[]>([]);
@@ -101,6 +123,8 @@ const editorVisible = ref(false);
 const saving = ref(false);
 const editing = ref<ActionType | null>(null);
 const isExisting = ref(false);
+const valueTypes = ref<ValueTypeDTO[]>([]);
+const dataTypes = ['string', 'integer', 'float', 'boolean', 'date', 'timestamp'];
 
 function preconditionText(p: ActionPrecondition): string {
   switch (p.kind) {
@@ -121,6 +145,16 @@ function newPrecondition(): ActionPrecondition {
   return { kind: 'requiredProperty', property: '', message: '' };
 }
 
+function addParameter() {
+  if (!editing.value) return;
+  if (!editing.value.parameters) editing.value.parameters = [];
+  editing.value.parameters.push({ name: '', type: 'string', required: false });
+}
+
+function removeParameter(idx: number) {
+  editing.value?.parameters?.splice(idx, 1);
+}
+
 function addPrecondition() {
   if (!editing.value) return;
   if (!editing.value.preconditions) editing.value.preconditions = [];
@@ -136,6 +170,7 @@ function openEditor(row: ActionType) {
   // 深拷贝，避免编辑时直接改动列表
   const copy: ActionType = JSON.parse(JSON.stringify(row));
   if (!copy.preconditions) copy.preconditions = [];
+  if (!copy.parameters) copy.parameters = [];
   if (!copy.effect) copy.effect = { kind: 'function' };
   editing.value = copy;
   isExisting.value = true;
@@ -210,7 +245,10 @@ async function load() {
   }
 }
 
-onMounted(load);
+onMounted(async () => {
+  await load();
+  try { valueTypes.value = await valtype.list(); } catch { valueTypes.value = []; }
+});
 </script>
 
 <style scoped>
@@ -222,5 +260,6 @@ onMounted(load);
 .precond-list { display: flex; flex-wrap: wrap; gap: 4px; }
 .precond-tag { margin: 0; }
 .muted { color: #aaa; font-size: 12px; }
+.param-editor { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
 .precond-editor { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
 </style>
