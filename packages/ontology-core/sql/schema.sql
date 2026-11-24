@@ -78,7 +78,14 @@ CREATE TABLE link_type (
   display_name    TEXT NOT NULL,
   source_type     TEXT NOT NULL REFERENCES object_type(api_name),
   target_type     TEXT NOT NULL REFERENCES object_type(api_name),
-  cardinality     TEXT NOT NULL CHECK (cardinality IN ('one-to-one','one-to-many','many-to-many')),
+  cardinality     TEXT NOT NULL CHECK (cardinality IN ('one-to-one','one-to-many','many-to-one','many-to-many')),
+  -- 以 sourceCardinality/targetCardinality 为准；cardinality 为兼容旧接口的派生列
+  source_cardinality TEXT NOT NULL DEFAULT 'one',
+  target_cardinality TEXT NOT NULL DEFAULT 'many',
+  primary_key     TEXT,
+  foreign_key     TEXT,
+  plural_name     TEXT,
+  visibility      TEXT DEFAULT 'Normal',
   instance_source TEXT NOT NULL CHECK (instance_source IN ('source','managed')),
   version         INT  NOT NULL,
   -- 多对多 join 表后备（对齐 Palantir join table dataset）：

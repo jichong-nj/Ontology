@@ -859,7 +859,6 @@ app.post('/api/s2/link-types/from-draft', async (req, res) => {
       displayName: draft.displayName ?? draft.apiName,
       sourceType: draft.sourceType,
       targetType: draft.targetType,
-      cardinality,
       sourceCardinality: draft.sourceCardinality ?? (cardinality.startsWith('many') ? 'many' : 'one'),
       targetCardinality: draft.targetCardinality ?? (cardinality.endsWith('many') ? 'many' : 'one'),
       primaryKey: targetKeyProp,

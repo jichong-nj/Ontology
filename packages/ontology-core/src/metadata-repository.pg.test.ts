@@ -43,7 +43,7 @@ describe('S2 MetadataRepository', () => {
     apiName: 'Employer',
     displayName: '雇主',
     sourceType: 'Person', targetType: 'Person',
-    cardinality: 'many-to-many',
+    sourceCardinality: 'many', targetCardinality: 'many',
     instanceSource: 'managed',
     version: 1,
   };

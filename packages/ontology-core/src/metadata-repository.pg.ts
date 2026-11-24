@@ -19,6 +19,7 @@ import {
   AIPConversation,
   AIPMessage,
   FunctionSandbox,
+  InstanceFilter,
   PatchValidator,
   ValueType,
 } from './types';
@@ -147,8 +148,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
         displayName: r.display_name,
         sourceType: r.source_type,
         targetType: r.target_type,
-        cardinality: r.cardinality,
-        sourceCardinality: r.source_cardinality || 'one',
+          sourceCardinality: r.source_cardinality || 'one',
         targetCardinality: r.target_cardinality || 'many',
         primaryKey: r.primary_key || undefined,
         foreignKey: r.foreign_key || undefined,
@@ -389,7 +389,6 @@ export class PostgresMetadataRepository implements MetadataRepository {
       displayName: r.display_name,
       sourceType: r.source_type,
       targetType: r.target_type,
-      cardinality: r.cardinality,
       sourceCardinality: r.source_cardinality || 'one',
       targetCardinality: r.target_cardinality || 'many',
       primaryKey: r.primary_key || undefined,
@@ -419,7 +418,6 @@ export class PostgresMetadataRepository implements MetadataRepository {
       displayName: r.display_name,
       sourceType: r.source_type,
       targetType: r.target_type,
-      cardinality: r.cardinality,
       sourceCardinality: r.source_cardinality || 'one',
       targetCardinality: r.target_cardinality || 'many',
       primaryKey: r.primary_key || undefined,
@@ -435,12 +433,17 @@ export class PostgresMetadataRepository implements MetadataRepository {
   }
 
   async createLinkType(def: LinkType): Promise<void> {
+    const sourceCard = def.sourceCardinality ?? 'one';
+    const targetCard = def.targetCardinality ?? 'many';
     await this.pool.query(
-      `INSERT INTO link_type (api_name, display_name, source_type, target_type, cardinality, instance_source, version,
+      `INSERT INTO link_type (api_name, display_name, source_type, target_type, cardinality,
+                              source_cardinality, target_cardinality, instance_source, version,
                               junction_table, source_column, target_column)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        ON CONFLICT (api_name) DO NOTHING`,
-      [def.apiName, def.displayName, def.sourceType, def.targetType, def.cardinality, def.instanceSource, def.version ?? 1,
+      [def.apiName, def.displayName, def.sourceType, def.targetType,
+       legacyCardinality(sourceCard, targetCard),
+       sourceCard, targetCard, def.instanceSource, def.version ?? 1,
        def.junctionTable ?? null, def.sourceColumn ?? null, def.targetColumn ?? null],
     );
   }
@@ -465,6 +468,17 @@ export class PostgresMetadataRepository implements MetadataRepository {
     if (sets.length === 0) return;
     values.push(apiName);
     await this.pool.query(`UPDATE link_type SET ${sets.join(',')} WHERE api_name=$${i}`, values);
+    if (patch.sourceCardinality !== undefined || patch.targetCardinality !== undefined) {
+      await this.pool.query(
+        `UPDATE link_type SET cardinality = CASE
+           WHEN source_cardinality='one' AND target_cardinality='one' THEN 'one-to-one'
+           WHEN source_cardinality='one' THEN 'one-to-many'
+           WHEN target_cardinality='one' THEN 'many-to-one'
+           ELSE 'many-to-many' END
+         WHERE api_name=$1`,
+        [apiName],
+      );
+    }
   }
 
   async createLinkInstance(linkType: string, sourceRid: string, targetRid: string): Promise<void> {
@@ -1393,6 +1407,14 @@ export class PostgresMetadataRepository implements MetadataRepository {
     );
     await this.touchConversation(msg.conversationId);
   }
+}
+
+// 由源/目标基数推导旧 cardinality 列（兼容旧接口与数据库 NOT NULL 约束）
+function legacyCardinality(s: 'one' | 'many', t: 'one' | 'many'): string {
+  if (s === 'one' && t === 'one') return 'one-to-one';
+  if (s === 'one') return 'one-to-many';
+  if (t === 'one') return 'many-to-one';
+  return 'many-to-many';
 }
 
 function rowToValueType(r: any): ValueType {
