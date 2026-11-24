@@ -2,7 +2,7 @@
 // 连接 ontology 元数据库，暴露 REST 端点供前端消费。
 import express from 'express';
 import { Pool } from 'pg';
-import { PostgresMetadataRepository, TypeScriptFunctionSandbox, onObjectWrite } from '@ontology/ontology-core';
+import { PostgresMetadataRepository, TypeScriptFunctionSandbox, onObjectWrite, ensureRid } from '@ontology/ontology-core';
 import type { OntologyFunction, ActionType, AutomationRule } from '@ontology/ontology-core';
 import { PostgresMappingStore, MappingService } from '@ontology/data-integration';
 import {
@@ -1359,6 +1359,19 @@ const agentRuntime: AgentRuntime = {
     console.log(`[aip] 已创建规则 ${def.apiName}（${trig.kind}）`);
     return { ok: true, apiName: def.apiName, trigger: trig, enabled: def.enabled ?? true };
   },
+  // 删除平台生成型对象的实例（级联关系边）
+  deleteInstance: async (objectType: string, objectRid: string) => {
+    const ot = await repo.getObjectType(objectType);
+    if (!ot) throw new Error(`对象类型不存在: ${objectType}`);
+    if (ot.sourceTable) {
+      throw new Error(`对象类型 ${objectType} 为源映射型（sourceTable=${ot.sourceTable}），不允许删除实例；请通过同步或业务侧处理`);
+    }
+    const rid = ensureRid(objectType, objectRid);
+    const links = await repo.deleteLinkInstancesForRid(objectType, rid);
+    const deleted = await repo.deleteObjectWrite(objectType, rid);
+    if (!deleted) throw new Error(`实例不存在: ${rid}`);
+    return { ok: true, objectType, objectRid: rid, deletedLinks: links };
+  },
   // 派生/函数建模：计算派生属性（验证用）
   computeDerived: async (objectType: string, property: string, rid: string) => {
     const sb = await getSandbox();
@@ -2076,6 +2089,8 @@ const MODELING_PROMPT = `
 - 写入前先检查实例数：若读取结果为 0 而源表有数据，立即停止并报告，不要继续写。
 - writeObjectPatch 返回 undefined 表示成功（写入无返回值），不要当作失败；落库结果用 get_instances 复核。
 - 探测/临时函数用完可用 delete_function 清理；若函数仍被派生属性（reducerFn）引用会被拒绝，需先解绑。
+- 平台生成型对象（无 sourceTable，如 Alert）的实例可用 delete_instance 删除（会级联关系边）；
+  源映射型对象禁止删除实例。删除前先向用户确认 objectType 与 rid。
 
 ## 调度与自动化（规则）
 - 规则 = trigger + conditionFunction + actionApiName：

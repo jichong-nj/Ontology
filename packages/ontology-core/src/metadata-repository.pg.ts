@@ -605,6 +605,28 @@ export class PostgresMetadataRepository implements MetadataRepository {
     await this.pool.query(`DELETE FROM link_instance WHERE link_type = $1`, [linkType]);
   }
 
+  // 删除单个对象实例（平台生成型对象用；调用方负责授权与级联）
+  async deleteObjectWrite(objectType: string, objectRid: string): Promise<boolean> {
+    const { rowCount } = await this.pool.query(
+      `DELETE FROM object_write WHERE object_type=$1 AND object_rid=$2`,
+      [objectType, objectRid],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  // 删除以某实例为端点的全部关系边（按 link_type 的两端类型匹配）
+  async deleteLinkInstancesForRid(objectType: string, objectRid: string): Promise<number> {
+    const { rowCount } = await this.pool.query(
+      `DELETE FROM link_instance li
+        USING link_type lt
+        WHERE lt.api_name = li.link_type
+          AND ((lt.source_type = $1 AND li.source_rid = $2)
+            OR (lt.target_type = $1 AND li.target_rid = $2))`,
+      [objectType, objectRid],
+    );
+    return rowCount ?? 0;
+  }
+
   async listObjectProperties(
     objectType: string,
   ): Promise<{ objectRid: string; properties: Record<string, unknown> }[]> {

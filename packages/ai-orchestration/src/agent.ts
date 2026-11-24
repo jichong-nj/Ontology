@@ -42,6 +42,8 @@ export interface AgentRuntime {
   deleteFunction(apiName: string): Promise<unknown>;
   upsertObjectTypeProperty(apiName: string, property: Record<string, unknown>): Promise<unknown>;
   computeDerived(objectType: string, property: string, rid: string): Promise<unknown>;
+  // 平台生成型对象的实例删除（带关系级联）
+  deleteInstance(objectType: string, objectRid: string): Promise<unknown>;
   // 自动化：创建动作（effect 指向已注册函数）与规则（触发 + 条件函数 + 动作）
   createAction(def: {
     apiName: string; displayName: string; description?: string; effectFunction: string;
@@ -84,7 +86,7 @@ const TOOL_GROUPS: Record<string, string[]> = {
   // 受限 NL2SQL：LLM 生成只读 SELECT，在 S1 源库白名单表内执行（不回写源）
   sql: ['run_sql'],
   // 数据源建模：列出数据源 / 读取源表结构与样例（只读；创建动作需用户在前端确认）
-  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type', 'list_functions', 'create_function', 'delete_function', 'add_object_type_property', 'compute_derived', 'invoke_function', 'create_action', 'create_rule'],
+  modeling: ['list_source_connections', 'list_source_tables', 'inspect_source_table', 'list_link_types', 'inspect_object_type', 'list_functions', 'create_function', 'delete_function', 'add_object_type_property', 'compute_derived', 'invoke_function', 'create_action', 'create_rule', 'delete_instance'],
 };
 
 function allToolSpecs(): ToolSpec[] {
@@ -405,6 +407,23 @@ function allToolSpecs(): ToolSpec[] {
     {
       type: 'function',
       function: {
+        name: 'delete_instance',
+        description:
+          '删除单个对象实例，并级联删除以它为端点的关系边。仅允许**平台生成型**对象（无 sourceTable，如 Alert）；' +
+          '源映射型业务对象会被拒绝（需通过同步/业务侧处理）。删除前必须向用户确认 objectType 与 rid。',
+        parameters: {
+          type: 'object',
+          properties: {
+            objectType: { type: 'string', description: '对象类型 apiName，如 Alert' },
+            objectRid: { type: 'string', description: '实例 rid，如 Alert:xxx（裸 id 也可，会自动补前缀）' },
+          },
+          required: ['objectType', 'objectRid'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'create_action',
         description:
           '创建动作（Action），effect 指向一个已注册函数。规则命中后由该动作落地（写对象/通知等）。' +
@@ -587,6 +606,11 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
     delete_function: async (a: any) => rt.deleteFunction(a.apiName),
     add_object_type_property: async (a: any) => rt.upsertObjectTypeProperty(a.apiName, a.property),
     compute_derived: async (a: any) => rt.computeDerived(a.objectType, a.property, a.rid),
+    delete_instance: async (a: any) => {
+      const err = deny(a.objectType);
+      if (err) return err;
+      return rt.deleteInstance(a.objectType, a.objectRid);
+    },
     create_action: async (a: any) => rt.createAction({
       apiName: a.apiName, displayName: a.displayName, description: a.description,
       effectFunction: a.effectFunction, preconditions: a.preconditions,
