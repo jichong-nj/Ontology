@@ -10,6 +10,7 @@ import S2Functions from '@/pages/s2/Functions.vue';
 import S2FunctionHelp from '@/pages/s2/FunctionHelp.vue';
 import S2Actions from '@/pages/s2/Actions.vue';
 import S2SharedProperties from '@/pages/s2/SharedProperties.vue';
+import S2ValueTypes from '@/pages/s2/ValueTypes.vue';
 import AlertsPage from '@/pages/AlertsPage.vue';
 import AIPPage from '@/pages/AIPPage.vue';
 import AIPAgentManagement from '@/pages/AIPAgentManagement.vue';
@@ -50,6 +51,7 @@ const routes = [
       { path: 'functions/help', component: S2FunctionHelp, meta: { title: '函数编写指南' } },
       { path: 'actions', component: S2Actions, meta: { title: 'Actions' } },
       { path: 'shared-properties', component: S2SharedProperties, meta: { title: 'Shared Properties' } },
+      { path: 'value-types', component: S2ValueTypes, meta: { title: 'Value Types' } },
       { path: 'explore/:objectType?', component: S2Explore, meta: { title: '探索' } },
     ],
   },

@@ -900,6 +900,109 @@ app.post('/api/s2/object-types/:apiName/sync', async (req, res) => {
   }
 });
 
+// ---------- 值类型（Value Types） ----------
+app.get('/api/s2/value-types', async (_req, res) => {
+  try { res.json(await repo.listValueTypes()); } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/s2/value-types/:apiName', async (req, res) => {
+  const vt = await repo.getValueType(req.params.apiName);
+  if (!vt) return res.status(404).json({ error: 'not found' });
+  res.json(vt);
+});
+
+app.post('/api/s2/value-types', async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body?.apiName || !/^[A-Za-z][A-Za-z0-9_]*$/.test(body.apiName)) {
+      return res.status(400).json({ error: 'apiName 必填（字母开头，仅字母数字下划线）' });
+    }
+    if (!body.displayName || !body.baseType) {
+      return res.status(400).json({ error: 'displayName / baseType 必填' });
+    }
+    if (await repo.getValueType(body.apiName)) return res.status(409).json({ error: '值类型已存在' });
+    await repo.createValueType({
+      apiName: body.apiName, displayName: body.displayName, baseType: body.baseType,
+      description: body.description, allowedValues: body.allowedValues,
+      constraint: body.constraint, failureMessage: body.failureMessage, example: body.example,
+      version: body.version ?? 1,
+    });
+    res.status(201).json({ ok: true });
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+
+app.put('/api/s2/value-types/:apiName', async (req, res) => {
+  try {
+    await repo.updateValueType(req.params.apiName, req.body);
+    res.json({ ok: true });
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+
+app.delete('/api/s2/value-types/:apiName', async (req, res) => {
+  try {
+    await repo.deleteValueType(req.params.apiName);
+    res.json({ ok: true });
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+
+// ---------- 写入校验（值类型/枚举约束） ----------
+// 模式：off / warn（默认，仅告警）/ reject（拒绝写入）
+const WRITE_VALIDATION = (process.env.WRITE_VALIDATION || 'warn').toLowerCase();
+const otValidCache = new Map<string, { at: number; ot: any }>();
+const vtValidCache = new Map<string, { at: number; vt: any }>();
+const VALID_CACHE_TTL = 15_000;
+
+async function getOtForValidation(apiName: string) {
+  const hit = otValidCache.get(apiName);
+  if (hit && Date.now() - hit.at < VALID_CACHE_TTL) return hit.ot;
+  const ot = await repo.getObjectType(apiName);
+  otValidCache.set(apiName, { at: Date.now(), ot });
+  return ot;
+}
+async function getVtForValidation(apiName: string) {
+  const hit = vtValidCache.get(apiName);
+  if (hit && Date.now() - hit.at < VALID_CACHE_TTL) return hit.vt;
+  const vt = await repo.getValueType(apiName);
+  if (vt) vtValidCache.set(apiName, { at: Date.now(), vt });
+  return vt;
+}
+
+repo.setPatchValidator(async (objectType, patch) => {
+  if (WRITE_VALIDATION === 'off') return;
+  const ot = await getOtForValidation(objectType);
+  if (!ot) return;
+  const errors: string[] = [];
+  for (const p of ot.properties ?? []) {
+    if (p.derived) continue;
+    if (!(p.apiName in patch)) continue;
+    const v = (patch as any)[p.apiName];
+    if (v === null || v === undefined) continue;
+    const vt = p.valueType ? await getVtForValidation(p.valueType) : null;
+    const allowed = p.allowedValues ?? vt?.allowedValues;
+    if (Array.isArray(allowed) && allowed.length) {
+      const ok = allowed.some((a: any) => String(a.value) === String(v));
+      if (!ok) errors.push(`${p.apiName}=${JSON.stringify(v)} 不在允许值 [${allowed.map((a: any) => a.value).join(', ')}]`);
+    }
+    const c = vt?.constraint;
+    if (c?.kind === 'range') {
+      const n = Number(v);
+      if (Number.isFinite(n)) {
+        if (c.min !== undefined && n < c.min) errors.push(`${p.apiName}=${v} 小于最小值 ${c.min}`);
+        if (c.max !== undefined && n > c.max) errors.push(`${p.apiName}=${v} 大于最大值 ${c.max}`);
+      }
+    } else if (c?.kind === 'regex' && c.pattern) {
+      try {
+        if (!new RegExp(c.pattern).test(String(v))) errors.push(`${p.apiName}=${JSON.stringify(v)} 不匹配 /${c.pattern}/`);
+      } catch { /* 忽略非法正则 */ }
+    }
+  }
+  if (!errors.length) return;
+  const msg = `写入校验失败 ${objectType}: ${errors.join('; ')}`;
+  if (WRITE_VALIDATION === 'reject') throw new Error(msg);
+  console.warn('[validate]', msg);
+});
+console.log(`[validate] 写入校验模式: ${WRITE_VALIDATION}`);
+
 app.post('/api/s2/object-types', async (req, res) => {
   try {
     await repo.createObjectType(req.body);

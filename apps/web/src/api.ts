@@ -94,6 +94,27 @@ export const s1 = {
     http.post<{ databases: string[] }>('/s1/connections/databases', { connectionMeta: meta }).then((r) => r.data),
 };
 
+// ---------- S2 值类型 ----------
+export interface ValueTypeDTO {
+  apiName: string;
+  displayName: string;
+  baseType: string;
+  description?: string;
+  allowedValues?: { value: string; label?: string; description?: string }[];
+  constraint?: { kind: 'range' | 'regex'; min?: number; max?: number; pattern?: string };
+  failureMessage?: string;
+  example?: string;
+  version?: number;
+}
+
+export const valtype = {
+  list: () => http.get<ValueTypeDTO[]>('/s2/value-types').then((r) => r.data),
+  create: (v: ValueTypeDTO) => http.post('/s2/value-types', v).then((r) => r.data),
+  update: (apiName: string, v: Partial<ValueTypeDTO>) =>
+    http.put(`/s2/value-types/${apiName}`, v).then((r) => r.data),
+  remove: (apiName: string) => http.delete(`/s2/value-types/${apiName}`).then((r) => r.data),
+};
+
 // ---------- S2 ----------
 export interface OntologyProperty {
   apiName: string;

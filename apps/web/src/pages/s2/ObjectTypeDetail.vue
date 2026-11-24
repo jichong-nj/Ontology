@@ -7,7 +7,7 @@ import {
   ElCheckbox, ElCollapse, ElCollapseItem, ElMessageBox,
 } from 'element-plus';
 import { Link, Coin, Edit, Connection, Cpu, ArrowDown, Share, Delete } from '@element-plus/icons-vue';
-import { s2, s1, s2link, s2functions, s2shared } from '@/api';
+import { s2, s1, s2link, s2functions, s2shared, valtype } from '@/api';
 import type { ObjectType, OntologyProperty, SourceConnection, ProbeTable, ProbeColumn, LinkType, DerivedSpec, OntologyFunction, SharedProperty, ChildTableMapping, ChildAggregation } from '@/api';
 import { parseDerivedSpec } from '@/api';
 import { tryRequest } from '@/utils/error';
@@ -321,9 +321,13 @@ const semanticVisible = ref(false);
 const semanticTarget = ref<any>(null);
 const semanticDesc = ref('');
 const semanticEnum = ref('');
+const semanticValueType = ref('');
+const valueTypeList = ref<any[]>([]);
 
-function openSemantic(p: any) {
+async function openSemantic(p: any) {
   semanticTarget.value = p;
+  semanticValueType.value = p.valueType || '';
+  try { valueTypeList.value = await valtype.list(); } catch { valueTypeList.value = []; }
   semanticDesc.value = p.description || '';
   semanticEnum.value = (p.allowedValues ?? [])
     .map((v: any) => [v.value, v.label ?? '', v.description ?? ''].join('|'))
@@ -344,6 +348,7 @@ function saveSemantic() {
       return { value, ...(label ? { label } : {}), ...(description ? { description } : {}) };
     });
   p.allowedValues = list.length ? list : undefined;
+  p.valueType = semanticValueType.value || undefined;
   semanticVisible.value = false;
 }
 
@@ -742,6 +747,11 @@ watch(() => route.params.apiName, load);
     <ElDialog v-model="semanticVisible" title="属性语义" width="520px">
       <p class="semantic-hint">属性：<span class="mono">{{ semanticTarget?.apiName }}</span>（保存对象类型后生效）</p>
       <ElForm label-position="top">
+        <ElFormItem label="值类型（可选，引用后由值类型统一约束）">
+          <ElSelect v-model="semanticValueType" clearable filterable placeholder="选择值类型" style="width: 100%">
+            <ElOption v-for="vt in valueTypeList" :key="vt.apiName" :label="`${vt.displayName} (${vt.apiName})`" :value="vt.apiName" />
+          </ElSelect>
+        </ElFormItem>
         <ElFormItem label="说明">
           <ElInput v-model="semanticDesc" type="textarea" :rows="2" placeholder="该属性的业务含义，例如：告警级别" />
         </ElFormItem>

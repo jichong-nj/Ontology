@@ -19,6 +19,8 @@ import {
   AIPConversation,
   AIPMessage,
   FunctionSandbox,
+  PatchValidator,
+  ValueType,
 } from './types';
 import { ensureRid } from './rid';
 import { emitObjectWrite } from './change-bus';
@@ -580,6 +582,10 @@ export class PostgresMetadataRepository implements MetadataRepository {
   async writeObjectPatch(objectType: string, objectRid: string, patch: unknown, actor: string): Promise<void> {
     // RID 规范化：裸 RID 自动补类型前缀（兼容旧调用方/沙箱函数），保证全局唯一。
     const normRid = ensureRid(objectType, objectRid);
+    // 写入前校验（值类型/枚举约束）；validator 抛错即拒绝写入
+    if (this.patchValidator) {
+      await this.patchValidator(objectType, (patch ?? {}) as Record<string, unknown>, actor);
+    }
     // 每实例一行：存在则合并 patch（修改单个属性不覆盖其他属性），不存在则插入。
     await this.pool.query(
       `INSERT INTO object_write (object_type, object_rid, patch, actor) VALUES ($1,$2,$3,$4)
@@ -603,6 +609,56 @@ export class PostgresMetadataRepository implements MetadataRepository {
 
   async clearLinkInstances(linkType: string): Promise<void> {
     await this.pool.query(`DELETE FROM link_instance WHERE link_type = $1`, [linkType]);
+  }
+
+  // ---------- 值类型（Value Types） ----------
+  private patchValidator?: PatchValidator;
+
+  setPatchValidator(validator: PatchValidator | null): void {
+    this.patchValidator = validator ?? undefined;
+  }
+
+  async listValueTypes(): Promise<ValueType[]> {
+    const { rows } = await this.pool.query(`SELECT * FROM value_type ORDER BY api_name`);
+    return rows.map(rowToValueType);
+  }
+
+  async getValueType(apiName: string): Promise<ValueType | null> {
+    const { rows } = await this.pool.query(`SELECT * FROM value_type WHERE api_name=$1`, [apiName]);
+    return rows.length ? rowToValueType(rows[0]) : null;
+  }
+
+  async createValueType(vt: ValueType): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO value_type (api_name, display_name, base_type, description, allowed_values, constraint_def, failure_message, example, version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (api_name) DO NOTHING`,
+      [vt.apiName, vt.displayName, vt.baseType, vt.description ?? null,
+       JSON.stringify(vt.allowedValues ?? null), JSON.stringify(vt.constraint ?? null),
+       vt.failureMessage ?? null, vt.example ?? null, vt.version ?? 1],
+    );
+  }
+
+  async updateValueType(apiName: string, patch: Partial<ValueType>): Promise<void> {
+    const sets: string[] = [];
+    const values: any[] = [];
+    let i = 1;
+    if (patch.displayName !== undefined) { sets.push(`display_name=$${i++}`); values.push(patch.displayName); }
+    if (patch.baseType !== undefined) { sets.push(`base_type=$${i++}`); values.push(patch.baseType); }
+    if (patch.description !== undefined) { sets.push(`description=$${i++}`); values.push(patch.description); }
+    if (patch.allowedValues !== undefined) { sets.push(`allowed_values=$${i++}`); values.push(JSON.stringify(patch.allowedValues)); }
+    if (patch.constraint !== undefined) { sets.push(`constraint_def=$${i++}`); values.push(JSON.stringify(patch.constraint)); }
+    if (patch.failureMessage !== undefined) { sets.push(`failure_message=$${i++}`); values.push(patch.failureMessage); }
+    if (patch.example !== undefined) { sets.push(`example=$${i++}`); values.push(patch.example); }
+    if (patch.version !== undefined) { sets.push(`version=$${i++}`); values.push(patch.version); }
+    if (!sets.length) return;
+    sets.push('updated_at=now()');
+    values.push(apiName);
+    await this.pool.query(`UPDATE value_type SET ${sets.join(',')} WHERE api_name=$${i}`, values);
+  }
+
+  async deleteValueType(apiName: string): Promise<void> {
+    await this.pool.query(`DELETE FROM value_type WHERE api_name=$1`, [apiName]);
   }
 
   // 删除单个对象实例（平台生成型对象用；调用方负责授权与级联）
@@ -1330,6 +1386,20 @@ export class PostgresMetadataRepository implements MetadataRepository {
     );
     await this.touchConversation(msg.conversationId);
   }
+}
+
+function rowToValueType(r: any): ValueType {
+  return {
+    apiName: r.api_name,
+    displayName: r.display_name,
+    baseType: r.base_type,
+    description: r.description ?? undefined,
+    allowedValues: r.allowed_values ?? undefined,
+    constraint: r.constraint_def ?? undefined,
+    failureMessage: r.failure_message ?? undefined,
+    example: r.example ?? undefined,
+    version: r.version,
+  };
 }
 
 function rowToAIPProvider(r: any): AIPProvider {

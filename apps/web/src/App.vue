@@ -46,6 +46,7 @@ const panelSections = computed<MenuSection[]>(() => {
         { key: 'actions', label: 'Actions', to: '/s2/actions', icon: '🚀' },
         { key: 'rules', label: 'Rules', to: '/s2/rules', icon: '📋' },
         { key: 'shared', label: 'Shared Properties', to: '/s2/shared-properties', icon: '🌐', count: sharedCount.value },
+        { key: 'value-types', label: 'Value Types', to: '/s2/value-types', icon: '🏷️' },
         { key: 'explore', label: 'Object Explorer', to: '/s2/explore', icon: '🧭' },
       ]},
     ];

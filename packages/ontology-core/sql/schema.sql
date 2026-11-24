@@ -46,6 +46,21 @@ CREATE TABLE shared_property (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- 值类型：语义类型 + 约束（对齐 Palantir Value Types）
+CREATE TABLE value_type (
+  api_name        TEXT PRIMARY KEY,
+  display_name    TEXT NOT NULL,
+  base_type       TEXT NOT NULL,
+  description     TEXT,
+  allowed_values  JSONB,           -- [{value,label,description}]
+  constraint_def  JSONB,           -- {kind:'range'|'regex', ...}（constraint 是保留字）
+  failure_message TEXT,
+  example         TEXT,
+  version         INT NOT NULL DEFAULT 1,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE link_type (
   api_name        TEXT PRIMARY KEY,
   display_name    TEXT NOT NULL,

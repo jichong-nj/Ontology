@@ -34,7 +34,8 @@ export interface PropertyDef {
   type: PropertyType;
   required: boolean;
   description?: string;                 // 属性语义说明
-  allowedValues?: PropertyAllowedValue[]; // 枚举取值（可选；P0 仅元数据，不强制校验）
+  allowedValues?: PropertyAllowedValue[]; // 枚举取值（可选）
+  valueType?: string;                   // 引用值类型 apiName（可选；约束在写入时校验）
   derived?: boolean;
   // 派生属性的两种计算方式（二选一）：
   // - reducerFn: 引用一个 OntologyFunction.apiName，由函数引擎计算（推荐，可复用、可沙箱）；
@@ -95,6 +96,9 @@ export function parseDerivedSpec(reducer?: string): DerivedSpec | null {
   return null;
 }
 
+// 写入 patch 的校验钩子（由 server 注入；可抛出异常拒绝写入）
+export type PatchValidator = (objectType: string, patch: Record<string, unknown>, actor: string) => void | Promise<void>;
+
 export interface ObjectType {
   apiName: string;         // 全局唯一、不可变
   displayName: string;
@@ -131,6 +135,26 @@ export interface ChildTableMapping {
   parentKey: string;        // 明细表中引用主对象的外键列（如 department_id）
   displayName?: string;     // 明细表显示名
   aggregations: ChildAggregation[];
+}
+
+export interface ValueTypeConstraint {
+  kind: 'range' | 'regex';
+  min?: number;
+  max?: number;
+  pattern?: string;
+}
+
+// 值类型：跨对象复用的语义类型 + 约束（Palantir Value Type）
+export interface ValueType {
+  apiName: string;
+  displayName: string;
+  baseType: PropertyType;
+  description?: string;
+  allowedValues?: PropertyAllowedValue[];
+  constraint?: ValueTypeConstraint;
+  failureMessage?: string;
+  example?: string;
+  version: number;
 }
 
 export interface LinkType {
