@@ -73,6 +73,7 @@
                 <div v-if="t.kind === 'thought'" class="think-block">
                   <div class="think-block__head" @click="toggleThought(i, k)">
                     <span class="collapse-title">💭 思考 {{ thinkIndex(m.timeline, k) }}</span>
+                    <span v-if="!isThoughtOpen(i, k)" class="think-preview">{{ thoughtPreview(t.content) }}</span>
                     <span class="think-toggle">{{ isThoughtOpen(i, k) ? '收起' : '展开' }}</span>
                   </div>
                   <div v-show="isThoughtOpen(i, k)" class="thinking">{{ t.content }}</div>
@@ -519,6 +520,11 @@ function setAllThoughts(msgIndex: number, open: boolean) {
     if (t.kind === 'thought') thoughtOpen[`${msgIndex}-${k}`] = open;
   });
 }
+function thoughtPreview(content: string): string {
+  const text = (content ?? '').replace(/\s+/g, ' ').trim();
+  return text.length > 90 ? `${text.slice(0, 90)}…` : text;
+}
+
 function thoughtCount(m: any): number {
   return (m?.timeline ?? []).filter((t: any) => t.kind === 'thought').length;
 }
@@ -700,10 +706,16 @@ onMounted(async () => {
   overflow: hidden;
 }
 .think-block__head {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; gap: 8px;
   padding: 6px 10px; cursor: pointer; user-select: none;
   font-size: 13px; font-weight: 500;
 }
+.think-preview {
+  flex: 1; min-width: 0;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: 12px; font-weight: 400; color: var(--text-muted);
+}
+.think-toggle { flex-shrink: 0; }
 .think-block__head:hover { background: var(--el-fill-color-light, #f5f7fa); }
 .think-toggle { font-size: 12px; color: var(--el-color-primary, #409eff); }
 .think-block .thinking {
