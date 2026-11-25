@@ -67,6 +67,8 @@
                 <span class="tl-stat">💭 思考 {{ thoughtCount(m) }} · 🔧 工具 {{ actionCount(m) }}</span>
                 <el-button size="small" link type="primary" @click="setAllThoughts(i, true)">展开全部思考</el-button>
                 <el-button size="small" link @click="setAllThoughts(i, false)">收起全部思考</el-button>
+                <el-button size="small" link type="primary" @click="setAllTools(i, true)">展开全部执行</el-button>
+                <el-button size="small" link @click="setAllTools(i, false)">收起全部执行</el-button>
               </div>
               <template v-for="(t, k) in m.timeline" :key="k">
                 <!-- 思考框（每个思考段落独立，可展开/收起） -->
@@ -78,22 +80,24 @@
                   </div>
                   <div v-show="isThoughtOpen(i, k)" class="thinking">{{ t.content }}</div>
                 </div>
-                <!-- 工具调用（独立折叠块，工具名正确） -->
-                <el-collapse v-else-if="t.kind === 'action' && t.step" class="steps-collapse">
-                  <el-collapse-item>
-                    <template #title><span class="collapse-title">🔧 {{ t.step.tool || '未知工具' }}</span></template>
-                    <div class="step">
-                      <details open class="step-detail">
-                        <summary>参数</summary>
-                        <pre class="step-args mono">{{ pretty(t.step.args) }}</pre>
-                      </details>
-                      <details open class="step-detail">
-                        <summary>返回</summary>
-                        <pre class="step-result mono">{{ pretty(t.step.result) }}</pre>
-                      </details>
+                <!-- 工具调用（折叠块：标题+参数摘要，展开看参数/返回） -->
+                <div v-if="t.kind === 'action' && t.step" class="tool-block">
+                  <div class="tool-block__head" @click="toggleTool(i, k)">
+                    <span class="collapse-title">🔧 {{ t.step.tool || '未知工具' }}</span>
+                    <span v-if="!isToolOpen(i, k)" class="think-preview">{{ toolPreview(t.step.args) }}</span>
+                    <span class="think-toggle">{{ isToolOpen(i, k) ? '收起' : '展开' }}</span>
+                  </div>
+                  <div v-show="isToolOpen(i, k)" class="step">
+                    <div class="step-detail">
+                      <div class="step-label">参数</div>
+                      <pre class="step-args mono">{{ pretty(t.step.args) }}</pre>
                     </div>
-                  </el-collapse-item>
-                </el-collapse>
+                    <div class="step-detail">
+                      <div class="step-label">返回</div>
+                      <pre class="step-result mono">{{ pretty(t.step.result) }}</pre>
+                    </div>
+                  </div>
+                </div>
               </template>
               <!-- 流式思考中：尚未被工具/回复打断的当前思考 -->
               <div v-if="m.curThink" class="think-block think-block--live">
@@ -279,7 +283,13 @@ async function switchConversation(cid: string) {
     messages.value = msgs.map((m: AIPMessageDTO) => ({
       role: m.role,
       content: m.content,
-      timeline: m.timeline ?? [],
+      // 历史消息里的 action 是扁平结构 {kind,tool,args,result}；流式时是 {kind,step}
+      // 统一成 step 结构，保证工具调用在刷新后仍可展示
+      timeline: (m.timeline ?? []).map((t: any) =>
+        t?.kind === 'action' && !t.step
+          ? { kind: 'action', step: { id: t.id, tool: t.tool, args: t.args, result: t.result } }
+          : t,
+      ),
     }));
   } catch {
     messages.value = [];
@@ -520,6 +530,27 @@ function setAllThoughts(msgIndex: number, open: boolean) {
     if (t.kind === 'thought') thoughtOpen[`${msgIndex}-${k}`] = open;
   });
 }
+const toolOpen = reactive<Record<string, boolean>>({});
+function isToolOpen(msgIndex: number, k: number): boolean {
+  return toolOpen[`${msgIndex}-${k}`] === true;
+}
+function toggleTool(msgIndex: number, k: number) {
+  toolOpen[`${msgIndex}-${k}`] = !isToolOpen(msgIndex, k);
+}
+function setAllTools(msgIndex: number, open: boolean) {
+  const m = messages.value[msgIndex];
+  (m?.timeline ?? []).forEach((t: any, k: number) => {
+    if (t.kind === 'action') toolOpen[`${msgIndex}-${k}`] = open;
+  });
+}
+function toolPreview(args: unknown): string {
+  if (args === undefined || args === null) return '无参数';
+  if (typeof args === 'object' && Object.keys(args as Record<string, unknown>).length === 0) return '无参数';
+  const text = typeof args === 'string' ? args : JSON.stringify(args);
+  const compact = (text ?? '').replace(/\s+/g, ' ').trim();
+  return compact.length > 90 ? `${compact.slice(0, 90)}…` : compact;
+}
+
 function thoughtPreview(content: string): string {
   const text = (content ?? '').replace(/\s+/g, ' ').trim();
   return text.length > 90 ? `${text.slice(0, 90)}…` : text;
@@ -698,6 +729,22 @@ onMounted(async () => {
   margin-bottom: 6px;
 }
 .timeline-toolbar .tl-stat { margin-right: auto; }
+.tool-block {
+  border: 1px solid var(--border, #e4e7ed);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+.tool-block__head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; cursor: pointer; user-select: none;
+  font-size: 13px; font-weight: 500;
+}
+.tool-block__head:hover { background: var(--el-fill-color-light, #f5f7fa); }
+.tool-block .step { padding: 0 10px 8px; }
+.step-label { font-size: 12px; color: var(--text-muted); margin: 6px 0 2px; }
+.tool-block .step-args, .tool-block .step-result { margin: 0; }
 .think-block {
   border: 1px solid var(--border, #e4e7ed);
   border-radius: 6px;
