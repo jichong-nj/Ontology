@@ -139,6 +139,38 @@ function previewHasField(fields: string[]): boolean {
 }
 
 const previewing = ref(false);
+// 规则参数查看
+const paramsViewVisible = ref(false);
+const paramsViewTitle = ref('');
+const paramsViewText = ref('');
+
+function paramValueText(v: any): string {
+  if (v === null || v === undefined) return '—';
+  if (Array.isArray(v)) return `[${v.length} 项]`;
+  if (typeof v === 'object') return `{${Object.keys(v).length} 项}`;
+  const s = String(v);
+  return s.length > 20 ? `${s.slice(0, 20)}…` : s;
+}
+function paramTags(params: any): Array<{ key: string; value: string }> {
+  return Object.entries(params ?? {}).slice(0, 2).map(([key, value]) => ({ key, value: paramValueText(value) }));
+}
+function paramCount(params: any): number {
+  return Object.keys(params ?? {}).length;
+}
+function openParams(r: RuleItem) {
+  paramsViewTitle.value = `规则参数 · ${r.apiName}`;
+  paramsViewText.value = JSON.stringify(r.params ?? {}, null, 2);
+  paramsViewVisible.value = true;
+}
+async function copyParams() {
+  try {
+    await navigator.clipboard.writeText(paramsViewText.value);
+    ElMessage.success('已复制');
+  } catch {
+    ElMessage.warning('复制失败，请手动选择');
+  }
+}
+
 
 // 将结构化表单值写入 paramsText（数字类型按类型转换，其余保持字符串/原样）
 function syncParamsFromForm() {
@@ -376,7 +408,14 @@ onMounted(load);
             </td>
             <td class="mono">{{ r.conditionFunction }}</td>
             <td class="mono">{{ r.actionApiName }}</td>
-            <td class="mono params">{{ JSON.stringify(r.params) }}</td>
+            <td class="params">
+              <div v-if="paramCount(r.params)" class="param-cell">
+                <ElTag v-for="p in paramTags(r.params)" :key="p.key" size="small" class="param-tag">{{ p.key }}={{ p.value }}</ElTag>
+                <ElTag v-if="paramCount(r.params) > 2" size="small" type="info" class="param-more">+{{ paramCount(r.params) - 2 }}</ElTag>
+                <ElButton link type="primary" size="small" @click="openParams(r)">查看</ElButton>
+              </div>
+              <span v-else class="muted">—</span>
+            </td>
             <td class="ops">
               <ElButton link type="primary" :icon="SwitchIcon" @click="toggleEnabled(r)">{{ r.enabled ? '禁用' : '启用' }}</ElButton>
               <ElButton link type="primary" :icon="Edit" @click="openEdit(r)">编辑</ElButton>
@@ -523,6 +562,15 @@ onMounted(load);
       </template>
     </ElDialog>
   </div>
+
+    <!-- 规则参数查看 -->
+    <ElDialog v-model="paramsViewVisible" :title="paramsViewTitle" width="560px">
+      <pre class="params-view">{{ paramsViewText }}</pre>
+      <template #footer>
+        <ElButton @click="paramsViewVisible = false">关闭</ElButton>
+        <ElButton type="primary" @click="copyParams">复制 JSON</ElButton>
+      </template>
+    </ElDialog>
 </template>
 
 <style scoped>
@@ -534,7 +582,17 @@ onMounted(load);
 .alerts__rules { margin-bottom: var(--space-4); }
 .rule-table, .alert-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
 .rule-table th, .alert-table th, .rule-table td, .alert-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
-.rule-table .params { max-width: 220px; word-break: break-all; color: var(--text-muted); }
+.rule-table .params { max-width: 280px; }
+.param-cell { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.param-tag { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
+.param-more { font-family: var(--font-mono); }
+.params-view {
+  margin: 0; padding: 10px 12px;
+  background: #f6f8fa; border: 1px solid #e5e7eb; border-radius: 6px;
+  font-size: 12px; line-height: 1.55; color: #1f2328;
+  max-height: 420px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word;
+}
 .rule-table .sub { color: var(--text-muted); font-size: 0.8rem; margin-top: 2px; }
 .rule-table .ops { white-space: nowrap; }
 .mono { font-family: var(--font-mono); }
