@@ -979,7 +979,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
   }
 
   // 增强聚合：过滤 + 指标(count/countDistinct/sum/avg/min/max) + 分组(属性/日期/关联/关系) + 排序/限制
-  async aggregateQuery(objectType: string, opts: AggregateQueryOptions): Promise<AggregateQueryRow[]> {
+  async aggregateQuery(objectType: string, opts: AggregateQueryOptions, sandbox?: FunctionSandbox): Promise<AggregateQueryRow[]> {
     const ot = await this.getObjectType(objectType);
     if (!ot) throw new Error(`对象类型不存在: ${objectType}`);
     const propSet = new Set(ot.properties.map((p) => p.apiName));
@@ -990,6 +990,23 @@ export class PostgresMetadataRepository implements MetadataRepository {
     const checkProp = (prop: string | undefined, label = '属性') => {
       if (!prop || !propSet.has(prop)) throw new Error(`${label}不存在: ${objectType}.${prop}`);
     };
+
+    // 派生属性不落库：检测到派生属性参与过滤/分组/指标时走内存回退
+    const metaOf = (p?: string) => (p ? ot.properties.find((x) => x.apiName === p) : undefined);
+    const derivedUsed = new Set<string>();
+    for (const f of opts.filter ?? []) if (metaOf(f.property)?.derived) derivedUsed.add(f.property);
+    for (const m of opts.metrics ?? []) if (m.property && metaOf(m.property)?.derived) derivedUsed.add(m.property);
+    if (opts.groupBy?.kind === 'property' && metaOf(opts.groupBy.property)?.derived) derivedUsed.add(opts.groupBy.property);
+    if (opts.dateFilter && metaOf(opts.dateFilter.property)?.derived) derivedUsed.add(opts.dateFilter.property);
+    if (derivedUsed.size) {
+      if (opts.groupBy?.kind === 'related' || opts.groupBy?.kind === 'link') {
+        throw new Error('派生属性与 related/link 分组暂不支持组合');
+      }
+      if ((opts.relatedFilter ?? []).length) {
+        throw new Error('派生属性与 relatedFilter 暂不支持组合');
+      }
+      return this.aggregateDerived(objectType, opts, derivedUsed, sandbox);
+    }
 
     // 过滤
     if (opts.filter?.length) wheres.push(...buildFilterWhere(opts.filter, 'latest.patch', params));
@@ -1092,6 +1109,116 @@ export class PostgresMetadataRepository implements MetadataRepository {
       for (const m of selectMetrics) out[m.alias] = r[m.alias] === null ? null : Number(r[m.alias]);
       return out;
     });
+  }
+
+  // 派生属性参与的聚合：遍历实例现算派生值，再过滤/分组/聚合（数据量大时慎用）
+  private async aggregateDerived(
+    objectType: string,
+    opts: AggregateQueryOptions,
+    derivedProps: Set<string>,
+    sandbox?: FunctionSandbox,
+  ): Promise<AggregateQueryRow[]> {
+    const all: Array<{ rid: string; props: Record<string, unknown> }> = [];
+    let token: string | undefined;
+    do {
+      const page = await this.listInstances(objectType, { pageSize: 1000, pageToken: token });
+      for (const d of page.data) all.push({ rid: d.objectRid, props: d.properties ?? {} });
+      token = page.nextPageToken ?? undefined;
+    } while (token);
+
+    const derivedValues = new Map<string, Map<string, unknown>>();
+    for (const prop of derivedProps) {
+      const m = new Map<string, unknown>();
+      for (const row of all) {
+        try {
+          const { value } = await this.computeDerived(objectType, prop, row.rid, sandbox);
+          m.set(row.rid, value);
+        } catch { /* 单实例失败忽略 */ }
+      }
+      derivedValues.set(prop, m);
+    }
+    const valueOf = (row: { rid: string; props: Record<string, unknown> }, prop: string): unknown =>
+      derivedValues.has(prop) ? derivedValues.get(prop)!.get(row.rid) : row.props[prop];
+
+    const cmp = (v: unknown, op: string, target: unknown): boolean => {
+      if (op === 'isNull') return target ? v === null || v === undefined : v !== null && v !== undefined;
+      if (v === null || v === undefined) return false;
+      if (op === 'contains') return String(v).includes(String(target));
+      const nv = Number(v), nt = Number(target);
+      const numeric = Number.isFinite(nv) && Number.isFinite(nt);
+      if (op === 'eq') return numeric ? nv === nt : String(v) === String(target);
+      if (op === 'neq') return numeric ? nv !== nt : String(v) !== String(target);
+      const l = numeric ? nv : String(v);
+      const r = numeric ? nt : String(target);
+      if (op === 'gt') return l > r;
+      if (op === 'gte') return l >= r;
+      if (op === 'lt') return l < r;
+      if (op === 'lte') return l <= r;
+      return false;
+    };
+
+    let rows = all.filter((row) => (opts.filter ?? []).every((f) => cmp(valueOf(row, f.property), f.operator, f.value)));
+    if (opts.dateFilter) {
+      const cutoff = Date.now() - opts.dateFilter.lastNDays * 86400000;
+      rows = rows.filter((row) => {
+        const t = Date.parse(String(valueOf(row, opts.dateFilter!.property) ?? ''));
+        return Number.isFinite(t) && t >= cutoff;
+      });
+    }
+
+    const bucket = (v: unknown, unit: 'day' | 'week' | 'month'): string | null => {
+      const d = new Date(String(v ?? ''));
+      if (Number.isNaN(d.getTime())) return null;
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      if (unit === 'month') return `${y}-${m}-01T00:00:00`;
+      if (unit === 'week') {
+        const day = (d.getDay() + 6) % 7;
+        d.setDate(d.getDate() - day);
+      }
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T00:00:00`;
+    };
+
+    const groups = new Map<string, Array<{ rid: string; props: Record<string, unknown> }>>();
+    for (const row of rows) {
+      let key: string | null = null;
+      if (opts.groupBy?.kind === 'property') key = String(valueOf(row, opts.groupBy.property) ?? '');
+      else if (opts.groupBy?.kind === 'date') key = bucket(valueOf(row, opts.groupBy.property), opts.groupBy.unit);
+      groups.set(key ?? '', [...(groups.get(key ?? '') ?? []), row]);
+    }
+    if (!opts.groupBy) groups.set('', rows);
+
+    const metrics = opts.metrics?.length ? opts.metrics : [{ fn: 'count' as const }];
+    const result = [...groups.entries()].map(([key, items]) => {
+      const out: AggregateQueryRow = { key: key === '' && !opts.groupBy ? null : key };
+      for (const m of metrics) {
+        const alias = sanitizeAlias(m.alias ?? `${m.fn}_${m.property ?? 'all'}`);
+        if (m.fn === 'count') out[alias] = items.length;
+        else {
+          const vals = items.map((r) => valueOf(r, m.property!)).filter((v) => v !== null && v !== undefined);
+          if (m.fn === 'countDistinct') out[alias] = new Set(vals.map(String)).size;
+          else {
+            const nums = vals.map(Number).filter((n) => Number.isFinite(n));
+            if (!nums.length) out[alias] = null;
+            else if (m.fn === 'sum') out[alias] = nums.reduce((a, b) => a + b, 0);
+            else if (m.fn === 'avg') out[alias] = nums.reduce((a, b) => a + b, 0) / nums.length;
+            else if (m.fn === 'min') out[alias] = Math.min(...nums);
+            else out[alias] = Math.max(...nums);
+          }
+        }
+      }
+      return out;
+    });
+
+    const orderAlias = opts.orderBy ?? sanitizeAlias(`${metrics[0].fn}_${metrics[0].property ?? 'all'}`);
+    const dir = opts.order === 'asc' ? 1 : -1;
+    result.sort((a, b) => {
+      const av = a[orderAlias] ?? a.key, bv = b[orderAlias] ?? b.key;
+      const an = Number(av), bn = Number(bv);
+      const numeric = Number.isFinite(an) && Number.isFinite(bn);
+      return numeric ? (an - bn) * dir : String(av ?? '').localeCompare(String(bv ?? '')) * dir;
+    });
+    return result.slice(0, Math.min(Math.max(opts.limit ?? 100, 1), 1000));
   }
 
   async aggregateByProperty(
