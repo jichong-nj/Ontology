@@ -2130,7 +2130,7 @@ app.post('/api/aip/agents', async (req, res) => {
       modelScope: body.modelScope ?? [],
       defaultModelId: body.defaultModelId ?? '',
       temperature: body.temperature ?? 0.2,
-      enabledTools: body.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts', 'sql', 'modeling'],
+      enabledTools: body.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts', 'modeling'],
       objectTypes: body.objectTypes ?? [],
       maxSteps: body.maxSteps ?? 6,
       version: 1,
@@ -2209,7 +2209,7 @@ app.put('/api/aip/agents/:id', async (req, res) => {
       modelScope: body.modelScope ?? existing?.modelScope ?? [],
       defaultModelId: body.defaultModelId ?? existing?.defaultModelId ?? '',
       temperature: body.temperature ?? existing?.temperature ?? 0.2,
-      enabledTools: body.enabledTools ?? existing?.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts', 'sql', 'modeling'],
+      enabledTools: body.enabledTools ?? existing?.enabledTools ?? ['functions', 'actions', 'rules', 'explore', 'alerts', 'modeling'],
       objectTypes: body.objectTypes ?? existing?.objectTypes ?? [],
       maxSteps: body.maxSteps ?? existing?.maxSteps ?? 6,
       version: existing?.version,
@@ -2448,7 +2448,7 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 // ---------- MCP 端点：把内置智能体的工具集暴露给外部客户端 ----------
 // 说明：工具集与内置智能体一致（默认全部工具组），通过 MCP Streamable HTTP 调用。
 // 安全：如设置 MCP_TOKEN，则要求 Authorization: Bearer <token>；默认仅监听本机。
-const MCP_TOOL_GROUPS = (process.env.MCP_TOOL_GROUPS || 'functions,actions,rules,explore,alerts,sql,modeling')
+const MCP_TOOL_GROUPS = (process.env.MCP_TOOL_GROUPS || 'functions,actions,rules,explore,alerts,modeling')
   .split(',').map((x) => x.trim()).filter(Boolean);
 const mcpAgentCfg = {
   id: 'mcp', name: 'MCP', providerId: '', modelId: '', systemPrompt: '',
@@ -2584,9 +2584,14 @@ const MODELING_PROMPT = `
    - junctionTable 为关联表名；sourceColumn 映射源端主键、targetColumn 映射目标端主键；此模式不需要 foreignKey。
 4. 告知用户"确认后点击「确认创建」将创建关系类型并同步关系实例"，然后停止。
 
+## 问数规则（重要）
+- 用户问对象/关系/属性数据时，优先用对象查询工具：get_instances、aggregate、histogram、get_object_links；
+- **禁止用 run_sql 查本体数据**（run_sql 只用于源表探查；当前对智能体默认关闭）；
+- 需要排序取 TopN 时用 get_instances 的 orderBy/order/pageSize，不要退化成全量拉取。
+
 ## 派生属性 / 统计类属性（当用户要"员工数/人数/统计值"时）
 先判断用途，再选路径：
-- **只需实时问答** → 直接 run_sql 算，不建属性。
+- **只需实时问答** → 直接在本体上算（aggregate / get_instances / get_object_links），**不要用 run_sql 查本体**。
 - **要成为对象类型的属性、且在 Explore 列表可见** → **预计算**（推荐）：
   1) create_function 写计算函数，函数体用 ctx.links()/ctx.objects() 多跳统计，并用 ctx.repo.writeObjectPatch() 把结果写入实例属性；
   2) invoke_function 执行一次；

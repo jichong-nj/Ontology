@@ -74,6 +74,21 @@
 - **建议**：`POST/DELETE /api/s2/link-instances`，并在 Explore 关系面板提供编辑。
 - **优先级**：中
 
+## 查询与 SQL
+
+### B14. AIP 问数禁用 run_sql（已完成，2026-11-25）
+- `default` / `ontology-builder` 的 `enabledTools` 移除 `sql`；
+- MCP 默认工具组移除 `sql`（需要时用 `MCP_TOOL_GROUPS=...,sql` 显式开启）；
+- 提示词明确：问本体数据用 `get_instances` / `aggregate` / `histogram` / `get_object_links`，
+  **禁止用 run_sql 查本体**；run_sql 只用于源表探查。
+
+### B15. Ontology SQL（待做）
+- 背景：`run_sql` 查的是 S1 源库，绕过本体语义（`object_write` 覆盖值、派生属性、值类型、关系），
+  容易与本体查询结果不一致。
+- 方案：为对象类型/关系类型自动生成只读视图（基于 `object_write` / `link_instance`），
+  提供 `ontology_sql` 工具：仅 SELECT、对象/关系白名单、强制 LIMIT/timeout、只读角色。
+- 定位：与 Object Query（语义查询）、Dataset SQL（源库/数据集）三者分工。
+
 ## 建模能力（详见 `docs/PALANTIR-PK-ALIGNMENT.md`）
 
 > **属性语义（P0–P3）已完成（2026-11-24）**：属性 description/allowedValues、值类型 ValueType（enum/range/regex）、
