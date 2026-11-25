@@ -4,7 +4,7 @@
     <aside class="conv-sidebar">
       <div class="sidebar-head">
         <span class="sidebar-title">会话</span>
-        <el-button size="small" type="primary" plain @click="newConversation">+ 新建</el-button>
+        <el-button size="small" type="primary" plain @click="newConversation">+ 新建会话</el-button>
       </div>
       <ul class="conv-list" v-if="conversations.length">
         <li
@@ -18,7 +18,7 @@
           <el-button size="small" text class="conv-del" @click.stop="confirmDeleteConv(c)" title="删除">🗑</el-button>
         </li>
       </ul>
-      <div v-else class="conv-empty muted">暂无会话<br />点击下方「+ 新建」</div>
+      <div v-else class="conv-empty muted">暂无会话<br />点击上方「+ 新建会话」</div>
     </aside>
 
     <!-- 右侧：对话区（参考早期 chat 版本的气泡布局） -->
@@ -599,13 +599,69 @@ onMounted(async () => {
 .aip-layout { display: flex; height: calc(100vh - 120px); }
 
 /* 中间会话栏 */
-.conv-sidebar { width: 260px; border-right: 1px solid #ebeef5; padding: 12px; overflow-y: auto; }
-.conv-list { list-style: none; padding: 0; margin: 0; }
-.conv-item { position: relative; padding: 8px 10px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; border: 1px solid transparent; }
-.conv-item.active { background: #ecf5ff; border-color: #409eff; }
-.conv-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 22px; }
-.conv-time { font-size: 12px; }
-.conv-del { position: absolute; top: 6px; right: 6px; }
+.conv-sidebar {
+  width: 260px;
+  border-right: 1px solid #ebeef5;
+  padding: 14px 12px;
+  overflow-y: auto;
+  background: #fbfbfc;
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 0 2px;
+}
+.sidebar-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text, #303133);
+}
+.sidebar-head :deep(.el-button) {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.conv-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.conv-item {
+  position: relative;
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background .15s, border-color .15s;
+}
+.conv-item:hover { background: #f2f4f7; }
+.conv-item.active { background: #ecf5ff; border-color: #a0cfff; }
+.conv-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #303133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 26px;
+}
+.conv-time {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 3px;
+}
+.conv-del {
+  position: absolute;
+  top: 8px;
+  right: 6px;
+  opacity: 0;
+  transition: opacity .15s;
+  color: #909399;
+  padding: 2px 4px;
+}
+.conv-item:hover .conv-del,
+.conv-item.active .conv-del { opacity: 1; }
+.conv-del:hover { color: #f56c6c; }
 .conv-empty { text-align: center; font-size: 13px; padding-top: 40px; line-height: 1.8; }
 
 .aip-main { flex: 1; display: flex; flex-direction: column; padding: 12px 16px; min-width: 0; }
