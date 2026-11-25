@@ -1618,6 +1618,7 @@ const agentRuntime: AgentRuntime = {
     return rows;
   },
   aggregate: (objectType, property, topN) => repo.aggregateByProperty(objectType, property, topN ?? 20),
+  aggregateQuery: (objectType, opts) => repo.aggregateQuery(objectType, opts as any),
   histogram: (objectType, property, buckets) => repo.histogramByProperty(objectType, property, buckets ?? 20),
   // 受限 NL2SQL：在 S1 只读源库执行，仅允许 SELECT，且表必须在白名单内
   runSql: async (sql, allowTables, limit) => runReadOnlySql(sql, allowTables, limit ?? 200),

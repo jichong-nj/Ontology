@@ -71,6 +71,36 @@ export interface PropertyDef {
 
 // 共享属性：跨多个对象类型复用的属性元数据（元数据集中，数据各自实例持有）
 // 注意：required（是否必填）由各对象类型在"引用"处自行配置，共享侧只定义通用元数据。
+export type AggregateMetricFn = 'count' | 'countDistinct' | 'sum' | 'avg' | 'min' | 'max';
+
+export interface AggregateMetric {
+  fn: AggregateMetricFn;
+  property?: string;
+  alias?: string;
+}
+
+export type AggregateGroupBy =
+  | { kind: 'property'; property: string }
+  | { kind: 'date'; property: string; unit: 'day' | 'week' | 'month' }
+  | { kind: 'related'; fkProperty: string; targetObjectType: string; targetProperty: string }
+  | { kind: 'link'; linkType: string; direction: 'source' | 'target'; targetProperty?: string };
+
+export interface AggregateQueryOptions {
+  filter?: InstanceFilter[];
+  dateFilter?: { property: string; lastNDays: number };
+  relatedFilter?: Array<{ fkProperty: string; targetObjectType: string; filter: InstanceFilter[] }>;
+  groupBy?: AggregateGroupBy;
+  metrics: AggregateMetric[];
+  orderBy?: string;
+  order?: 'asc' | 'desc';
+  limit?: number;
+}
+
+export interface AggregateQueryRow {
+  key: string | null;
+  [metric: string]: unknown;
+}
+
 export interface SharedProperty {
   apiName: string;       // 全局唯一，如 "status"
   displayName: string;
@@ -339,6 +369,7 @@ export interface MetadataRepository {
   // 读取某对象类型下所有实例的（最新一次 patch 合并后的）属性，供函数/动作读取实例数据
   listObjectProperties(objectType: string): Promise<{ objectRid: string; properties: Record<string, unknown> }[]>;
   // 实例查询（对齐 Palantir）：属性级条件过滤 + 游标分页
+  aggregateQuery(objectType: string, opts: AggregateQueryOptions): Promise<AggregateQueryRow[]>;
   aggregateScalar(
     objectType: string,
     opts: { aggregation: 'count' | 'sum' | 'avg' | 'min' | 'max'; property?: string },

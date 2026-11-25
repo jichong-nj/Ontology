@@ -29,6 +29,7 @@ export interface AgentRuntime {
   getInstances(objectType: string, opts?: { filter?: unknown[]; orderBy?: string; order?: 'asc' | 'desc'; pageSize?: number; pageToken?: string }): Promise<unknown>;
   getObjectLinks(objectType: string, objectRid: string): Promise<unknown>;
   aggregate(objectType: string, property: string, topN?: number): Promise<unknown>;
+  aggregateQuery(objectType: string, opts: Record<string, unknown>): Promise<unknown>;
   histogram(objectType: string, property: string, buckets?: number): Promise<unknown>;
   // 受限 NL2SQL：仅允许只读 SELECT，在 S1 源库执行；allowTables 为白名单（来自 S2 元数据的真实表名）
   runSql(sql: string, allowTables: string[], limit?: number): Promise<unknown>;
@@ -252,15 +253,47 @@ function allToolSpecs(): ToolSpec[] {
       type: 'function',
       function: {
         name: 'aggregate',
-        description: '按某属性对对象实例分组计数（如按部门统计人数、按职级统计）。',
+        description:
+          '聚合查询：过滤 + 分组 + 指标。支持 count/countDistinct/sum/avg/min/max；' +
+          'groupBy 可按属性、日期（day/week/month，做趋势）、关联对象（外键→对端属性，如按部门名）、关系（link 遍历分组）；' +
+          '没有 filter 时对整个对象类型聚合。简单分组计数可只用 property/topN（兼容旧用法）。',
         parameters: {
           type: 'object',
           properties: {
             objectType: { type: 'string' },
-            property: { type: 'string', description: '属性 apiName' },
-            topN: { type: 'number', description: '返回前 N 组，默认 20' },
+            property: { type: 'string', description: '旧用法：按该属性分组计数' },
+            topN: { type: 'number', description: '旧用法：返回前 N 组' },
+            filter: {
+              type: 'array',
+              description: '过滤条件：[{property,operator,value}]，operator 支持 eq/neq/gt/gte/lt/lte/contains/isNull',
+              items: { type: 'object' },
+            },
+            dateFilter: {
+              type: 'object',
+              description: '相对时间窗口：{property:"startDate", lastNDays:30}',
+              properties: { property: { type: 'string' }, lastNDays: { type: 'number' } },
+            },
+            relatedFilter: {
+              type: 'array',
+              description: '按关联对象属性过滤：[{fkProperty:"managerId", targetObjectType:"Employee", filter:[{property:"email",operator:"eq",value:"x"}]}]',
+              items: { type: 'object' },
+            },
+            groupBy: {
+              type: 'object',
+              description:
+                "分组方式：{kind:'property',property} | {kind:'date',property,unit:'day'|'week'|'month'} | " +
+                "{kind:'related',fkProperty,targetObjectType,targetProperty} | {kind:'link',linkType,direction:'source'|'target',targetProperty?}",
+            },
+            metrics: {
+              type: 'array',
+              description: '指标：[{fn:"count"|"countDistinct"|"sum"|"avg"|"min"|"max", property?, alias?}]；默认 [{fn:"count"}]',
+              items: { type: 'object' },
+            },
+            orderBy: { type: 'string', description: '按指标 alias 或 key 排序；默认第一个指标' },
+            order: { type: 'string', enum: ['asc', 'desc'] },
+            limit: { type: 'number', description: '返回行数上限，默认 100' },
           },
-          required: ['objectType', 'property'],
+          required: ['objectType'],
         },
       },
     },
@@ -653,6 +686,12 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
     aggregate: async (a: any) => {
       const err = deny(a.objectType);
       if (err) return err;
+      if (a.metrics || a.filter || a.dateFilter || a.relatedFilter || a.groupBy || a.orderBy || a.limit) {
+        return rt.aggregateQuery(a.objectType, {
+          filter: a.filter, dateFilter: a.dateFilter, relatedFilter: a.relatedFilter,
+          groupBy: a.groupBy, metrics: a.metrics, orderBy: a.orderBy, order: a.order, limit: a.limit,
+        });
+      }
       return rt.aggregate(a.objectType, a.property, a.topN);
     },
     histogram: async (a: any) => {

@@ -10,6 +10,8 @@ import {
   OntologyFunction,
   PropertyDef,
   SharedProperty,
+  AggregateQueryOptions,
+  AggregateQueryRow,
   DerivedSpec,
   parseDerivedSpec,
   AutomationRule,
@@ -902,6 +904,122 @@ export class PostgresMetadataRepository implements MetadataRepository {
     return Number(rows[0]?.v ?? 0);
   }
 
+  // 增强聚合：过滤 + 指标(count/countDistinct/sum/avg/min/max) + 分组(属性/日期/关联/关系) + 排序/限制
+  async aggregateQuery(objectType: string, opts: AggregateQueryOptions): Promise<AggregateQueryRow[]> {
+    const ot = await this.getObjectType(objectType);
+    if (!ot) throw new Error(`对象类型不存在: ${objectType}`);
+    const propSet = new Set(ot.properties.map((p) => p.apiName));
+    const params: unknown[] = [objectType];
+    const joins: string[] = [];
+    const wheres: string[] = [];
+
+    const checkProp = (prop: string | undefined, label = '属性') => {
+      if (!prop || !propSet.has(prop)) throw new Error(`${label}不存在: ${objectType}.${prop}`);
+    };
+
+    // 过滤
+    if (opts.filter?.length) wheres.push(...buildFilterWhere(opts.filter, 'latest.patch', params));
+    if (opts.dateFilter) {
+      checkProp(opts.dateFilter.property, '日期属性');
+      const p = params.push(opts.dateFilter.property);
+      const n = params.push(opts.dateFilter.lastNDays);
+      wheres.push(`(latest.patch->>$${p})::timestamptz >= now() - ($${n} || ' days')::interval`);
+    }
+    for (const rf of opts.relatedFilter ?? []) {
+      checkProp(rf.fkProperty, '外键属性');
+      const target = await this.getObjectType(rf.targetObjectType);
+      if (!target) throw new Error(`关联对象类型不存在: ${rf.targetObjectType}`);
+      const tp = params.push(rf.targetObjectType);
+      const fk = params.push(rf.fkProperty);
+      const clauses = buildFilterWhere(rf.filter, 'rt.patch', params);
+      wheres.push(
+        `EXISTS (SELECT 1 FROM object_write rt
+                  WHERE rt.object_type=$${tp}
+                    AND rt.patch->>'id' = latest.patch->>$${fk}
+                    ${clauses.length ? 'AND ' + clauses.join(' AND ') : ''})`,
+      );
+    }
+
+    // 分组
+    let groupExpr = 'NULL::text';
+    const g = opts.groupBy;
+    if (g?.kind === 'property') {
+      checkProp(g.property);
+      groupExpr = `latest.patch->>$${params.push(g.property)}`;
+    } else if (g?.kind === 'date') {
+      checkProp(g.property);
+      if (!['day', 'week', 'month'].includes(g.unit)) throw new Error(`不支持的时间粒度: ${g.unit}`);
+      const p = params.push(g.property);
+      const u = params.push(g.unit);
+      groupExpr = `to_char(date_trunc($${u}::text, (latest.patch->>$${p})::timestamptz), 'YYYY-MM-DD"T"HH24:MI:SS')`;
+    } else if (g?.kind === 'related') {
+      checkProp(g.fkProperty, '外键属性');
+      const target = await this.getObjectType(g.targetObjectType);
+      if (!target) throw new Error(`关联对象类型不存在: ${g.targetObjectType}`);
+      if (!target.properties.some((p) => p.apiName === g.targetProperty)) {
+        throw new Error(`关联属性不存在: ${g.targetObjectType}.${g.targetProperty}`);
+      }
+      const tt = params.push(g.targetObjectType);
+      const fk = params.push(g.fkProperty);
+      const tp = params.push(g.targetProperty);
+      joins.push(`LEFT JOIN object_write rt2 ON rt2.object_type=$${tt} AND rt2.patch->>'id' = latest.patch->>$${fk}`);
+      groupExpr = `rt2.patch->>$${tp}`;
+    } else if (g?.kind === 'link') {
+      const lt = await this.getLinkType(g.linkType);
+      if (!lt) throw new Error(`关系类型不存在: ${g.linkType}`);
+      const targetType = g.direction === 'source' ? lt.targetType : lt.sourceType;
+      const l = params.push(g.linkType);
+      const tt = params.push(targetType);
+      if (g.direction === 'source') {
+        joins.push(`LEFT JOIN link_instance li ON li.link_type=$${l} AND li.source_rid=latest.object_rid`);
+        joins.push(`LEFT JOIN object_write lt2 ON lt2.object_type=$${tt} AND lt2.object_rid=li.target_rid`);
+      } else {
+        joins.push(`LEFT JOIN link_instance li ON li.link_type=$${l} AND li.target_rid=latest.object_rid`);
+        joins.push(`LEFT JOIN object_write lt2 ON lt2.object_type=$${tt} AND lt2.object_rid=li.source_rid`);
+      }
+      groupExpr = g.targetProperty ? `lt2.patch->>$${params.push(g.targetProperty)}` : `lt2.patch->>'id'`;
+    }
+
+    // 指标
+    const metrics = opts.metrics?.length ? opts.metrics : [{ fn: 'count' as const }];
+    const selectMetrics = metrics.map((m, i) => {
+      const alias = sanitizeAlias(m.alias ?? `${m.fn}_${m.property ?? 'all'}_${i}`);
+      let expr: string;
+      if (m.fn === 'count') {
+        expr = 'count(*)::numeric';
+      } else if (m.fn === 'countDistinct') {
+        checkProp(m.property);
+        expr = `count(DISTINCT latest.patch->>$${params.push(m.property)})::numeric`;
+      } else {
+        checkProp(m.property);
+        const p = params.push(m.property);
+        const num = `CASE WHEN latest.patch->>$${p} ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (latest.patch->>$${p})::numeric END`;
+        expr = `${m.fn}(${num})`;
+      }
+      return { alias, sql: `${expr} AS "${alias}"` };
+    });
+
+    const allowedOrder = new Set(['key', ...selectMetrics.map((m) => m.alias)]);
+    const order = opts.orderBy && allowedOrder.has(opts.orderBy) ? opts.orderBy : selectMetrics[0].alias;
+    const dir = opts.order === 'asc' ? 'ASC' : 'DESC';
+    const limit = Math.min(Math.max(opts.limit ?? 100, 1), 1000);
+    params.push(limit);
+
+    const sql = `WITH latest AS (SELECT object_rid, patch FROM object_write WHERE object_type=$1)
+      SELECT ${groupExpr} AS key, ${selectMetrics.map((m) => m.sql).join(', ')}
+        FROM latest ${joins.join(' ')}
+       ${wheres.length ? 'WHERE ' + wheres.join(' AND ') : ''}
+       GROUP BY 1
+       ORDER BY ${order === 'key' ? 'key' : `"${order}"`} ${dir} NULLS LAST
+       LIMIT $${params.length}`;
+    const { rows } = await this.pool.query(sql, params);
+    return rows.map((r: any) => {
+      const out: any = { key: r.key };
+      for (const m of selectMetrics) out[m.alias] = r[m.alias] === null ? null : Number(r[m.alias]);
+      return out;
+    });
+  }
+
   async aggregateByProperty(
     objectType: string,
     property: string,
@@ -1602,4 +1720,42 @@ function rowToSharedProperty(r: any): SharedProperty {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
+}
+
+function sanitizeAlias(alias: string): string {
+  const a = String(alias).replace(/[^A-Za-z0-9_]/g, '_');
+  return /^[A-Za-z_]/.test(a) ? a : `m_${a}`;
+}
+
+// 生成实例过滤 SQL（patchExpr 如 latest.patch / rt.patch）
+function buildFilterWhere(filter: any[], patchExpr: string, params: unknown[]): string[] {
+  const where: string[] = [];
+  for (const f of filter ?? []) {
+    const col = String(f.property ?? '').replace(/[^A-Za-z0-9_]/g, '');
+    if (!col) continue;
+    const lhs = `${patchExpr}->>'${col}'`;
+    if (f.operator === 'isNull') {
+      where.push(`${lhs} IS ${f.value ? 'NOT ' : ''}NULL`);
+      continue;
+    }
+    const ph = params.push(String(f.value));
+    switch (f.operator) {
+      case 'eq': where.push(`${lhs} = $${ph}`); break;
+      case 'neq': where.push(`${lhs} <> $${ph}`); break;
+      case 'gt':
+      case 'gte':
+      case 'lt':
+      case 'lte': {
+        const op = { gt: '>', gte: '>=', lt: '<', lte: '<=' }[f.operator as 'gt' | 'gte' | 'lt' | 'lte'];
+        where.push(`(CASE WHEN ${lhs} ~ '^-?[0-9]+(\.[0-9]+)?$' THEN (${lhs})::numeric END) ${op} ($${ph})::numeric`);
+        break;
+      }
+      case 'contains':
+        params[params.length - 1] = `%${String(f.value)}%`;
+        where.push(`${lhs} LIKE $${ph}`);
+        break;
+      default: break;
+    }
+  }
+  return where;
 }
