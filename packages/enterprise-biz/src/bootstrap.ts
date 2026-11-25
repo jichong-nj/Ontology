@@ -61,14 +61,16 @@ export async function seedEnterpriseBiz(pool: Pool): Promise<PostgresMetadataRep
   //   - 再把同一个共享属性复用（引用）到其它原本没有该属性的对象类型，
   //     实现"一处定义、多处复用"。派生属性不参与共享。
   const sharedSeeds: Array<{
-    fromType: string; prop: string;            // 提升来源：Employee.<prop>
+    fromType: string; prop: string;            // 提升来源：<fromType>.<prop>
     applyTo: string[];                          // 复用到的目标对象类型
+    description?: string;                       // 共享属性说明（首次创建时补齐）
   }> = [
     { fromType: 'Employee', prop: 'name',     applyTo: ['Alert'] },          // Alert 原本无 name
     { fromType: 'Employee', prop: 'status',   applyTo: ['Department', 'Alert'] }, // Department/Alert 无 status
     { fromType: 'Employee', prop: 'title',    applyTo: ['Department', 'Project'] }, // 二者均无 title
-    { fromType: 'Department', prop: 'location', applyTo: ['Project'] },       // Project 无 location
+    { fromType: 'Department', prop: 'location', applyTo: ['Organization', 'Project'], description: '所在地（办公地点/注册地）' },
     { fromType: 'Employee', prop: 'managerId', applyTo: ['Project'] },       // Project 无 managerId
+    { fromType: 'Employee', prop: 'empCode', applyTo: ['LeaveRecord'], description: '员工工号（业务编码）' },
   ];
 
   for (const s of sharedSeeds) {
@@ -83,16 +85,31 @@ export async function seedEnterpriseBiz(pool: Pool): Promise<PostgresMetadataRep
     for (const target of s.applyTo) {
       const t = await repo.getObjectType(target);
       if (!t) continue;
-      if (t.properties.some((p) => p.sharedRef === s.prop)) {
+      const existing = t.properties.find((p) => p.apiName === s.prop && !p.derived);
+      if (existing?.sharedRef === s.prop) {
         console.log(`[Shared] ${target} 已引用 ${s.prop}（跳过）`);
         continue;
       }
       try {
-        await repo.applySharedToObjectType(s.prop, target);
-        console.log(`[Shared] 已应用共享属性 ${s.prop} -> ${target}`);
+        if (existing) {
+          // 目标类型已有同名本地属性：提升为引用共享属性（而非新增，避免同名冲突）
+          await repo.convertPropertyToShared(target, s.prop);
+          console.log(`[Shared] 已把 ${target}.${s.prop} 改为共享引用`);
+        } else {
+          await repo.applySharedToObjectType(s.prop, target);
+          console.log(`[Shared] 已应用共享属性 ${s.prop} -> ${target}`);
+        }
       } catch (e: any) {
         console.warn(`[Shared] 应用失败(跳过) ${s.prop}->${target}: ${e.message}`);
       }
+    }
+
+    // 首次创建时补齐共享属性说明（不覆盖已有描述）
+    if (s.description) {
+      try {
+        const sp = await repo.getSharedProperty(s.prop);
+        if (sp && !sp.description) await repo.updateSharedProperty(s.prop, { description: s.description });
+      } catch { /* ignore */ }
     }
   }
 
