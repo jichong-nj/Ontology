@@ -2,12 +2,13 @@
 import { ref, onMounted, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Share, Plus, Edit as EditIcon, Delete } from '@element-plus/icons-vue';
-import { s2shared, s2 } from '@/api';
+import { s2shared, s2, valtype } from '@/api';
 import type { SharedProperty, ObjectType } from '@/api';
 
 const loading = ref(false);
 const list = ref<SharedProperty[]>([]);
 const objectTypes = ref<ObjectType[]>([]);
+const valueTypes = ref<any[]>([]);
 
 // 使用某个共享属性的对象类型清单（引用 sharedRef === apiName）
 const usages = computed<Record<string, string[]>>(() => {
@@ -24,9 +25,10 @@ const usages = computed<Record<string, string[]>>(() => {
 async function load() {
   loading.value = true;
   try {
-    const [sps, ots] = await Promise.all([s2shared.list(), s2.listObjectTypes()]);
+    const [sps, ots, vts] = await Promise.all([s2shared.list(), s2.listObjectTypes(), valtype.list()]);
     list.value = sps;
     objectTypes.value = ots;
+    valueTypes.value = vts;
   } catch (e: any) {
     ElMessage.error(e.message || '加载失败');
   } finally {
@@ -38,14 +40,26 @@ async function load() {
 // 注意：required（是否必填）由各对象类型在"引用"处自行配置，共享侧只定义通用元数据。
 const dialogVisible = ref(false);
 const editing = ref<SharedProperty | null>(null);
-const form = ref<{ apiName: string; displayName: string; type: string; description: string }>({
+const emptyForm = () => ({
   apiName: '', displayName: '', type: 'string', description: '',
+  valueType: '', allowedText: '', unit: '', format: '', defaultValue: '',
 });
-const dataTypes = ['string', 'integer', 'double', 'boolean', 'date', 'datetime'];
+const form = ref(emptyForm());
+const dataTypes = ['string', 'integer', 'float', 'boolean', 'date', 'timestamp', 'geopoint', 'array', 'object'];
+
+function allowedToText(values?: { value: string; label?: string; description?: string }[]): string {
+  return (values ?? []).map((v) => [v.value, v.label ?? '', v.description ?? ''].join('|')).join('\n');
+}
+function textToAllowed(text: string) {
+  return text.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+    const [value, label, description] = l.split('|').map((x) => x.trim());
+    return { value, ...(label ? { label } : {}), ...(description ? { description } : {}) };
+  });
+}
 
 function openCreate() {
   editing.value = null;
-  form.value = { apiName: '', displayName: '', type: 'string', description: '' };
+  form.value = emptyForm();
   dialogVisible.value = true;
 }
 
@@ -54,8 +68,18 @@ function openEdit(sp: SharedProperty) {
   form.value = {
     apiName: sp.apiName, displayName: sp.displayName, type: sp.type,
     description: sp.description ?? '',
+    valueType: sp.valueType ?? '',
+    allowedText: allowedToText(sp.allowedValues),
+    unit: sp.unit ?? '', format: sp.format ?? '',
+    defaultValue: sp.defaultValue === undefined || sp.defaultValue === null ? '' : String(sp.defaultValue),
   };
   dialogVisible.value = true;
+}
+
+function parseDefault(raw: string): unknown {
+  const t = raw.trim();
+  if (!t) return undefined;
+  try { return JSON.parse(t); } catch { return t; }
 }
 
 async function save() {
@@ -69,6 +93,11 @@ async function save() {
         displayName: form.value.displayName,
         type: form.value.type,
         description: form.value.description,
+        valueType: form.value.valueType || undefined,
+        allowedValues: form.value.allowedText.trim() ? textToAllowed(form.value.allowedText) : undefined,
+        unit: form.value.unit || undefined,
+        format: form.value.format || undefined,
+        defaultValue: parseDefault(form.value.defaultValue),
       });
       ElMessage.success('已更新共享属性（引用方未覆盖的显示名/类型将自动同步）');
     } else {
@@ -77,6 +106,11 @@ async function save() {
         displayName: form.value.displayName,
         type: form.value.type,
         description: form.value.description,
+        valueType: form.value.valueType || undefined,
+        allowedValues: form.value.allowedText.trim() ? textToAllowed(form.value.allowedText) : undefined,
+        unit: form.value.unit || undefined,
+        format: form.value.format || undefined,
+        defaultValue: parseDefault(form.value.defaultValue),
         version: 1,
         createdAt: '',
         updatedAt: '',
@@ -152,7 +186,7 @@ onMounted(load);
     </ElCard>
 
     <!-- 新建 / 编辑弹窗 -->
-    <ElDialog v-model="dialogVisible" :title="editing ? '编辑共享属性' : '新建共享属性'" width="460px">
+    <ElDialog v-model="dialogVisible" :title="editing ? '编辑共享属性' : '新建共享属性'" width="560px">
       <ElForm label-width="100px">
         <ElFormItem label="API 名称">
           <ElInput v-model="form.apiName" :disabled="!!editing" placeholder="如 status" />
@@ -167,6 +201,21 @@ onMounted(load);
         </ElFormItem>
         <ElFormItem label="描述">
           <ElInput v-model="form.description" type="textarea" :rows="2" placeholder="可选" />
+        </ElFormItem>
+        <ElFormItem label="值类型">
+          <ElSelect v-model="form.valueType" clearable filterable style="width: 100%" placeholder="可选，引用 Value Types">
+            <ElOption v-for="vt in valueTypes" :key="vt.apiName" :label="`${vt.displayName} (${vt.apiName})`" :value="vt.apiName" />
+          </ElSelect>
+        </ElFormItem>
+        <ElFormItem label="枚举取值">
+          <ElInput v-model="form.allowedText" type="textarea" :rows="3" placeholder="每行 value|label|说明；留空表示非枚举" />
+        </ElFormItem>
+        <ElFormItem label="单位 / 格式">
+          <ElInput v-model="form.unit" placeholder="单位，如 人、小时" style="width: 46%" />
+          <ElInput v-model="form.format" placeholder="格式，如 text、date、percent" style="width: 46%; margin-left: 8px" />
+        </ElFormItem>
+        <ElFormItem label="默认值">
+          <ElInput v-model="form.defaultValue" placeholder="同步时缺失填充；数字/布尔按 JSON 解析" />
         </ElFormItem>
       </ElForm>
       <template #footer>

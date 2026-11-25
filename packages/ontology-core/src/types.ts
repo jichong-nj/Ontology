@@ -76,6 +76,11 @@ export interface SharedProperty {
   displayName: string;
   type: PropertyType;
   description?: string;
+  valueType?: string;                    // 引用值类型
+  allowedValues?: PropertyAllowedValue[]; // 枚举取值
+  unit?: string;                          // 单位
+  format?: string;                        // 展示格式
+  defaultValue?: unknown;                 // 同步时默认填充
   version: number;
   createdAt: string;
   updatedAt: string;

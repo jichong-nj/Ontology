@@ -41,6 +41,11 @@ CREATE TABLE shared_property (
   display_name TEXT NOT NULL,
   type         TEXT NOT NULL,   -- PropertyType
   description  TEXT,
+  value_type   TEXT,
+  allowed_values JSONB,
+  unit         TEXT,
+  format       TEXT,
+  default_value JSONB,
   version      INT NOT NULL,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()

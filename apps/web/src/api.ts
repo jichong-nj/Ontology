@@ -137,6 +137,11 @@ export interface SharedProperty {
   displayName: string;
   type: string;
   description?: string;
+  valueType?: string;
+  allowedValues?: { value: string; label?: string; description?: string }[];
+  unit?: string;
+  format?: string;
+  defaultValue?: unknown;
   version: number;
   createdAt: string;
   updatedAt: string;

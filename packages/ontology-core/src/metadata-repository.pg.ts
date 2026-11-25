@@ -249,9 +249,12 @@ export class PostgresMetadataRepository implements MetadataRepository {
 
   async createSharedProperty(def: SharedProperty): Promise<void> {
     await this.pool.query(
-      `INSERT INTO shared_property (api_name, display_name, type, description, version, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,1,now(),now())`,
-      [def.apiName, def.displayName, def.type, def.description ?? null],
+      `INSERT INTO shared_property
+         (api_name, display_name, type, description, value_type, allowed_values, unit, format, default_value, version, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,1,now(),now())`,
+      [def.apiName, def.displayName, def.type, def.description ?? null,
+       def.valueType ?? null, JSON.stringify(def.allowedValues ?? null), def.unit ?? null,
+       def.format ?? null, JSON.stringify(def.defaultValue ?? null)],
     );
   }
 
@@ -266,8 +269,12 @@ export class PostgresMetadataRepository implements MetadataRepository {
       updatedAt: new Date().toISOString(),
     };
     await this.pool.query(
-      `UPDATE shared_property SET display_name=$2, type=$3, description=$4, version=$5, updated_at=now() WHERE api_name=$1`,
-      [next.apiName, next.displayName, next.type, next.description ?? null, next.version],
+      `UPDATE shared_property SET display_name=$2, type=$3, description=$4,
+         value_type=$5, allowed_values=$6, unit=$7, format=$8, default_value=$9,
+         version=$10, updated_at=now() WHERE api_name=$1`,
+      [next.apiName, next.displayName, next.type, next.description ?? null,
+       next.valueType ?? null, JSON.stringify(next.allowedValues ?? null), next.unit ?? null,
+       next.format ?? null, JSON.stringify(next.defaultValue ?? null), next.version],
     );
     // 编辑一处，回写所有引用方的共享元数据字段（displayName/type/description）。
     // 注意：required 由引用方自行配置，共享侧编辑不覆盖。
@@ -302,6 +309,12 @@ export class PostgresMetadataRepository implements MetadataRepository {
         if (p.sharedRef === sharedApiName && !p.overridden) {
           p.displayName = sp.displayName;
           p.type = sp.type;
+          p.description = sp.description;
+          p.valueType = sp.valueType;
+          p.allowedValues = sp.allowedValues;
+          p.unit = sp.unit;
+          p.format = sp.format;
+          p.defaultValue = sp.defaultValue;
           changed = true;
         }
       }
@@ -322,6 +335,12 @@ export class PostgresMetadataRepository implements MetadataRepository {
         apiName: propApiName,
         displayName: prop.displayName,
         type: prop.type,
+        description: prop.description,
+        valueType: prop.valueType,
+        allowedValues: prop.allowedValues,
+        unit: prop.unit,
+        format: prop.format,
+        defaultValue: prop.defaultValue,
         version: 1,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -348,6 +367,12 @@ export class PostgresMetadataRepository implements MetadataRepository {
       displayName: override?.displayName ?? sp.displayName,
       type: sp.type,
       required: override?.required ?? false,
+      description: sp.description,
+      valueType: sp.valueType,
+      allowedValues: sp.allowedValues,
+      unit: sp.unit,
+      format: sp.format,
+      defaultValue: sp.defaultValue,
       sharedRef: sp.apiName,
       overridden,
     });
@@ -1568,6 +1593,11 @@ function rowToSharedProperty(r: any): SharedProperty {
     displayName: r.display_name,
     type: r.type,
     description: r.description ?? undefined,
+    valueType: r.value_type ?? undefined,
+    allowedValues: r.allowed_values ?? undefined,
+    unit: r.unit ?? undefined,
+    format: r.format ?? undefined,
+    defaultValue: r.default_value ?? undefined,
     version: r.version,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
