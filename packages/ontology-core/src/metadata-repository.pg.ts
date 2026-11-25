@@ -757,6 +757,9 @@ export class PostgresMetadataRepository implements MetadataRepository {
     objectType: string,
     opts?: {
       filter?: InstanceFilter[];
+      dateFilter?: { property: string; lastNDays: number };
+      relatedFilter?: Array<{ fkProperty: string; targetObjectType: string; filter: InstanceFilter[] }>;
+      rids?: string[];
       orderBy?: string;
       order?: 'asc' | 'desc';
       pageSize?: number;
@@ -767,6 +770,10 @@ export class PostgresMetadataRepository implements MetadataRepository {
     const filter = opts?.filter ?? [];
     const params: unknown[] = [objectType];
     const wheres: string[] = ['object_type = $1'];
+    if (opts?.rids?.length) {
+      const ph = params.push(opts.rids);
+      wheres.push(`object_rid = ANY($${ph}::text[])`);
+    }
 
     filter.forEach((f) => {
       const col = f.property.replace(/[^A-Za-z0-9_]/g, '');
@@ -805,6 +812,26 @@ export class PostgresMetadataRepository implements MetadataRepository {
       }
     });
 
+    // 相对时间窗口
+    if (opts?.dateFilter) {
+      const p = params.push(opts.dateFilter.property);
+      const n = params.push(opts.dateFilter.lastNDays);
+      wheres.push(`(patch->>$${p})::timestamptz >= now() - ($${n} || ' days')::interval`);
+    }
+
+    // 关联对象过滤（外键 -> 对端对象属性）
+    for (const rf of opts?.relatedFilter ?? []) {
+      const tp = params.push(rf.targetObjectType);
+      const fk = params.push(rf.fkProperty);
+      const clauses = buildFilterWhere(rf.filter, 'rt.patch', params);
+      wheres.push(
+        `EXISTS (SELECT 1 FROM object_write rt
+                  WHERE rt.object_type=$${tp}
+                    AND rt.patch->>'id' = ow.patch->>$${fk}
+                    ${clauses.length ? 'AND ' + clauses.join(' AND ') : ''})`,
+      );
+    }
+
     // 排序：属性名白名单校验（按对象类型定义），数值属性按 numeric 排序
     let orderClause = 'object_rid ASC';
     if (opts?.orderBy) {
@@ -832,7 +859,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
     const { rows } = await this.pool.query(
       `SELECT object_rid, patch
          FROM (SELECT DISTINCT ON (object_rid) object_rid, patch
-                 FROM object_write
+                 FROM object_write ow
                 WHERE ${wheres.join(' AND ')}
                 ORDER BY object_rid, id DESC) t
         ORDER BY ${orderClause}
@@ -886,6 +913,53 @@ export class PostgresMetadataRepository implements MetadataRepository {
    * 取每个实例最新 patch 中的属性值，GROUP BY 计数。
    * 若属性为派生属性，则实时计算各实例派生值后再聚合。
    */
+  // Search Around：从对象集（rids 或 filter）沿关系跳到对端对象集
+  async searchAround(
+    objectType: string,
+    opts: {
+      rids?: string[];
+      filter?: InstanceFilter[];
+      linkType: string;
+      direction: 'source' | 'target';
+      targetFilter?: InstanceFilter[];
+      orderBy?: string;
+      order?: 'asc' | 'desc';
+      pageSize?: number;
+      pageToken?: string;
+    },
+  ): Promise<{ targetObjectType: string; sourceCount: number; linkCount: number; data: any[]; nextPageToken: string | null }> {
+    const lt = await this.getLinkType(opts.linkType);
+    if (!lt) throw new Error(`关系类型不存在: ${opts.linkType}`);
+    if (lt.sourceType !== objectType && lt.targetType !== objectType) {
+      throw new Error(`对象类型 ${objectType} 不是关系 ${opts.linkType} 的端点（${lt.sourceType} → ${lt.targetType}）`);
+    }
+    const targetType = opts.direction === 'source' ? lt.targetType : lt.sourceType;
+    let sourceRids: string[] = (opts.rids ?? []).map((r) => ensureRid(objectType, r));
+    if (!sourceRids.length) {
+      const src = await this.listInstances(objectType, { filter: opts.filter, pageSize: 1000 });
+      sourceRids = src.data.map((d) => d.objectRid);
+    }
+    if (!sourceRids.length) {
+      return { targetObjectType: targetType, sourceCount: 0, linkCount: 0, data: [], nextPageToken: null };
+    }
+    const sourceCol = opts.direction === 'source' ? 'source_rid' : 'target_rid';
+    const targetCol = opts.direction === 'source' ? 'target_rid' : 'source_rid';
+    const { rows } = await this.pool.query(
+      `SELECT DISTINCT ${targetCol} AS rid FROM link_instance WHERE link_type=$1 AND ${sourceCol} = ANY($2::text[])`,
+      [opts.linkType, sourceRids],
+    );
+    const targetRids: string[] = rows.map((r: any) => r.rid);
+    const page = await this.listInstances(targetType, {
+      rids: targetRids,
+      filter: opts.targetFilter,
+      orderBy: opts.orderBy,
+      order: opts.order,
+      pageSize: opts.pageSize ?? 100,
+      pageToken: opts.pageToken,
+    });
+    return { targetObjectType: targetType, sourceCount: sourceRids.length, linkCount: targetRids.length, data: page.data, nextPageToken: page.nextPageToken };
+  }
+
   // 标量聚合（条件评估用）：count/sum/avg/min/max，数值属性按 numeric 统计
   async aggregateScalar(
     objectType: string,

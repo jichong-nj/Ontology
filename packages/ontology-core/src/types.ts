@@ -18,6 +18,11 @@ export interface InstanceFilter {
 
 export interface InstanceQuery {
   filter?: InstanceFilter[];
+  dateFilter?: { property: string; lastNDays: number };
+  relatedFilter?: Array<{ fkProperty: string; targetObjectType: string; filter: InstanceFilter[] }>;
+  rids?: string[];
+  orderBy?: string;
+  order?: 'asc' | 'desc';
   pageSize?: number;    // 默认 100，上限 1000
   pageToken?: string;   // 上一页 nextPageToken（按 object_rid 游标）
 }
@@ -370,6 +375,11 @@ export interface MetadataRepository {
   listObjectProperties(objectType: string): Promise<{ objectRid: string; properties: Record<string, unknown> }[]>;
   // 实例查询（对齐 Palantir）：属性级条件过滤 + 游标分页
   aggregateQuery(objectType: string, opts: AggregateQueryOptions): Promise<AggregateQueryRow[]>;
+  searchAround(objectType: string, opts: {
+    rids?: string[]; filter?: InstanceFilter[]; linkType: string; direction: 'source' | 'target';
+    targetFilter?: InstanceFilter[]; orderBy?: string; order?: 'asc' | 'desc';
+    pageSize?: number; pageToken?: string;
+  }): Promise<{ targetObjectType: string; sourceCount: number; linkCount: number; data: any[]; nextPageToken: string | null }>;
   aggregateScalar(
     objectType: string,
     opts: { aggregation: 'count' | 'sum' | 'avg' | 'min' | 'max'; property?: string },

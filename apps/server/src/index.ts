@@ -1619,6 +1619,7 @@ const agentRuntime: AgentRuntime = {
   },
   aggregate: (objectType, property, topN) => repo.aggregateByProperty(objectType, property, topN ?? 20),
   aggregateQuery: (objectType, opts) => repo.aggregateQuery(objectType, opts as any),
+  searchAround: (objectType, opts) => repo.searchAround(objectType, opts as any),
   histogram: (objectType, property, buckets) => repo.histogramByProperty(objectType, property, buckets ?? 20),
   // 受限 NL2SQL：在 S1 只读源库执行，仅允许 SELECT，且表必须在白名单内
   runSql: async (sql, allowTables, limit) => runReadOnlySql(sql, allowTables, limit ?? 200),
@@ -2586,6 +2587,7 @@ const MODELING_PROMPT = `
 4. 告知用户"确认后点击「确认创建」将创建关系类型并同步关系实例"，然后停止。
 
 ## 问数规则（重要）
+- 关联/多跳查询优先用 search_around（从对象集沿关系跳到对端对象），再对结果过滤/聚合；
 - 用户问对象/关系/属性数据时，优先用对象查询工具：get_instances、aggregate、histogram、get_object_links；
 - **禁止用 run_sql 查本体数据**（run_sql 只用于源表探查；当前对智能体默认关闭）；
 - 需要排序取 TopN 时用 get_instances 的 orderBy/order/pageSize，不要退化成全量拉取。

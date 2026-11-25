@@ -26,10 +26,17 @@ export interface AgentRuntime {
   triggerAction(name: string, args: Record<string, unknown>): Promise<unknown>;
   runRules(): Promise<unknown>;
   listAlerts(opts?: { keyword?: string; limit?: number; offset?: number }): Promise<unknown>;
-  getInstances(objectType: string, opts?: { filter?: unknown[]; orderBy?: string; order?: 'asc' | 'desc'; pageSize?: number; pageToken?: string }): Promise<unknown>;
+  getInstances(objectType: string, opts?: {
+    filter?: unknown[];
+    dateFilter?: { property: string; lastNDays: number };
+    relatedFilter?: unknown[];
+    orderBy?: string; order?: 'asc' | 'desc';
+    pageSize?: number; pageToken?: string;
+  }): Promise<unknown>;
   getObjectLinks(objectType: string, objectRid: string): Promise<unknown>;
   aggregate(objectType: string, property: string, topN?: number): Promise<unknown>;
   aggregateQuery(objectType: string, opts: Record<string, unknown>): Promise<unknown>;
+  searchAround(objectType: string, opts: Record<string, unknown>): Promise<unknown>;
   histogram(objectType: string, property: string, buckets?: number): Promise<unknown>;
   // 受限 NL2SQL：仅允许只读 SELECT，在 S1 源库执行；allowTables 为白名单（来自 S2 元数据的真实表名）
   runSql(sql: string, allowTables: string[], limit?: number): Promise<unknown>;
@@ -88,7 +95,7 @@ const TOOL_GROUPS: Record<string, string[]> = {
   functions: ['invoke_function', 'list_functions'],
   actions: ['trigger_action', 'list_actions'],
   rules: ['run_rules', 'list_rules'],
-  explore: ['list_object_types', 'get_instances', 'get_object_links', 'aggregate', 'histogram'],
+  explore: ['list_object_types', 'get_instances', 'get_object_links', 'search_around', 'aggregate', 'histogram'],
   alerts: ['list_alerts'],
   // 受限 NL2SQL：LLM 生成只读 SELECT，在 S1 源库白名单表内执行（不回写源）
   sql: ['run_sql'],
@@ -225,6 +232,16 @@ function allToolSpecs(): ToolSpec[] {
                 required: ['property', 'operator'],
               },
             },
+            dateFilter: {
+              type: 'object',
+              description: '相对时间窗口：{property:"startDate", lastNDays:30}',
+              properties: { property: { type: 'string' }, lastNDays: { type: 'number' } },
+            },
+            relatedFilter: {
+              type: 'array',
+              description: '按关联对象属性过滤：[{fkProperty:"managerId", targetObjectType:"Employee", filter:[{property:"email",operator:"eq",value:"x"}]}]',
+              items: { type: 'object' },
+            },
             orderBy: { type: 'string', description: '排序属性 apiName（必须在该对象类型上已定义；数值属性按数值排序）' },
             order: { type: 'string', enum: ['asc', 'desc'], description: '排序方向，默认 asc；TopN 用 desc + pageSize' },
             pageSize: { type: 'number', description: '每页条数，默认 100，上限 1000；TopN 时作为 limit' },
@@ -246,6 +263,31 @@ function allToolSpecs(): ToolSpec[] {
             objectRid: { type: 'string', description: '对象实例 rid' },
           },
           required: ['objectType', 'objectRid'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'search_around',
+        description:
+          'Search Around：从对象集（filter 或 rids）沿关系跳到对端对象集，返回对端对象。' +
+          'direction 表示当前对象在关系中的角色（source/target）；可对结果再做 targetFilter 过滤，' +
+          '支持 orderBy/pageSize。用于多跳/关联查询（如 部门→员工、设备→部门）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            objectType: { type: 'string', description: '当前对象类型 apiName' },
+            filter: { type: 'array', description: '当前对象集过滤：[{property,operator,value}]', items: { type: 'object' } },
+            rids: { type: 'array', description: '当前对象集 rid 列表（与 filter 二选一）', items: { type: 'string' } },
+            linkType: { type: 'string', description: '关系类型 apiName' },
+            direction: { type: 'string', enum: ['source', 'target'], description: '当前对象是关系的 source 还是 target' },
+            targetFilter: { type: 'array', description: '对端对象过滤条件', items: { type: 'object' } },
+            orderBy: { type: 'string', description: '对端对象排序属性' },
+            order: { type: 'string', enum: ['asc', 'desc'] },
+            pageSize: { type: 'number', description: '返回条数，默认 100' },
+          },
+          required: ['objectType', 'linkType', 'direction'],
         },
       },
     },
@@ -672,10 +714,20 @@ function buildToolMap(rt: AgentRuntime, cfg: AIPAgentConfig) {
       if (err) return err;
       return rt.getInstances(a.objectType, {
         filter: a.filter,
+        dateFilter: a.dateFilter,
+        relatedFilter: a.relatedFilter,
         orderBy: a.orderBy,
         order: a.order,
         pageSize: a.pageSize,
         pageToken: a.pageToken,
+      });
+    },
+    search_around: async (a: any) => {
+      const err = deny(a.objectType);
+      if (err) return err;
+      return rt.searchAround(a.objectType, {
+        rids: a.rids, filter: a.filter, linkType: a.linkType, direction: a.direction,
+        targetFilter: a.targetFilter, orderBy: a.orderBy, order: a.order, pageSize: a.pageSize,
       });
     },
     get_object_links: async (a: any) => {
