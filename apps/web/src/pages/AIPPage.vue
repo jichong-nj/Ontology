@@ -63,14 +63,20 @@
             <div v-if="m.role === 'user'" class="bubble user">{{ m.content }}</div>
             <!-- AI 消息：按时间顺序依次展示思考 / 工具调用，回复正文在最后 -->
             <template v-else>
+              <div v-if="m.timeline?.length" class="timeline-toolbar">
+                <span class="tl-stat">💭 思考 {{ thoughtCount(m) }} · 🔧 工具 {{ actionCount(m) }}</span>
+                <el-button size="small" link type="primary" @click="setAllThoughts(i, true)">展开全部思考</el-button>
+                <el-button size="small" link @click="setAllThoughts(i, false)">收起全部思考</el-button>
+              </div>
               <template v-for="(t, k) in m.timeline" :key="k">
-                <!-- 思考框（每个思考段落独立） -->
-                <el-collapse v-if="t.kind === 'thought'" class="think-collapse">
-                  <el-collapse-item>
-                    <template #title><span class="collapse-title">💭 思考 {{ thinkIndex(m.timeline, k) }}</span></template>
-                    <div class="thinking">{{ t.content }}</div>
-                  </el-collapse-item>
-                </el-collapse>
+                <!-- 思考框（每个思考段落独立，可展开/收起） -->
+                <div v-if="t.kind === 'thought'" class="think-block">
+                  <div class="think-block__head" @click="toggleThought(i, k)">
+                    <span class="collapse-title">💭 思考 {{ thinkIndex(m.timeline, k) }}</span>
+                    <span class="think-toggle">{{ isThoughtOpen(i, k) ? '收起' : '展开' }}</span>
+                  </div>
+                  <div v-show="isThoughtOpen(i, k)" class="thinking">{{ t.content }}</div>
+                </div>
                 <!-- 工具调用（独立折叠块，工具名正确） -->
                 <el-collapse v-else-if="t.kind === 'action' && t.step" class="steps-collapse">
                   <el-collapse-item>
@@ -88,6 +94,11 @@
                   </el-collapse-item>
                 </el-collapse>
               </template>
+              <!-- 流式思考中：尚未被工具/回复打断的当前思考 -->
+              <div v-if="m.curThink" class="think-block think-block--live">
+                <div class="think-block__head"><span class="collapse-title">💭 思考中…</span></div>
+                <div class="thinking">{{ m.curThink }}</div>
+              </div>
               <!-- 回复正文（始终在最后） -->
               <div v-if="m.content" class="bubble ai" v-html="renderMd(m.content)"></div>
               <div v-if="m.stopped" class="stopped-hint">⏹ 已停止生成</div>
@@ -493,6 +504,28 @@ function pretty(v: unknown): string {
 }
 
 // 计算当前时间线条目之前共有几次思考，用于「思考 N」序号
+// 思考块展开状态（默认展开，可单个或全部收起）
+const thoughtOpen = reactive<Record<string, boolean>>({});
+function isThoughtOpen(msgIndex: number, k: number): boolean {
+  return thoughtOpen[`${msgIndex}-${k}`] !== false;
+}
+function toggleThought(msgIndex: number, k: number) {
+  const key = `${msgIndex}-${k}`;
+  thoughtOpen[key] = thoughtOpen[key] === false;
+}
+function setAllThoughts(msgIndex: number, open: boolean) {
+  const m = messages.value[msgIndex];
+  (m?.timeline ?? []).forEach((t: any, k: number) => {
+    if (t.kind === 'thought') thoughtOpen[`${msgIndex}-${k}`] = open;
+  });
+}
+function thoughtCount(m: any): number {
+  return (m?.timeline ?? []).filter((t: any) => t.kind === 'thought').length;
+}
+function actionCount(m: any): number {
+  return (m?.timeline ?? []).filter((t: any) => t.kind === 'action').length;
+}
+
 function thinkIndex(timeline: any[] | undefined, cur: number): number {
   const list = timeline ?? [];
   let n = 0;
@@ -652,4 +685,33 @@ onMounted(async () => {
 .draft-prop-src { color: var(--text-secondary); }
 .draft-result { margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
 .draft-err { color: #dc2626; }
+
+.timeline-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.timeline-toolbar .tl-stat { margin-right: auto; }
+.think-block {
+  border: 1px solid var(--border, #e4e7ed);
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter, #fafafa);
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+.think-block__head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px; cursor: pointer; user-select: none;
+  font-size: 13px; font-weight: 500;
+}
+.think-block__head:hover { background: var(--el-fill-color-light, #f5f7fa); }
+.think-toggle { font-size: 12px; color: var(--el-color-primary, #409eff); }
+.think-block .thinking {
+  padding: 0 10px 8px;
+  font-size: 13px; line-height: 1.6;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  max-height: 360px; overflow: auto;
+}
+.think-block--live { border-style: dashed; }
 </style>
