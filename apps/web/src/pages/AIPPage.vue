@@ -89,11 +89,17 @@
                   </div>
                   <div v-show="isToolOpen(i, k)" class="step">
                     <div class="step-detail">
-                      <div class="step-label">参数</div>
+                      <div class="step-label-row">
+                        <span class="step-label">参数</span>
+                        <el-button size="small" link @click.stop="copyJson(t.step.args)">复制</el-button>
+                      </div>
                       <pre class="step-args mono">{{ pretty(t.step.args) }}</pre>
                     </div>
                     <div class="step-detail">
-                      <div class="step-label">返回</div>
+                      <div class="step-label-row">
+                        <span class="step-label">返回</span>
+                        <el-button size="small" link @click.stop="copyJson(t.step.result)">复制</el-button>
+                      </div>
                       <pre class="step-result mono">{{ pretty(t.step.result) }}</pre>
                     </div>
                   </div>
@@ -543,6 +549,16 @@ function setAllTools(msgIndex: number, open: boolean) {
     if (t.kind === 'action') toolOpen[`${msgIndex}-${k}`] = open;
   });
 }
+async function copyJson(value: unknown): Promise<void> {
+  const text = pretty(value);
+  try {
+    await navigator.clipboard.writeText(text);
+    ElMessage.success('已复制');
+  } catch {
+    ElMessage.warning('复制失败，请手动选择');
+  }
+}
+
 function toolPreview(args: unknown): string {
   if (args === undefined || args === null) return '无参数';
   if (typeof args === 'object' && Object.keys(args as Record<string, unknown>).length === 0) return '无参数';
@@ -672,26 +688,30 @@ onMounted(async () => {
 /* 思考链：浅灰字，直接显示 */
 .thinking { color: #909399; white-space: pre-wrap; word-break: break-word; font-size: 13px; padding: 0; background: transparent; line-height: 1.55; max-height: 300px; overflow-y: auto; }
 
-/* 工具步骤：参数/返回值用深色代码块背景 —— 紧凑间距 */
-.steps-collapse :deep(.el-collapse-item__content) { background: transparent; padding-bottom: 0; }
-.step { margin-bottom: 1px; padding: 0; background: transparent; }
+/* 工具步骤：浅色 JSON 代码块（参考 DSH 风格） */
+.step { margin-bottom: 1px; padding: 0; background: transparent; width: 100%; box-sizing: border-box; }
 .step:last-child { margin-bottom: 0; }
-.step-detail { margin-top: 1px; cursor: pointer; }
-.step-detail summary { font-size: 12px; font-weight: 600; color: #303133; outline: none; user-select: none; }
-.step-detail summary:hover { color: #409eff; }
+.step-detail { margin-top: 2px; }
+.step-label-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 8px 0 4px;
+}
+.step-label { font-size: 12px; color: #6b7280; }
 .step-args, .step-result {
-  margin: 1px 0 0;
+  margin: 0;
+  padding: 10px 12px;
   white-space: pre-wrap;
-  word-break: break-all;
+  word-break: break-word;
   font-size: 12px;
-  color: #e0e0e0;
-  background: #282c34;
-  border-radius: 4px;
-  padding: 4px 8px;
-  max-height: 200px;
+  line-height: 1.55;
+  color: #1f2328;
+  background: #f6f8fa;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  max-height: 300px;
   overflow: auto;
 }
-.step-result { border-radius: 6px; padding: 2px 0; max-height: 200px; overflow: auto; }
+.step-result { max-height: 320px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .composer { margin-top: 10px; }
@@ -730,6 +750,7 @@ onMounted(async () => {
 }
 .timeline-toolbar .tl-stat { margin-right: auto; }
 .tool-block {
+  width: 100%; align-self: stretch;
   border: 1px solid var(--border, #e4e7ed);
   border-radius: 6px;
   background: var(--surface, #fff);
@@ -746,6 +767,7 @@ onMounted(async () => {
 .step-label { font-size: 12px; color: var(--text-muted); margin: 6px 0 2px; }
 .tool-block .step-args, .tool-block .step-result { margin: 0; }
 .think-block {
+  width: 100%; align-self: stretch;
   border: 1px solid var(--border, #e4e7ed);
   border-radius: 6px;
   background: var(--el-fill-color-lighter, #fafafa);
