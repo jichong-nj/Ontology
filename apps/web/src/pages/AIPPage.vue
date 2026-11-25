@@ -507,11 +507,11 @@ function pretty(v: unknown): string {
 // 思考块展开状态（默认展开，可单个或全部收起）
 const thoughtOpen = reactive<Record<string, boolean>>({});
 function isThoughtOpen(msgIndex: number, k: number): boolean {
-  return thoughtOpen[`${msgIndex}-${k}`] !== false;
+  // 已完成的思考默认收起（节省空间）；用户点击后再展开
+  return thoughtOpen[`${msgIndex}-${k}`] === true;
 }
 function toggleThought(msgIndex: number, k: number) {
-  const key = `${msgIndex}-${k}`;
-  thoughtOpen[key] = thoughtOpen[key] === false;
+  thoughtOpen[`${msgIndex}-${k}`] = !isThoughtOpen(msgIndex, k);
 }
 function setAllThoughts(msgIndex: number, open: boolean) {
   const m = messages.value[msgIndex];
