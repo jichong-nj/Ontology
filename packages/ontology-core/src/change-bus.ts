@@ -6,6 +6,8 @@ export interface ObjectWriteEvent {
   patch: Record<string, unknown>;
   actor: string;
   at: number;
+  // 自动化链路（动作/函数写入时携带）
+  chain?: { chainId: string; depth: number; path: string[] };
 }
 
 export type ObjectWriteListener = (e: ObjectWriteEvent) => void;

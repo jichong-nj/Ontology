@@ -712,6 +712,9 @@ onMounted(load);
           </template>
         </ElTableColumn>
         <ElTableColumn prop="durationMs" label="耗时(ms)" width="90" />
+        <ElTableColumn label="链路" width="130">
+          <template #default="{ row }"><span class="mono">{{ (row.chainId || '').slice(0, 8) }} / d{{ row.depth }}</span></template>
+        </ElTableColumn>
         <ElTableColumn prop="error" label="错误" min-width="160" show-overflow-tooltip />
       </ElTable>
       <template #footer>

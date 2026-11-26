@@ -465,7 +465,11 @@ if 全部失败 → failed
 - notify(inapp)：写 `notification` 表；notify(webhook)/webhook：HTTP POST；
 - cron：`cron.ts` 5 字段解析 + 调度器按分钟匹配；
 - API：`/api/s2/automations` CRUD / run / runs / automation-runs/:id / notifications；
-- UI：菜单 `Automation`、效果列表编辑、cron 输入、执行策略、运行历史弹窗。
+- UI：菜单 `Automation`、效果列表编辑、cron 输入、执行策略、运行历史弹窗；
+- **级联防护**：chainId/depth/path 随对象写入事件传递，检测循环（path 重复）与深度超限；
+  - AsyncLocalStorage 在 effect 执行期间携带链路，`writeObjectPatch` 写入事件附带 chain；
+  - 拦截时写 `automation_run(status=skipped, error=chain_cycle|chain_depth)`；
+  - 同一 automation + 对象支持 `cooldownSeconds` 冷却。
 
 ### 13.3 实测
 
@@ -477,13 +481,15 @@ if 全部失败 → failed
 | cron `* * * * *` 调度 | ✅ 10s tick 内自动执行 |
 | 删除 automation | ✅ 运行历史保留 |
 | 运行历史 UI | ✅ 列表/弹窗可查看 |
+| A→B 链路 | ✅ B 的 run 携带 A 的 chainId，depth=1 |
+| 自循环 A→A | ✅ 第二次执行被 skipped，error=chain_cycle |
+| 深度限制 chainDepthLimit=0 | ✅ 递归执行被 skipped，error=chain_depth |
 
 ### 13.4 仍待实现
 
-1. 级联防护（chainId/depth/循环检测/冷却）——当前仍可能 A→B→A；
-2. change-aware 触发（新增/修改/删除、字段变化）；
-3. dataset 触发；
-4. staged writes / 人工确认；
-5. 权限、执行身份、审计；
-6. 通知中心 UI（当前 inapp 通知仅 API/DB 可见）；
-7. effect 参数/重试/fallback 的可视化编辑（当前 API 支持，UI 仅基础字段）。
+1. change-aware 触发（新增/修改/删除、字段变化）；
+2. dataset 触发；
+3. staged writes / 人工确认；
+4. 权限、执行身份、审计；
+5. 通知中心 UI（当前 inapp 通知仅 API/DB 可见）；
+6. effect 参数/重试/fallback 的可视化编辑（当前 API 支持，UI 仅基础字段）。

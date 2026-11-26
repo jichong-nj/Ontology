@@ -29,6 +29,7 @@ import {
 } from './types';
 import { ensureRid } from './rid';
 import { emitObjectWrite } from './change-bus';
+import { getAutomationContext } from './automation-context';
 import { Pool } from 'pg';
 
 export class PostgresMetadataRepository implements MetadataRepository {
@@ -650,6 +651,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
       patch: (patch ?? {}) as Record<string, unknown>,
       actor,
       at: Date.now(),
+      chain: getAutomationContext(),
     });
   }
 

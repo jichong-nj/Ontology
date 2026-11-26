@@ -17,6 +17,7 @@ import { evaluateRuleCondition } from './rule-condition';
 import { cronMatches, cronMinuteKey } from './cron';
 import { randomUUID } from 'node:crypto';
 import type { AutomationEffect, AutomationEffectResult } from './types';
+import { runWithAutomationContext, type AutomationContext } from './automation-context';
 
 export interface RuleSchedulerOptions {
   // 轮询间隔（毫秒）；schedule 触发器各自的 intervalSeconds 决定各自执行频率
@@ -80,6 +81,7 @@ export class RuleScheduler {
   private timer: NodeJS.Timeout | null = null;
   private lastRanAt = new Map<string, number>();
   private lastCronMinute = new Map<string, string>();
+  private lastObjectRun = new Map<string, number>();
   private running = new Map<string, boolean>();
   private tickMs: number;
   private repo: MetadataRepository;
@@ -124,6 +126,41 @@ export class RuleScheduler {
       rule: rule.apiName, trigger: rule.trigger.kind, ran: false, flaggedCount: 0, actionsInvoked: 0, skippedByPrecondition: 0,
     };
     if (!rule.enabled) return base;
+
+    // 级联上下文（事件触发时由写入事件携带）
+    const incoming = (triggerContext as any)?.__chain as AutomationContext | undefined;
+    const chainId = incoming?.chainId ?? randomUUID();
+    const depth = incoming?.depth ?? 0;
+    const path = incoming?.path ?? [];
+    const depthLimit = rule.execution?.chainDepthLimit ?? 5;
+
+    if (incoming) {
+      const reason = depth > depthLimit
+        ? `chain_depth: ${depth} > ${depthLimit}`
+        : path.includes(rule.apiName)
+          ? `chain_cycle: ${[...path, rule.apiName].join(' > ')}`
+          : '';
+      if (reason) {
+        // 级联被拦截也要留审计记录
+        await this.repo.createAutomationRun({
+          id: randomUUID(), automationApiName: rule.apiName, triggerKind: rule.trigger.kind,
+          triggerContext: triggerContext ?? {}, status: 'skipped', matchedCount: 0, effectResults: [],
+          error: reason, chainId, depth, startedAt: new Date(now).toISOString(),
+          finishedAt: new Date(now).toISOString(), durationMs: 0,
+        }).catch(() => {});
+        console.warn(`[automation] ${rule.apiName} 级联拦截: ${reason}`);
+        return base;
+      }
+    }
+
+    // 冷却：同一 automation + 对象在窗口内只执行一次
+    const objectRid = (triggerContext as any)?.objectRid as string | undefined;
+    if (objectRid && rule.execution?.cooldownSeconds) {
+      const key = `${rule.apiName}:${objectRid}`;
+      const last = this.lastObjectRun.get(key) ?? 0;
+      if (now - last < rule.execution.cooldownSeconds * 1000) return base;
+      this.lastObjectRun.set(key, now);
+    }
 
     // schedule 节流：cron 按分钟匹配；interval 按秒节流。manual（force）跳过节流。
     if (!opts?.force && rule.trigger.kind === 'schedule') {
@@ -175,7 +212,8 @@ export class RuleScheduler {
         status: 'running',
         matchedCount: flagged.length,
         effectResults: [],
-        depth: 0,
+        chainId,
+        depth,
         startedAt,
       });
       runCreated = true;
@@ -200,10 +238,10 @@ export class RuleScheduler {
 
       const effectResults: AutomationEffectResult[] = [];
       if (rule.execution?.mode === 'parallel') {
-        effectResults.push(...await Promise.all(effects.map((e) => this.executeEffect(rule, e, flagged, runId, base))));
+        effectResults.push(...await Promise.all(effects.map((e) => this.executeEffect(rule, e, flagged, runId, base, { chainId, depth, path }))));
       } else {
         for (const effect of effects) {
-          effectResults.push(await this.executeEffect(rule, effect, flagged, runId, base));
+          effectResults.push(await this.executeEffect(rule, effect, flagged, runId, base, { chainId, depth, path }));
         }
       }
 
@@ -241,6 +279,7 @@ export class RuleScheduler {
     flagged: FlaggedItem[],
     runId: string,
     base: RuleEvaluationResult,
+    chain: AutomationContext,
   ): Promise<AutomationEffectResult> {
     const started = Date.now();
     const maxAttempts = Math.max(1, effect.retry?.maxAttempts ?? rule.execution?.maxRetries ?? 1);
@@ -250,7 +289,10 @@ export class RuleScheduler {
     while (attempts < maxAttempts) {
       attempts += 1;
       try {
-        const result = await this.performEffect(rule, effect, flagged, runId, base);
+        const result = await runWithAutomationContext(
+          { chainId: chain.chainId, depth: chain.depth + 1, path: [...chain.path, rule.apiName] },
+          () => this.performEffect(rule, effect, flagged, runId, base),
+        );
         return {
           kind: effect.kind, ref: this.effectRef(effect), ok: true, attempts,
           durationMs: Date.now() - started, result,
@@ -266,7 +308,10 @@ export class RuleScheduler {
     // fallback
     if (effect.fallback) {
       try {
-        const result = await this.performEffect(rule, effect.fallback, flagged, runId, base);
+        const result = await runWithAutomationContext(
+          { chainId: chain.chainId, depth: chain.depth + 1, path: [...chain.path, rule.apiName] },
+          () => this.performEffect(rule, effect.fallback!, flagged, runId, base),
+        );
         return {
           kind: effect.kind, ref: this.effectRef(effect), ok: true, attempts,
           durationMs: Date.now() - started, result: { fallback: this.effectRef(effect.fallback), result },
@@ -372,7 +417,12 @@ export class RuleScheduler {
   // event 触发器入口：当某对象类型发生写入时由平台调用，触发匹配的 event 规则。
   // objectRid / patch 为预留参数：未来可用于基于 r.trigger.conditionProperty 的细粒度匹配过滤，
   // 当前仅按 objectType 粗匹配后交由条件函数评估。
-  async handleObjectWrite(objectType: string, objectRid: string, patch: Record<string, unknown>): Promise<RuleEvaluationResult[]> {
+  async handleObjectWrite(
+    objectType: string,
+    objectRid: string,
+    patch: Record<string, unknown>,
+    chain?: AutomationContext,
+  ): Promise<RuleEvaluationResult[]> {
     void objectRid;
     void patch;
     const rules = await this.repo.listRules();
@@ -384,7 +434,7 @@ export class RuleScheduler {
         r.trigger.objectType === objectType,
     );
     const now = Date.now();
-    return Promise.all(matched.map((r) => this.evaluateRule(r, now, { objectType, objectRid, patch })));
+    return Promise.all(matched.map((r) => this.evaluateRule(r, now, { objectType, objectRid, patch, __chain: chain })));
   }
 
   // 手动触发所有规则（API 调用）

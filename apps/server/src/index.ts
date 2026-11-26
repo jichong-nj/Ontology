@@ -55,20 +55,17 @@ let ruleScheduler: import('@ontology/ontology-core').RuleScheduler | null = null
 // ---------- 对象写入事件 → 事件触发规则（去抖） ----------
 // 只覆盖平台自身写入（同步/动作/函数）；源库直接变更需先同步进本体。
 const EVENT_DEBOUNCE_MS = 1000;
-const pendingWriteEvents = new Map<string, { rid: string; patch: Record<string, unknown>; timer: NodeJS.Timeout }>();
-let suppressEventsUntil = 0;
+const pendingWriteEvents = new Map<string, { rid: string; patch: Record<string, unknown>; chain?: any; timer: NodeJS.Timeout }>();
 
 onObjectWrite((e) => {
   if (!ruleScheduler) return;                       // 没有调度器（无启用规则）直接忽略
-  if (Date.now() < suppressEventsUntil) return;     // 规则动作引发的写入不回灌，避免自激
   const prev = pendingWriteEvents.get(e.objectType);
   if (prev) clearTimeout(prev.timer);
-  const entry = { rid: e.objectRid, patch: e.patch, timer: undefined as unknown as NodeJS.Timeout };
+  const entry = { rid: e.objectRid, patch: e.patch, chain: e.chain, timer: undefined as unknown as NodeJS.Timeout };
   entry.timer = setTimeout(async () => {
     pendingWriteEvents.delete(e.objectType);
-    suppressEventsUntil = Date.now() + EVENT_DEBOUNCE_MS;
     try {
-      const results = await ruleScheduler!.handleObjectWrite(e.objectType, entry.rid, entry.patch);
+      const results = await ruleScheduler!.handleObjectWrite(e.objectType, entry.rid, entry.patch, entry.chain);
       const fired = results.filter((r) => r.ran);
       if (fired.length) {
         console.log(`[scheduler] 对象写入事件 ${e.objectType}: ${fired.length} 条事件规则执行`);

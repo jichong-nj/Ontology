@@ -3,6 +3,8 @@ export * from './types';
 export { rid, ridParts, ensureRid } from './rid';
 export { evaluateRuleCondition } from './rule-condition';
 export { parseCron, cronMatches, cronMinuteKey, isCronExpression } from './cron';
+export { runWithAutomationContext, getAutomationContext } from './automation-context';
+export type { AutomationContext } from './automation-context';
 export type { RuleConditionResult, RunConditionFunction } from './rule-condition';
 export { onObjectWrite, emitObjectWrite } from './change-bus';
 export type { ObjectWriteEvent, ObjectWriteListener } from './change-bus';
