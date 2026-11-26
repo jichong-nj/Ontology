@@ -22,6 +22,7 @@ const analysis = ref<any>(null);
 const analyzing = ref(false);
 const analysisVisible = ref(false);
 const expandedRids = ref<string[]>([]);
+const chartRef = ref<any>(null);
 const manualVisible = ref(false);
 const manualForm = ref({ entityType: 'Organization', name: '' });
 const tasks = ref<any[]>([]);
@@ -95,7 +96,6 @@ const option = computed(() => {
     category: catIndex.get(n.type) ?? 0,
     symbolSize: n.type === 'EmergencyResponse' ? 46 : n.type === 'PublicOpinionEvent' ? 38 : n.type.includes('Record') ? 26 : 32,
     value: n.properties,
-    itemStyle: selectedKind.value === 'node' && selected.value?.id === n.id ? { borderColor: '#f56c6c', borderWidth: 3 } : undefined,
   }));
   const links = view.value.edges.map((e) => ({
     source: e.source,
@@ -126,14 +126,14 @@ const option = computed(() => {
 
 function expandRelation(rid: string) {
   if (!expandedRids.value.includes(rid)) expandedRids.value = [...expandedRids.value, rid];
-  selected.value = null; selectedKind.value = null;
+  clearSelection();
 }
 function expandAllRelations() {
   expandedRids.value = graph.value.nodes.filter((n) => relationTypes.has(n.type)).map((n) => n.id);
 }
 function collapseAllRelations() {
   expandedRids.value = [];
-  selected.value = null; selectedKind.value = null;
+  clearSelection();
 }
 
 async function load() {
@@ -153,10 +153,21 @@ function onChartClick(p: any) {
   if (p.dataType === 'node') {
     selectedKind.value = 'node';
     selected.value = graph.value.nodes.find((n) => n.id === p.data.id) ?? null;
+    // 只做高亮，不重算 option，避免力导向图重新布局
+    chartRef.value?.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+    if (typeof p.dataIndex === 'number') {
+      chartRef.value?.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: p.dataIndex });
+    }
   } else if (p.dataType === 'edge') {
     selectedKind.value = 'edge';
     selected.value = p.data.value;
   }
+}
+
+function clearSelection() {
+  selected.value = null;
+  selectedKind.value = null;
+  chartRef.value?.dispatchAction({ type: 'downplay', seriesIndex: 0 });
 }
 
 async function accept(c: any) {
@@ -294,7 +305,7 @@ onMounted(load);
 
     <div class="body">
       <div class="graph-wrap">
-        <VChart :option="option" autoresize class="graph" @click="onChartClick" />
+        <VChart ref="chartRef" :option="option" autoresize class="graph" @click="onChartClick" />
         <div class="legend-hint">点击节点/关系查看详情；滚轮缩放、拖拽平移</div>
         <div class="rel-toggle">
           <el-button size="small" @click="expandAllRelations">展开全部关系</el-button>
@@ -315,7 +326,7 @@ onMounted(load);
         <template v-if="selected">
           <div class="side-head">
             <b>{{ selectedKind === 'node' ? selected.label : selected.label }}</b>
-            <el-button link @click="selected = null; selectedKind = null">清除</el-button>
+            <el-button link @click="clearSelection">清除</el-button>
           </div>
           <div class="side-type">{{ selectedKind === 'node' ? selected.type : (selected.record ? `关系实例：${selected.record.type}` : `关系：${selected.linkType}`) }}</div>
           <template v-if="selectedKind === 'edge' && selected.record">
