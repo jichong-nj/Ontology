@@ -67,6 +67,36 @@ return async (args, ctx) => {
   return { created };
 };`;
 
+export const CREATE_VERIFICATION_TASK_BODY = `
+return async (args, ctx) => {
+  const { repo } = ctx;
+  const refs = Array.isArray(args.flagged) ? args.flagged : [];
+  const tasks = await ctx.objects('VerificationTask');
+  const created = [];
+  for (const r of refs) {
+    if (String(r.entityType ?? '') !== 'Organization') continue;
+    const caseRid = String(r.caseRid ?? '');
+    const orgRid = String(r.entityRid ?? '');
+    if (!caseRid || !orgRid) continue;
+    if (tasks.some((t) => String(t.properties.caseRid ?? '') === caseRid && String(t.properties.orgRid ?? '') === orgRid)) continue;
+    const id = 'VT-' + Date.now() + '-' + created.length;
+    const now = new Date().toISOString();
+    await repo.writeObjectPatch('VerificationTask', id, {
+      id, caseRid, orgRid, documentRids: [], status: 'pending',
+      reason: '新单位进入数据池，自动发起核查', source: 'rule', createdAt: now,
+    }, 'action:createVerificationTask');
+    await repo.createLinkInstance('VerificationTaskCase', 'VerificationTask:' + id, caseRid);
+    await repo.createLinkInstance('VerificationTaskOrg', 'VerificationTask:' + id, orgRid);
+    await repo.createNotification({
+      title: '新的核查任务：' + orgRid,
+      body: '单位进入案件数据范围，已自动生成核查任务',
+      level: 'info', source: 'emergencyVerificationTaskRule',
+    });
+    created.push({ id, caseRid, orgRid });
+  }
+  return { created };
+};`;
+
 export const functions: OntologyFunction[] = [
   {
     apiName: 'createEmergencyResponse',
@@ -97,7 +127,20 @@ export const functions: OntologyFunction[] = [
     body: INITIAL_CASE_ASSOCIATION_BODY,
     version: 1,
   },
-];
+  {
+    apiName: 'createVerificationTask',
+    displayName: '为新单位创建核查任务',
+    language: 'typescript',
+    entry: 'createVerificationTask',
+    inputs: [
+      { name: 'rule', type: 'string', required: false },
+      { name: 'flagged', type: 'object', required: true },
+    ],
+    outputs: ['object'],
+    description: '新单位进入案件数据池后，创建该单位的核查任务并推送模拟单位端。',
+    body: CREATE_VERIFICATION_TASK_BODY,
+    version: 1,
+  }];
 
 export const actions: ActionType[] = [
   {
@@ -118,7 +161,15 @@ export const actions: ActionType[] = [
     effect: { kind: 'function', ref: 'initialCaseAssociation' },
     version: 1,
   },
-];
+  {
+    apiName: 'createVerificationTask',
+    displayName: '为新单位创建核查任务',
+    kind: 'standard',
+    parameters: [],
+    validationRules: [],
+    effect: { kind: 'function', ref: 'createVerificationTask' },
+    version: 1,
+  }];
 
 export const rules: AutomationRule[] = [
   {
@@ -159,4 +210,22 @@ export const rules: AutomationRule[] = [
     params: {},
     version: 1,
   },
+  {
+    apiName: 'emergencyVerificationTaskRule',
+    displayName: '新单位自动建核查任务',
+    description: 'CaseEntityRef 中新增 Organization 时，一单位一核查任务',
+    enabled: true,
+    trigger: { kind: 'event', on: 'object_write', objectType: 'CaseEntityRef' },
+    condition: {
+      kind: 'all',
+      conditions: [
+        { kind: 'property', objectType: 'CaseEntityRef', property: 'entityType', operator: 'eq', value: 'Organization' },
+        { kind: 'property', objectType: 'CaseEntityRef', property: 'status', operator: 'eq', value: 'included' },
+      ],
+    },
+    actionApiName: 'createVerificationTask',
+    targetObjectType: 'VerificationTask',
+    params: {},
+    version: 1,
+  }
 ];
