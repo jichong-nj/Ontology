@@ -21,6 +21,7 @@ const extracted = ref<any[]>([]);
 const analysis = ref<any>(null);
 const analyzing = ref(false);
 const analysisVisible = ref(false);
+const expandedRids = ref<string[]>([]);
 const manualVisible = ref(false);
 const manualForm = ref({ entityType: 'Organization', name: '' });
 const tasks = ref<any[]>([]);
@@ -47,11 +48,48 @@ const typeColors: Record<string, string> = {
   InspectionReport: '#2c3e50',
 };
 
-const categories = computed(() => [...new Set(graph.value.nodes.map((n) => n.type))].map((t) => ({ name: t, itemStyle: { color: typeColors[t] ?? '#606266' } })));
+const relationTypes = new Set(['DispatchRecord', 'BorrowRecord', 'TransferRecord', 'PublishRecord']);
+
+const view = computed(() => {
+  const hidden = new Set(
+    graph.value.nodes.filter((n) => relationTypes.has(n.type) && !expandedRids.value.includes(n.id)).map((n) => n.id),
+  );
+  const visibleNodes = graph.value.nodes.filter((n) => !hidden.has(n.id));
+  const nodeById = new Map(graph.value.nodes.map((n) => [n.id, n]));
+  const visibleEdges: any[] = graph.value.edges
+    .filter((e) => !hidden.has(e.source) && !hidden.has(e.target))
+    .map((e) => ({ ...e, synthetic: false }));
+  const synthetic: any[] = [];
+
+  for (const rec of graph.value.nodes.filter((n) => hidden.has(n.id))) {
+    const incident = graph.value.edges.filter((e) => e.source === rec.id || e.target === rec.id);
+    const docEdge = incident.find((e) => e.label === '文档');
+    const primary = rec.type === 'DispatchRecord'
+      ? incident.find((e) => e.label === '接收')
+      : rec.type === 'BorrowRecord'
+        ? incident.find((e) => e.label === '借阅人')
+        : incident.find((e) => e !== docEdge);
+    const endpoint = (e: any) => (e ? (e.source === rec.id ? e.target : e.source) : null);
+    const doc = endpoint(docEdge);
+    const other = endpoint(primary);
+    const source = doc ?? other;
+    const target = doc ? other : endpoint(incident.find((e) => e !== primary && e !== docEdge));
+    if (!source || !target || source === target) continue;
+    const kind = rec.type === 'DispatchRecord' ? '收文' : rec.type === 'BorrowRecord' ? '借阅' : rec.type === 'TransferRecord' ? '转交' : '发布';
+    synthetic.push({
+      id: `rel:${rec.id}`, source, target, label: `${kind} ${rec.label}`, linkType: rec.type,
+      record: rec, synthetic: true,
+      endpoints: incident.map((e) => ({ rid: endpoint(e), label: e.label, type: nodeById.get(endpoint(e) ?? '')?.type })),
+    });
+  }
+  return { nodes: visibleNodes, edges: [...visibleEdges, ...synthetic] };
+});
+
+const categories = computed(() => [...new Set(view.value.nodes.map((n) => n.type))].map((t) => ({ name: t, itemStyle: { color: typeColors[t] ?? '#606266' } })));
 
 const option = computed(() => {
   const catIndex = new Map(categories.value.map((c, i) => [c.name, i]));
-  const nodes = graph.value.nodes.map((n) => ({
+  const nodes = view.value.nodes.map((n) => ({
     id: n.id,
     name: n.label,
     category: catIndex.get(n.type) ?? 0,
@@ -59,11 +97,11 @@ const option = computed(() => {
     value: n.properties,
     itemStyle: selectedKind.value === 'node' && selected.value?.id === n.id ? { borderColor: '#f56c6c', borderWidth: 3 } : undefined,
   }));
-  const links = graph.value.edges.map((e) => ({
+  const links = view.value.edges.map((e) => ({
     source: e.source,
     target: e.target,
-    label: { show: graph.value.edges.length <= 24, formatter: e.label, fontSize: 10 },
-    lineStyle: { curveness: 0.12, opacity: 0.7 },
+    label: { show: e.synthetic || view.value.edges.length <= 24, formatter: e.label, fontSize: 10, color: '#606266', backgroundColor: '#fff', borderColor: e.synthetic ? '#c0c4cc' : '#e4e7ed', borderWidth: 1, borderRadius: 4, padding: [3, 6] },
+    lineStyle: { curveness: 0.12, opacity: e.synthetic ? 0.9 : 0.7, type: e.synthetic ? 'dashed' : 'solid' },
     value: e,
   }));
   return {
@@ -85,6 +123,18 @@ const option = computed(() => {
     }],
   };
 });
+
+function expandRelation(rid: string) {
+  if (!expandedRids.value.includes(rid)) expandedRids.value = [...expandedRids.value, rid];
+  selected.value = null; selectedKind.value = null;
+}
+function expandAllRelations() {
+  expandedRids.value = graph.value.nodes.filter((n) => relationTypes.has(n.type)).map((n) => n.id);
+}
+function collapseAllRelations() {
+  expandedRids.value = [];
+  selected.value = null; selectedKind.value = null;
+}
 
 async function load() {
   loading.value = true;
@@ -246,6 +296,10 @@ onMounted(load);
       <div class="graph-wrap">
         <VChart :option="option" autoresize class="graph" @click="onChartClick" />
         <div class="legend-hint">点击节点/关系查看详情；滚轮缩放、拖拽平移</div>
+        <div class="rel-toggle">
+          <el-button size="small" @click="expandAllRelations">展开全部关系</el-button>
+          <el-button size="small" @click="collapseAllRelations">收起关系卡片</el-button>
+        </div>
         <div class="ai-card">
           <div class="ai-head">🤖 AI 研判</div>
           <div v-if="analysis" class="ai-summary">{{ analysis.summary }}</div>
@@ -263,8 +317,15 @@ onMounted(load);
             <b>{{ selectedKind === 'node' ? selected.label : selected.label }}</b>
             <el-button link @click="selected = null; selectedKind = null">清除</el-button>
           </div>
-          <div class="side-type">{{ selectedKind === 'node' ? selected.type : `关系：${selected.linkType}` }}</div>
-          <template v-if="selectedKind === 'node'">
+          <div class="side-type">{{ selectedKind === 'node' ? selected.type : (selected.record ? `关系实例：${selected.record.type}` : `关系：${selected.linkType}`) }}</div>
+          <template v-if="selectedKind === 'edge' && selected.record">
+            <el-button size="small" type="primary" style="margin-bottom: 8px" @click="expandRelation(selected.record.id)">展开为节点</el-button>
+            <div v-for="(v, k) in selected.record.properties" :key="k" class="prop-row">
+              <span class="prop-key">{{ k }}</span><span class="prop-val">{{ fmt(v) }}</span>
+            </div>
+            <div class="prop-row"><span class="prop-key">关联端点</span><span class="prop-val">{{ (selected.endpoints || []).map((x: any) => x.label + ':' + x.rid).join(' / ') }}</span></div>
+          </template>
+          <template v-else-if="selectedKind === 'node'">
             <el-button v-if="selected.type === 'Organization'" size="small" type="danger" style="margin-bottom: 8px" @click="startInspection">发起检查</el-button>
             <el-button v-if="['Organization','Employee'].includes(selected.type)" size="small" style="margin-bottom: 8px" @click="excludeSelected">排除</el-button>
             <div v-for="(v, k) in selected.properties" :key="k" class="prop-row">
@@ -409,6 +470,7 @@ onMounted(load);
 .graph-wrap { flex: 1; border: 1px solid #ebeef5; border-radius: 8px; position: relative; min-width: 0; background: #fff; }
 .graph { width: 100%; height: 100%; min-height: 560px; }
 .legend-hint { position: absolute; left: 12px; top: 8px; color: #909399; font-size: 12px; }
+.rel-toggle { position: absolute; left: 12px; top: 30px; display: flex; gap: 6px; }
 .ai-card { position: absolute; right: 12px; top: 12px; width: 260px; background: #fff; border: 1px solid #e4e7ed; border-radius: 8px; padding: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
 .ai-head { font-weight: 600; margin-bottom: 6px; }
 .ai-summary { font-size: 12px; color: #606266; line-height: 1.5; max-height: 90px; overflow: hidden; }
