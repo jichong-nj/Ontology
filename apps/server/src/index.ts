@@ -2,7 +2,7 @@
 // 连接 ontology 元数据库，暴露 REST 端点供前端消费。
 import express from 'express';
 import { Pool } from 'pg';
-import { PostgresMetadataRepository, TypeScriptFunctionSandbox, onObjectWrite, ensureRid, evaluateRuleCondition } from '@ontology/ontology-core';
+import { PostgresMetadataRepository, TypeScriptFunctionSandbox, onObjectWrite, ensureRid, evaluateRuleCondition, isCronExpression } from '@ontology/ontology-core';
 import type { OntologyFunction, ActionType, AutomationRule } from '@ontology/ontology-core';
 import { PostgresMappingStore, MappingService } from '@ontology/data-integration';
 import {
@@ -560,15 +560,45 @@ async function validateRuleDefinition(def: any): Promise<void> {
       throw new Error(`规则条件函数必须是 query（只读）函数；${fn.apiName} 是 ${fn.kind ?? 'edit'} 函数`);
     }
   }
-  if (def.actionApiName !== undefined && !(await repo.getAction(def.actionApiName))) {
+  if (def.actionApiName !== undefined && def.actionApiName && !(await repo.getAction(def.actionApiName))) {
     throw new Error(`动作不存在: ${def.actionApiName}`);
   }
+  if (def.effects !== undefined) await validateEffects(def.effects);
   if (def.trigger !== undefined) {
     const t = def.trigger;
     if (!t || (t.kind !== 'schedule' && t.kind !== 'event')) throw new Error('trigger.kind 必须是 schedule 或 event');
-    if (t.kind === 'schedule' && !(Number(t.intervalSeconds) >= 5)) throw new Error('schedule intervalSeconds 需 ≥ 5');
+    if (t.kind === 'schedule') {
+      if (t.cron) {
+        if (!isCronExpression(t.cron)) throw new Error(`非法 cron 表达式: ${t.cron}`);
+      } else if (!(Number(t.intervalSeconds) >= 5)) {
+        throw new Error('schedule 需要 cron 或 intervalSeconds（≥5）');
+      }
+    }
     if (t.kind === 'event' && (t.on !== 'object_write' || !t.objectType)) {
       throw new Error("event 规则需为 {kind:'event', on:'object_write', objectType:'<对象类型>'}");
+    }
+  }
+}
+
+async function validateEffects(effects: any): Promise<void> {
+  if (!Array.isArray(effects)) throw new Error('effects 必须是数组');
+  for (const e of effects) {
+    if (!e || !e.kind) throw new Error('effect 缺少 kind');
+    if (e.kind === 'action') {
+      if (!e.actionApiName) throw new Error('action effect 需要 actionApiName');
+      if (!(await repo.getAction(e.actionApiName))) throw new Error(`动作不存在: ${e.actionApiName}`);
+    } else if (e.kind === 'function') {
+      if (!e.function) throw new Error('function effect 需要 function');
+      if (!(await repo.getFunction(e.function))) throw new Error(`函数不存在: ${e.function}`);
+    } else if (e.kind === 'webhook') {
+      if (!e.url || !/^https?:\/\//.test(e.url)) throw new Error('webhook effect 需要 http(s) url');
+    } else if (e.kind === 'notify') {
+      if (!['inapp', 'webhook'].includes(e.channel)) throw new Error('notify.channel 必须是 inapp 或 webhook');
+      if (e.channel === 'webhook' && (!e.webhookUrl || !/^https?:\/\//.test(e.webhookUrl))) {
+        throw new Error('notify(webhook) 需要 http(s) webhookUrl');
+      }
+    } else {
+      throw new Error(`不支持的 effect 类型: ${e.kind}`);
     }
   }
 }
@@ -579,6 +609,9 @@ app.post('/api/s2/rules', async (req, res) => {
     if (!def?.apiName) return res.status(400).json({ error: 'apiName 必填' });
     if (!def.condition && !def.conditionFunction) {
       return res.status(400).json({ error: '需要 condition（声明式条件）或 conditionFunction' });
+    }
+    if (!def.actionApiName && !(def.effects?.length)) {
+      return res.status(400).json({ error: '需要 actionApiName 或 effects' });
     }
     await validateRuleDefinition(def);
     if (await repo.getRule(def.apiName)) {
@@ -607,6 +640,111 @@ app.post('/api/s2/rules/preview', async (req, res) => {
       req.body?.params,
     );
     res.json({ matched: result.matched, count: result.items.length, items: result.items.slice(0, 20) });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---------- Automation 模块（对外主入口；/rules 保留兼容） ----------
+app.get('/api/s2/automations', async (req, res) => {
+  try {
+    const keyword = (req.query.keyword as string) || undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset ? Number(req.query.offset) : undefined;
+    if (keyword || limit !== undefined || offset !== undefined) {
+      const r = await repo.searchRules({ keyword, limit, offset });
+      return res.json(r.items ?? r);
+    }
+    res.json(await repo.listRules());
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/s2/automations/:apiName', async (req, res) => {
+  const rule = await repo.getRule(req.params.apiName);
+  if (!rule) return res.status(404).json({ error: 'not found' });
+  res.json(rule);
+});
+
+app.post('/api/s2/automations', async (req, res) => {
+  try {
+    const def = req.body as any;
+    if (!def?.apiName) return res.status(400).json({ error: 'apiName 必填' });
+    if (!def.condition && !def.conditionFunction) {
+      return res.status(400).json({ error: '需要 condition 或 conditionFunction' });
+    }
+    if (!def.actionApiName && !(def.effects?.length)) {
+      return res.status(400).json({ error: '需要 actionApiName 或 effects' });
+    }
+    await validateRuleDefinition(def);
+    if (await repo.getRule(def.apiName)) return res.status(409).json({ error: `已存在: ${def.apiName}` });
+    await repo.createRule(def);
+    void startRuleSchedulerIfNeeded();
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.put('/api/s2/automations/:apiName', async (req, res) => {
+  try {
+    await validateRuleDefinition(req.body ?? {});
+    await repo.updateRule(req.params.apiName, req.body ?? {});
+    void startRuleSchedulerIfNeeded();
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/s2/automations/:apiName', async (req, res) => {
+  try {
+    await repo.deleteRule(req.params.apiName);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/s2/automations/:apiName/run', async (req, res) => {
+  try {
+    const rule = await repo.getRule(req.params.apiName);
+    if (!rule) return res.status(404).json({ error: 'not found' });
+    let scheduler = ruleScheduler;
+    if (!scheduler) {
+      const sb = await getSandbox();
+      scheduler = new RuleScheduler(repo, sb, {
+        tickMs: 999_999_999,
+        executeCondition: (name, args) => runWithReadOnly(() => sb.execute(name, args)),
+      });
+    }
+    const result = await scheduler.evaluateRule(rule, Date.now(), {}, { force: true });
+    res.json({ ok: true, result });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/s2/automations/:apiName/runs', async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    res.json(await repo.listAutomationRuns({ automationApiName: req.params.apiName, limit, offset }));
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/s2/automation-runs/:id', async (req, res) => {
+  const run = await repo.getAutomationRun(req.params.id);
+  if (!run) return res.status(404).json({ error: 'not found' });
+  res.json(run);
+});
+
+app.get('/api/s2/notifications', async (req, res) => {
+  try {
+    res.json(await repo.listNotifications(Number(req.query.limit) || 50));
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }

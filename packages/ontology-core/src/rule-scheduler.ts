@@ -14,6 +14,9 @@
 // - 源端只读，动作结果只写本体可写侧（object_write），不回写数据源。
 import type { MetadataRepository, FunctionSandbox, AutomationRule, ActionPrecondition } from './types';
 import { evaluateRuleCondition } from './rule-condition';
+import { cronMatches, cronMinuteKey } from './cron';
+import { randomUUID } from 'node:crypto';
+import type { AutomationEffect, AutomationEffectResult } from './types';
 
 export interface RuleSchedulerOptions {
   // 轮询间隔（毫秒）；schedule 触发器各自的 intervalSeconds 决定各自执行频率
@@ -76,6 +79,7 @@ function checkPreconditions(item: FlaggedItem, preconditions?: ActionPreconditio
 export class RuleScheduler {
   private timer: NodeJS.Timeout | null = null;
   private lastRanAt = new Map<string, number>();
+  private lastCronMinute = new Map<string, string>();
   private running = new Map<string, boolean>();
   private tickMs: number;
   private repo: MetadataRepository;
@@ -110,24 +114,41 @@ export class RuleScheduler {
   }
 
   // 单次规则评估（可被 API 手动触发，或 event 触发器调用）
-  async evaluateRule(rule: AutomationRule, now = Date.now()): Promise<RuleEvaluationResult> {
+  async evaluateRule(
+    rule: AutomationRule,
+    now = Date.now(),
+    triggerContext?: Record<string, unknown>,
+    opts?: { force?: boolean },
+  ): Promise<RuleEvaluationResult> {
     const base: RuleEvaluationResult = {
       rule: rule.apiName, trigger: rule.trigger.kind, ran: false, flaggedCount: 0, actionsInvoked: 0, skippedByPrecondition: 0,
     };
     if (!rule.enabled) return base;
-    // schedule 类节流：未到周期则跳过（now 用于测试可注入）；event 类不节流。
-    if (rule.trigger.kind === 'schedule') {
-      const last = this.lastRanAt.get(rule.apiName) ?? 0;
-      if (now - last < rule.trigger.intervalSeconds * 1000) return base;
+
+    // schedule 节流：cron 按分钟匹配；interval 按秒节流。manual（force）跳过节流。
+    if (!opts?.force && rule.trigger.kind === 'schedule') {
+      const trig = rule.trigger as { kind: 'schedule'; intervalSeconds?: number; cron?: string };
+      if (trig.cron) {
+        const d = new Date(now);
+        if (!cronMatches(trig.cron, d)) return base;
+        const key = `${rule.apiName}:${cronMinuteKey(d)}`;
+        if (this.lastCronMinute.get(rule.apiName) === key) return base;
+        this.lastCronMinute.set(rule.apiName, key);
+      } else {
+        const last = this.lastRanAt.get(rule.apiName) ?? 0;
+        if (now - last < (trig.intervalSeconds ?? 60) * 1000) return base;
+      }
     }
     if (this.running.get(rule.apiName)) return base;
     this.running.set(rule.apiName, true);
     this.lastRanAt.set(rule.apiName, now);
 
+    const runId = randomUUID();
+    const startedAt = new Date().toISOString();
+    let runCreated = false;
+
     try {
-      // 1) 条件评估：
-      //    - 声明式条件（property/aggregate/all/any/function）走 evaluateRuleCondition；
-      //    - 旧规则回退 conditionFunction。
+      // 1) 条件评估：声明式条件或 conditionFunction
       const runFn = (name: string, args: Record<string, unknown>) => this.executeCondition
         ? this.executeCondition(name, args)
         : this.sandbox.execute(name, args);
@@ -145,46 +166,205 @@ export class RuleScheduler {
       }
       base.ran = true;
       base.flaggedCount = flagged.length;
-      if (!matched) return base;
 
-      // 2) 可配置 Action：落地（动作语义由 ActionType 决定，可能是生成告警/写对象/通知/审批等）
-      const action = await this.repo.getAction(rule.actionApiName);
-      if (!action) {
-        base.error = `规则引用的 Action 未注册: ${rule.actionApiName}`;
+      await this.repo.createAutomationRun({
+        id: runId,
+        automationApiName: rule.apiName,
+        triggerKind: rule.trigger.kind,
+        triggerContext: triggerContext ?? {},
+        status: 'running',
+        matchedCount: flagged.length,
+        effectResults: [],
+        depth: 0,
+        startedAt,
+      });
+      runCreated = true;
+
+      if (!matched) {
+        await this.repo.finishAutomationRun(runId, {
+          status: 'skipped', matchedCount: 0, effectResults: [],
+          finishedAt: new Date().toISOString(), durationMs: Date.now() - now,
+        });
         return base;
       }
-      // 2.1) Action 前置校验（内嵌规则）：逐条校验命中对象，不满足的跳过并计数
-      const passed: FlaggedItem[] = [];
-      for (const item of flagged) {
-        const reason = checkPreconditions(item, action.preconditions);
-        if (reason) {
-          base.skippedByPrecondition += 1;
-        } else {
-          passed.push(item);
+
+      // 2) 效果：effects 数组优先；旧规则回退 actionApiName
+      const effects: AutomationEffect[] = (rule.effects?.length
+        ? rule.effects
+        : (rule.actionApiName ? [{ kind: 'action', actionApiName: rule.actionApiName }] : [])) as AutomationEffect[];
+      if (!effects.length) {
+        await this.repo.finishAutomationRun(runId, { status: 'failed', error: '未配置任何 effect', finishedAt: new Date().toISOString() });
+        base.error = '未配置任何 effect';
+        return base;
+      }
+
+      const effectResults: AutomationEffectResult[] = [];
+      if (rule.execution?.mode === 'parallel') {
+        effectResults.push(...await Promise.all(effects.map((e) => this.executeEffect(rule, e, flagged, runId, base))));
+      } else {
+        for (const effect of effects) {
+          effectResults.push(await this.executeEffect(rule, effect, flagged, runId, base));
         }
       }
-      if (passed.length === 0 && flagged.length > 0) return base;
 
-      // 按 Action 的 effect 执行（effect.ref 才是函数名；action apiName 只是动作标识）
-      const effectRef = action.effect?.kind === 'function' ? (action.effect.ref ?? rule.actionApiName) : rule.actionApiName;
-      const res = await this.sandbox.execute(effectRef, {
-        rule: rule.apiName,
-        targetObjectType: rule.targetObjectType, // 动作落点对象类型（如 Alert），仅写类动作使用
-        // 兼容旧动作函数体（读取 args.alertObjectType）；新函数体应优先读 targetObjectType。
-        alertObjectType: rule.targetObjectType,
-        flagged: passed,
+      const okCount = effectResults.filter((r) => r.ok).length;
+      const status = okCount === effectResults.length ? 'succeeded' : okCount > 0 ? 'partial' : 'failed';
+      base.actionsInvoked = okCount;
+      const firstError = effectResults.find((r) => !r.ok)?.error;
+      await this.repo.finishAutomationRun(runId, {
+        status,
+        matchedCount: flagged.length,
+        effectResults,
+        error: firstError,
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - now,
       });
-      const created = Array.isArray((res as any)?.created) ? (res as any).created.length : passed.length;
-      base.actionsInvoked = created;
       return base;
     } catch (e: any) {
       base.error = e?.message ?? String(e);
-      // 规则失败必须可观测（后台 tick 不会把错误返回给调用方）
-      console.warn(`[rule] ${rule.apiName} 执行失败: ${base.error}`);
+      console.warn(`[automation] ${rule.apiName} 执行失败: ${base.error}`);
+      if (runCreated) {
+        await this.repo.finishAutomationRun(runId, {
+          status: 'failed', error: base.error, finishedAt: new Date().toISOString(), durationMs: Date.now() - now,
+        }).catch(() => {});
+      }
       return base;
     } finally {
       this.running.set(rule.apiName, false);
     }
+  }
+
+  // 执行单个 effect（含重试与 fallback）
+  private async executeEffect(
+    rule: AutomationRule,
+    effect: AutomationEffect,
+    flagged: FlaggedItem[],
+    runId: string,
+    base: RuleEvaluationResult,
+  ): Promise<AutomationEffectResult> {
+    const started = Date.now();
+    const maxAttempts = Math.max(1, effect.retry?.maxAttempts ?? rule.execution?.maxRetries ?? 1);
+    let lastError: string | undefined;
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+      attempts += 1;
+      try {
+        const result = await this.performEffect(rule, effect, flagged, runId, base);
+        return {
+          kind: effect.kind, ref: this.effectRef(effect), ok: true, attempts,
+          durationMs: Date.now() - started, result,
+        };
+      } catch (e: any) {
+        lastError = e?.message ?? String(e);
+        if (attempts < maxAttempts) {
+          await new Promise((r) => setTimeout(r, effect.retry?.backoffMs ?? 500 * attempts));
+        }
+      }
+    }
+
+    // fallback
+    if (effect.fallback) {
+      try {
+        const result = await this.performEffect(rule, effect.fallback, flagged, runId, base);
+        return {
+          kind: effect.kind, ref: this.effectRef(effect), ok: true, attempts,
+          durationMs: Date.now() - started, result: { fallback: this.effectRef(effect.fallback), result },
+        };
+      } catch (e: any) {
+        lastError = `${lastError}; fallback: ${e?.message ?? e}`;
+      }
+    }
+
+    return {
+      kind: effect.kind, ref: this.effectRef(effect), ok: false, attempts,
+      durationMs: Date.now() - started, error: lastError,
+    };
+  }
+
+  private effectRef(effect: AutomationEffect): string | undefined {
+    if (effect.kind === 'action') return effect.actionApiName;
+    if (effect.kind === 'function') return effect.function;
+    if (effect.kind === 'webhook') return effect.url;
+    return effect.kind === 'notify' ? `notify:${effect.channel}` : undefined;
+  }
+
+  private async performEffect(
+    rule: AutomationRule,
+    effect: AutomationEffect,
+    flagged: FlaggedItem[],
+    runId: string,
+    base: RuleEvaluationResult,
+  ): Promise<unknown> {
+    const timeoutMs = rule.execution?.timeoutMs ?? 15000;
+
+    if (effect.kind === 'action') {
+      const action = await this.repo.getAction(effect.actionApiName);
+      if (!action) throw new Error(`Action 未注册: ${effect.actionApiName}`);
+      const passed: FlaggedItem[] = [];
+      for (const item of flagged) {
+        const reason = checkPreconditions(item, action.preconditions);
+        if (reason) base.skippedByPrecondition += 1;
+        else passed.push(item);
+      }
+      if (passed.length === 0 && flagged.length > 0) return { skipped: base.skippedByPrecondition };
+      const ref = action.effect?.kind === 'function' ? (action.effect.ref ?? effect.actionApiName) : effect.actionApiName;
+      return this.sandbox.execute(ref, {
+        rule: rule.apiName,
+        targetObjectType: rule.targetObjectType,
+        alertObjectType: rule.targetObjectType,
+        flagged: passed,
+        params: effect.params,
+        runId,
+      });
+    }
+
+    if (effect.kind === 'function') {
+      return this.sandbox.execute(effect.function, {
+        rule: rule.apiName, flagged, params: effect.params, runId,
+      });
+    }
+
+    if (effect.kind === 'webhook') {
+      const res = await fetch(effect.url, {
+        method: effect.method ?? 'POST',
+        headers: { 'Content-Type': 'application/json', ...(effect.headers ?? {}) },
+        body: JSON.stringify(effect.body ?? {
+          automation: rule.apiName, runId, matchedCount: flagged.length, items: flagged.slice(0, 200),
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) throw new Error(`webhook ${res.status} ${res.statusText}`);
+      return { status: res.status };
+    }
+
+    if (effect.kind === 'notify') {
+      if (effect.channel === 'inapp') {
+        await this.repo.createNotification({
+          title: effect.title ?? `${rule.displayName} 通知`,
+          body: effect.body ?? `命中 ${flagged.length} 个对象`,
+          level: effect.level ?? 'info',
+          recipient: effect.recipient,
+          source: rule.apiName,
+          runId,
+        });
+        return { notified: 'inapp' };
+      }
+      if (!effect.webhookUrl) throw new Error('notify(webhook) 缺少 webhookUrl');
+      const res = await fetch(effect.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          automation: rule.apiName, runId, title: effect.title, body: effect.body,
+          level: effect.level, recipient: effect.recipient, matchedCount: flagged.length,
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) throw new Error(`notify webhook ${res.status}`);
+      return { notified: 'webhook' };
+    }
+
+    throw new Error(`不支持的 effect 类型: ${(effect as any).kind}`);
   }
 
   // event 触发器入口：当某对象类型发生写入时由平台调用，触发匹配的 event 规则。
@@ -204,13 +384,13 @@ export class RuleScheduler {
         r.trigger.objectType === objectType,
     );
     const now = Date.now();
-    return Promise.all(matched.map((r) => this.evaluateRule(r, now)));
+    return Promise.all(matched.map((r) => this.evaluateRule(r, now, { objectType, objectRid, patch })));
   }
 
   // 手动触发所有规则（API 调用）
   async runAll(): Promise<RuleEvaluationResult[]> {
     const rules = await this.repo.listRules();
     const now = Date.now();
-    return Promise.all(rules.map((r) => this.evaluateRule(r, now)));
+    return Promise.all(rules.map((r) => this.evaluateRule(r, now, {}, { force: true })));
   }
 }

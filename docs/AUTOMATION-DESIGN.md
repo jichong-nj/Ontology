@@ -1,7 +1,7 @@
 # Automation（自动化）功能设计文档
 
-- 状态：**Draft（待评审）**
-- 日期：2026-11-26
+- 状态：**Implemented（Phase 1 + Phase 2 核心）**
+- 日期：2026-11-26（初稿）/ 2026-11-26（实施记录）
 - 范围：把现有「规则中心（Rules）」演进为 Palantir Automate 模式的独立 Automation 模块
 - 非目标（本期不做）：完整 RBAC、跨租户隔离、复杂工作流编排（BPMN）
 
@@ -443,3 +443,47 @@ if 全部失败 → failed
 4. 运行历史保留多久？是否需要导出/审计？
 5. 自动化执行身份：平台身份，还是配置一个"服务账号"？
 6. 是否需要 cron 表达式（而不只是 intervalSeconds）？
+
+---
+
+## 13. 实施记录（2026-11-26）
+
+### 13.1 已确认的决策
+
+1. 数据库表直接由 `rule` 改名为 `automation`（`automation_run` 为运行历史）；
+2. 支持多 effect：action / function / notify(inapp|webhook) / webhook；
+3. staged writes（人工确认后写入）暂不做；
+4. 运行历史永久保留，提供 UI 审计/维护；删除 automation 不删除历史（去掉 FK）；
+5. 执行身份：平台身份；
+6. 支持 5 字段 cron（Palantir Automate 的 time condition 支持 cron）。
+
+### 13.2 已实现
+
+- 表：`rule` → `automation`，新增 `effects` / `execution` / `description`；旧规则自动回填 effects；
+- `automation_run`：每次评估记录状态、命中数、每个 effect 结果、耗时、错误；
+- 多 effect 执行器：串行/并行、重试、fallback（API 支持；UI 暂只暴露串行/重试/超时）；
+- notify(inapp)：写 `notification` 表；notify(webhook)/webhook：HTTP POST；
+- cron：`cron.ts` 5 字段解析 + 调度器按分钟匹配；
+- API：`/api/s2/automations` CRUD / run / runs / automation-runs/:id / notifications；
+- UI：菜单 `Automation`、效果列表编辑、cron 输入、执行策略、运行历史弹窗。
+
+### 13.3 实测
+
+| 用例 | 结果 |
+|---|---|
+| 现有 3 条规则手动运行 | ✅ 全部 succeeded |
+| 多 effect（inapp + webhook） | ✅ succeeded，2 个 effect 都执行 |
+| webhook 失败 | ✅ run=partial，attempts/error 记录 |
+| cron `* * * * *` 调度 | ✅ 10s tick 内自动执行 |
+| 删除 automation | ✅ 运行历史保留 |
+| 运行历史 UI | ✅ 列表/弹窗可查看 |
+
+### 13.4 仍待实现
+
+1. 级联防护（chainId/depth/循环检测/冷却）——当前仍可能 A→B→A；
+2. change-aware 触发（新增/修改/删除、字段变化）；
+3. dataset 触发；
+4. staged writes / 人工确认；
+5. 权限、执行身份、审计；
+6. 通知中心 UI（当前 inapp 通知仅 API/DB 可见）；
+7. effect 参数/重试/fallback 的可视化编辑（当前 API 支持，UI 仅基础字段）。

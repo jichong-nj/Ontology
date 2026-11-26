@@ -287,6 +287,17 @@ export const s2 = {
   updateRule: (apiName: string, patch: any) => http.put(`/s2/rules/${apiName}`, patch).then((r) => r.data),
   deleteRule: (apiName: string) => http.delete(`/s2/rules/${apiName}`).then((r) => r.data),
   // 手动运行全部规则
+  // Automation（新模块，兼容 /rules）
+  listAutomations: () => http.get<any[]>('/s2/automations').then((r) => r.data),
+  getAutomation: (apiName: string) => http.get<any>(`/s2/automations/${apiName}`).then((r) => r.data),
+  createAutomation: (def: any) => http.post('/s2/automations', def).then((r) => r.data),
+  updateAutomation: (apiName: string, patch: any) => http.put(`/s2/automations/${apiName}`, patch).then((r) => r.data),
+  deleteAutomation: (apiName: string) => http.delete(`/s2/automations/${apiName}`).then((r) => r.data),
+  runAutomation: (apiName: string) => http.post(`/s2/automations/${apiName}/run`).then((r) => r.data),
+  listAutomationRuns: (apiName: string, limit = 50) =>
+    http.get<any[]>(`/s2/automations/${apiName}/runs`, { params: { limit } }).then((r) => r.data),
+  getAutomationRun: (id: string) => http.get<any>(`/s2/automation-runs/${id}`).then((r) => r.data),
+  listNotifications: (limit = 50) => http.get<any[]>('/s2/notifications', { params: { limit } }).then((r) => r.data),
   runRules: () => http.post<{ ok: boolean; results: unknown[] }>('/s2/rules/run').then((r) => r.data),
   previewRuleCondition: (condition: any, params?: any) =>
     http.post<{ matched: boolean; count: number; items: any[] }>('/s2/rules/preview', { condition, params }).then((r) => r.data),

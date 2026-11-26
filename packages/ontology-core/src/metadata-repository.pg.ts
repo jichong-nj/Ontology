@@ -12,6 +12,8 @@ import {
   SharedProperty,
   AggregateQueryOptions,
   AggregateQueryRow,
+  AutomationRun,
+  NotificationItem,
   DerivedSpec,
   parseDerivedSpec,
   AutomationRule,
@@ -1485,7 +1487,7 @@ export class PostgresMetadataRepository implements MetadataRepository {
   }
 
   async searchRules(opts?: { keyword?: string; limit?: number; offset?: number }) {
-    return this.searchTable('rule', ['api_name', 'display_name'], (r: any) => rowToRule(r), opts);
+    return this.searchTable('automation', ['api_name', 'display_name'], (r: any) => rowToRule(r), opts);
   }
 
   // 实例检索（用于 alerts 等）：关键字匹配 patch 全文，按 rid 去重取最新 patch
@@ -1616,23 +1618,24 @@ export class PostgresMetadataRepository implements MetadataRepository {
 
   async createRule(def: AutomationRule): Promise<void> {
     await this.pool.query(
-      `INSERT INTO rule
-        (api_name, display_name, enabled, trigger, condition_function, action_api_name, params, target_object_type, version, condition)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      `INSERT INTO automation
+        (api_name, display_name, enabled, trigger, condition_function, action_api_name, params, target_object_type, version, condition, effects, execution, description)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        ON CONFLICT (api_name) DO NOTHING`,
       [def.apiName, def.displayName, def.enabled, JSON.stringify(def.trigger), def.conditionFunction ?? null,
-        def.actionApiName, JSON.stringify(def.params ?? {}), def.targetObjectType, def.version,
-        def.condition ? JSON.stringify(def.condition) : null],
+        def.actionApiName ?? null, JSON.stringify(def.params ?? {}), def.targetObjectType ?? '', def.version,
+        def.condition ? JSON.stringify(def.condition) : null,
+        JSON.stringify(def.effects ?? []), JSON.stringify(def.execution ?? {}), def.description ?? null],
     );
   }
 
   async listRules(): Promise<AutomationRule[]> {
-    const { rows } = await this.pool.query(`SELECT * FROM rule ORDER BY api_name`);
+    const { rows } = await this.pool.query(`SELECT * FROM automation ORDER BY api_name`);
     return rows.map(rowToRule);
   }
 
   async getRule(apiName: string): Promise<AutomationRule | null> {
-    const { rows } = await this.pool.query(`SELECT * FROM rule WHERE api_name = $1`, [apiName]);
+    const { rows } = await this.pool.query(`SELECT * FROM automation WHERE api_name = $1`, [apiName]);
     return rows[0] ? rowToRule(rows[0]) : null;
   }
 
@@ -1646,20 +1649,90 @@ export class PostgresMetadataRepository implements MetadataRepository {
       version: (current.version ?? 1) + 1,
     };
     await this.pool.query(
-      `UPDATE rule SET
+      `UPDATE automation SET
         display_name = $2, enabled = $3, trigger = $4,
         condition_function = $5, action_api_name = $6, params = $7,
-        target_object_type = $8, version = $9, condition = $10
+        target_object_type = $8, version = $9, condition = $10,
+        effects = $11, execution = $12, description = $13
        WHERE api_name = $1`,
       [apiName, merged.displayName, merged.enabled, JSON.stringify(merged.trigger),
-        merged.conditionFunction || null, merged.actionApiName, JSON.stringify(merged.params ?? {}),
-        merged.targetObjectType, merged.version,
-        merged.condition ? JSON.stringify(merged.condition) : null],
+        merged.conditionFunction || null, merged.actionApiName ?? null, JSON.stringify(merged.params ?? {}),
+        merged.targetObjectType ?? '', merged.version,
+        merged.condition ? JSON.stringify(merged.condition) : null,
+        JSON.stringify(merged.effects ?? []), JSON.stringify(merged.execution ?? {}), merged.description ?? null],
     );
   }
 
   async deleteRule(apiName: string): Promise<void> {
-    await this.pool.query(`DELETE FROM rule WHERE api_name = $1`, [apiName]);
+    await this.pool.query(`DELETE FROM automation WHERE api_name = $1`, [apiName]);
+  }
+
+  // ---------- Automation 运行历史 ----------
+  async createAutomationRun(run: AutomationRun): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO automation_run
+        (id, automation_api_name, trigger_kind, trigger_context, status, matched_count, effect_results, error, chain_id, depth, started_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [run.id, run.automationApiName, run.triggerKind, JSON.stringify(run.triggerContext ?? {}),
+       run.status, run.matchedCount, JSON.stringify(run.effectResults ?? []), run.error ?? null,
+       run.chainId ?? null, run.depth ?? 0, run.startedAt],
+    );
+  }
+
+  async finishAutomationRun(id: string, patch: Partial<AutomationRun>): Promise<void> {
+    const sets: string[] = [];
+    const vals: any[] = [];
+    let i = 1;
+    const map: Record<string, string> = {
+      status: 'status', matchedCount: 'matched_count', effectResults: 'effect_results',
+      error: 'error', finishedAt: 'finished_at', durationMs: 'duration_ms', chainId: 'chain_id', depth: 'depth',
+    };
+    for (const [k, col] of Object.entries(map)) {
+      if ((patch as any)[k] !== undefined) {
+        sets.push(`${col}=$${i++}`);
+        const v = (patch as any)[k];
+        vals.push(k === 'effectResults' ? JSON.stringify(v) : v);
+      }
+    }
+    if (!sets.length) return;
+    vals.push(id);
+    await this.pool.query(`UPDATE automation_run SET ${sets.join(',')} WHERE id=$${i}`, vals);
+  }
+
+  async listAutomationRuns(opts?: { automationApiName?: string; limit?: number; offset?: number }): Promise<AutomationRun[]> {
+    const params: unknown[] = [];
+    const wheres: string[] = [];
+    if (opts?.automationApiName) { params.push(opts.automationApiName); wheres.push(`automation_api_name=$${params.length}`); }
+    const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 500);
+    params.push(limit);
+    params.push(opts?.offset ?? 0);
+    const { rows } = await this.pool.query(
+      `SELECT * FROM automation_run ${wheres.length ? 'WHERE ' + wheres.join(' AND ') : ''}
+        ORDER BY started_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
+    );
+    return rows.map(rowToAutomationRun);
+  }
+
+  async getAutomationRun(id: string): Promise<AutomationRun | null> {
+    const { rows } = await this.pool.query(`SELECT * FROM automation_run WHERE id=$1`, [id]);
+    return rows[0] ? rowToAutomationRun(rows[0]) : null;
+  }
+
+  async createNotification(n: NotificationItem): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO notification (title, body, level, recipient, source, run_id) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [n.title, n.body ?? null, n.level ?? 'info', n.recipient ?? null, n.source ?? null, n.runId ?? null],
+    );
+  }
+
+  async listNotifications(limit = 50): Promise<NotificationItem[]> {
+    const { rows } = await this.pool.query(`SELECT * FROM notification ORDER BY id DESC LIMIT $1`, [limit]);
+    return rows.map((r: any) => ({
+      id: r.id, title: r.title, body: r.body ?? undefined, level: r.level,
+      recipient: r.recipient ?? undefined, source: r.source ?? undefined, runId: r.run_id ?? undefined,
+      createdAt: r.created_at,
+    }));
   }
 
   // ---------- AIP Provider / Model / Agent 三层 ----------
@@ -1891,6 +1964,24 @@ function rowToAIPMessage(r: any): AIPMessage {
   };
 }
 
+function rowToAutomationRun(r: any): AutomationRun {
+  return {
+    id: r.id,
+    automationApiName: r.automation_api_name,
+    triggerKind: r.trigger_kind,
+    triggerContext: r.trigger_context ?? {},
+    status: r.status,
+    matchedCount: r.matched_count,
+    effectResults: r.effect_results ?? [],
+    error: r.error ?? undefined,
+    chainId: r.chain_id ?? undefined,
+    depth: r.depth ?? 0,
+    startedAt: r.started_at,
+    finishedAt: r.finished_at ?? undefined,
+    durationMs: r.duration_ms ?? undefined,
+  };
+}
+
 function rowToRule(r: any): AutomationRule {
   return {
     apiName: r.api_name,
@@ -1899,7 +1990,10 @@ function rowToRule(r: any): AutomationRule {
     trigger: r.trigger,
     conditionFunction: r.condition_function ?? '',
     condition: r.condition ?? undefined,
-    actionApiName: r.action_api_name,
+    description: r.description ?? undefined,
+    effects: r.effects ?? undefined,
+    execution: r.execution ?? undefined,
+    actionApiName: r.action_api_name ?? '',
     params: r.params,
     targetObjectType: r.target_object_type,
     version: r.version,

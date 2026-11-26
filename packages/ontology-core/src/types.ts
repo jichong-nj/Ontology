@@ -375,6 +375,12 @@ export interface MetadataRepository {
   listObjectProperties(objectType: string): Promise<{ objectRid: string; properties: Record<string, unknown> }[]>;
   // 实例查询（对齐 Palantir）：属性级条件过滤 + 游标分页
   aggregateQuery(objectType: string, opts: AggregateQueryOptions): Promise<AggregateQueryRow[]>;
+  createAutomationRun(run: AutomationRun): Promise<void>;
+  finishAutomationRun(id: string, patch: Partial<AutomationRun>): Promise<void>;
+  listAutomationRuns(opts?: { automationApiName?: string; limit?: number; offset?: number }): Promise<AutomationRun[]>;
+  getAutomationRun(id: string): Promise<AutomationRun | null>;
+  createNotification(n: NotificationItem): Promise<void>;
+  listNotifications(limit?: number): Promise<NotificationItem[]>;
   searchAround(objectType: string, opts: {
     rids?: string[]; filter?: InstanceFilter[]; linkType: string; direction: 'source' | 'target';
     targetFilter?: InstanceFilter[]; orderBy?: string; order?: 'asc' | 'desc';
@@ -424,7 +430,7 @@ export interface MetadataRepository {
 // - schedule: 按间隔周期轮询（对应 Palantir Schedule / cron）；
 // - event: 由对象写入事件触发（对应 Palantir 流式/对象事件触发，Step 2 新增）。
 export type RuleTrigger =
-  | { kind: 'schedule'; intervalSeconds: number }
+  | { kind: 'schedule'; intervalSeconds?: number; cron?: string }
   | { kind: 'event'; on: 'object_write'; objectType: string; conditionProperty?: string };
 
 // 自动化规则：通用的「满足条件就执行动作」编排单元（对齐 Palantir Watchdog + Action Type + Schedule）。
@@ -434,6 +440,62 @@ export type RuleCondition =
   | { kind: 'property'; objectType: string; property: string; operator: 'gt'|'gte'|'lt'|'lte'|'eq'|'neq'; value: unknown }
   | { kind: 'aggregate'; objectType: string; aggregation: 'count'|'sum'|'avg'|'min'|'max'; property?: string; operator: 'gt'|'gte'|'lt'|'lte'|'eq'|'neq'; value: number }
   | { kind: 'all' | 'any'; conditions: RuleCondition[] };
+
+export interface AutomationEffectOptions {
+  retry?: { maxAttempts: number; backoffMs?: number };
+  fallback?: AutomationEffect;
+}
+
+export type AutomationEffect =
+  | ({ kind: 'action'; actionApiName: string; params?: Record<string, unknown> } & AutomationEffectOptions)
+  | ({ kind: 'function'; function: string; params?: Record<string, unknown> } & AutomationEffectOptions)
+  | ({ kind: 'notify'; channel: 'inapp' | 'webhook'; title?: string; body?: string; level?: string; recipient?: string; webhookUrl?: string } & AutomationEffectOptions)
+  | ({ kind: 'webhook'; url: string; method?: 'POST' | 'PUT'; headers?: Record<string, string>; body?: unknown } & AutomationEffectOptions);
+
+export interface AutomationExecution {
+  mode?: 'sequential' | 'parallel';
+  maxRetries?: number;
+  timeoutMs?: number;
+  chainDepthLimit?: number;
+  cooldownSeconds?: number;
+}
+
+export interface AutomationEffectResult {
+  kind: string;
+  ref?: string;
+  ok: boolean;
+  attempts: number;
+  durationMs: number;
+  result?: unknown;
+  error?: string;
+}
+
+export interface AutomationRun {
+  id: string;
+  automationApiName: string;
+  triggerKind: string;
+  triggerContext?: Record<string, unknown>;
+  status: 'running' | 'succeeded' | 'failed' | 'partial' | 'skipped';
+  matchedCount: number;
+  effectResults: AutomationEffectResult[];
+  error?: string;
+  chainId?: string;
+  depth: number;
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+}
+
+export interface NotificationItem {
+  id?: number;
+  title: string;
+  body?: string;
+  level?: string;
+  recipient?: string;
+  source?: string;
+  runId?: string;
+  createdAt?: string;
+}
 
 export interface AutomationRule {
   apiName: string;
@@ -445,10 +507,15 @@ export interface AutomationRule {
   // 可配置的条件评估函数（必须是已注册的 OntologyFunction apiName），返回 { flagged: [{rid, ...}] }
   // 声明式条件存在时可不填
   conditionFunction?: string;
+  description?: string;
+  // 多效果；为空时回退旧的 actionApiName
+  effects?: AutomationEffect[];
+  // 执行策略
+  execution?: AutomationExecution;
   // 声明式条件（property / aggregate / all / any / function）；为空则回退 conditionFunction
   condition?: RuleCondition;
-  // 可配置的动作：命中后由该 Action 落地（写对象/通知/审批等）。
-  actionApiName: string;
+  // 兼容旧规则的单动作；新规则用 effects
+  actionApiName?: string;
   // 传入条件函数的参数（如 threshold）
   params?: Record<string, unknown>;
   // 动作的落点对象类型（如 Alert）。仅当 Action 是写对象类动作时使用；通知/审批可忽略。
