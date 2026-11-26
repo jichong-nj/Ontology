@@ -243,13 +243,6 @@ async function runAnalysis() {
   finally { analyzing.value = false; }
 }
 function ELMessageReload() { ElMessage.success('AI 研判完成'); analysisVisible.value = true; load(); }
-async function applyAnalysis() {
-  if (!analysis.value?.id) return;
-  await emergency.applyAnalysis(analysis.value.id);
-  ElMessage.success('已应用到数据池');
-  analysisVisible.value = false;
-  await load();
-}
 function targetLabel(rid: string) {
   return graph.value.nodes.find((n) => n.id === rid)?.label ?? rid;
 }
@@ -426,7 +419,6 @@ onMounted(load);
       <template #footer>
         <el-button @click="analysisVisible = false">关闭</el-button>
         <el-button :loading="analyzing" @click="runAnalysis">重新生成</el-button>
-        <el-button type="primary" @click="applyAnalysis">一键刷新到数据池</el-button>
       </template>
     </el-dialog>
 

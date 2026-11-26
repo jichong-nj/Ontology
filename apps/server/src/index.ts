@@ -2895,15 +2895,6 @@ app.post('/api/emergency/cases/:id/analyze', async (req, res) => {
   }
 });
 
-app.post('/api/emergency/analysis/:id/apply', async (req, res) => {
-  try {
-    await emergencyService.applyAnalysis(req.params.id);
-    res.json({ ok: true });
-  } catch (e: any) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
 app.post('/api/emergency/cases/:id/ref-status', async (req, res) => {
   try {
     const { entityRid, status } = req.body ?? {};

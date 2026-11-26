@@ -481,33 +481,6 @@ export class EmergencyService {
     return { ...run.properties, findings: findings.map((f) => ({ ...f.properties, objectRid: f.objectRid })) };
   }
 
-  async applyAnalysis(analysisId: string): Promise<void> {
-    const run = await this.instance('AnalysisRun', analysisId);
-    const caseRid = String(run?.properties.caseRid ?? '');
-    const findings = (await this.all('RiskFinding')).filter((f) => f.properties.analysisId === analysisId);
-    for (const f of findings) {
-      const p = f.properties;
-      await this.repo.writeObjectPatch('RiskFinding', f.objectRid, { status: 'confirmed' }, 'emergency:expert');
-      if (caseRid && p.targetRid) await this.addRef(caseRid, String(p.targetRid), String(p.targetType ?? 'Organization'), 'analysis', analysisId, 'AI 研判确认', 'ai');
-    }
-  }
-
-  async generateClosureDraft(caseRid: string): Promise<{ text: string }> {
-    const c = await this.instance('EmergencyResponse', caseRid);
-    if (!c) throw new Error('案件不存在');
-    const tasks = await this.listTasks(caseRid);
-    const analysis = await this.latestAnalysis(caseRid);
-    const graph = await this.getGraph(caseRid);
-    const context = {
-      case: c.properties,
-      analysis: analysis ? { summary: analysis.summary, findings: analysis.findings } : null,
-      tasks: tasks.map((t) => ({ type: t.taskType, org: t.orgRid, status: t.status, reason: t.reason })),
-      entities: graph.nodes.filter((n) => ['Organization', 'Employee', 'Document'].includes(n.type)).map((n) => ({ type: n.type, label: n.label })),
-    };
-    const text = await generateClosureDraftText(JSON.stringify(context));
-    return { text };
-  }
-
   async closeCase(caseRid: string, payload: { note?: string; closureType?: string; finalText?: string; attachments?: unknown[] }): Promise<any> {
     const c = await this.instance('EmergencyResponse', caseRid);
     if (!c) throw new Error('案件不存在');

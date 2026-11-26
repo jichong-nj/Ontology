@@ -569,7 +569,6 @@ export const emergency = {
   createInspection: (id: string, body: any) => http.post(`/emergency/cases/${encodeURIComponent(id)}/inspection-task`, body).then((r) => r.data),
   analysis: (id: string) => http.get<any>(`/emergency/cases/${encodeURIComponent(id)}/analysis`).then((r) => r.data),
   analyze: (id: string) => http.post(`/emergency/cases/${encodeURIComponent(id)}/analyze`).then((r) => r.data),
-  applyAnalysis: (id: string) => http.post(`/emergency/analysis/${encodeURIComponent(id)}/apply`).then((r) => r.data),
   extracted: (id: string) => http.get<any[]>(`/emergency/cases/${encodeURIComponent(id)}/extracted`).then((r) => r.data),
   acceptExtracted: (id: string) => http.post(`/emergency/extracted/${encodeURIComponent(id)}/accept`).then((r) => r.data),
   rejectExtracted: (id: string) => http.post(`/emergency/extracted/${encodeURIComponent(id)}/reject`).then((r) => r.data),
