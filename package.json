@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "qa:automation": "node scripts/qa-automation.mjs",
     "qa:automation:ui": "node scripts/qa-automation-ui.mjs",
-    "qa:automation:all": "npm run qa:automation && npm run qa:automation:ui"
+    "qa:automation:all": "npm run qa:automation && npm run qa:automation:ui",
+    "seed:emergency": "tsx scripts/seed-emergency.ts"
   },
   "devDependencies": {
     "@types/node": "^22.5.4",
