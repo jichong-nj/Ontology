@@ -2845,6 +2845,15 @@ app.post('/api/emergency/candidates/:id/reject', async (req, res) => {
   }
 });
 
+app.get('/api/emergency/inbox', async (req, res) => {
+  try {
+    const type = req.query.type === 'inspection' ? 'inspection' : 'verification';
+    res.json(await emergencyService.listInbox(type));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/emergency/cases/:id/tasks', async (req, res) => {
   try {
     res.json(await emergencyService.listTasks(req.params.id));

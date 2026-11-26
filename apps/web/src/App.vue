@@ -59,6 +59,7 @@ const panelSections = computed<MenuSection[]>(() => {
     return [
       { title: 'Emergency Response', items: [
         { key: 'em-cases', label: 'Cases', to: '/emergency', icon: '🚨' },
+        { key: 'em-inbox', label: '模拟业务端', to: '/emergency/inbox', icon: '📥' },
       ]},
     ];
   }

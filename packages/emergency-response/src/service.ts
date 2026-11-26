@@ -275,6 +275,25 @@ export class EmergencyService {
     return out.sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')));
   }
 
+  async listInbox(type: 'verification' | 'inspection'): Promise<any[]> {
+    const taskType = type === 'verification' ? 'VerificationTask' : 'InspectionTask';
+    const tasks = await this.all(taskType);
+    const cases = await this.all('EmergencyResponse');
+    const orgs = await this.all('Organization');
+    const caseById = new Map(cases.map((c) => [c.objectRid, c.properties]));
+    const orgById = new Map(orgs.map((o) => [o.objectRid, o.properties]));
+    return tasks
+      .filter((t) => t.properties.status !== 'submitted')
+      .map((t) => ({
+        ...t.properties,
+        objectRid: t.objectRid,
+        taskType,
+        caseTitle: caseById.get(String(t.properties.caseRid))?.title ?? t.properties.caseRid,
+        orgName: orgById.get(String(t.properties.orgRid))?.name ?? t.properties.orgRid,
+      }))
+      .sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')));
+  }
+
   async receiveTask(taskRid: string): Promise<void> {
     const type = String(taskRid).split(':')[0];
     if (!['VerificationTask', 'InspectionTask'].includes(type)) throw new Error('不是任务');

@@ -563,4 +563,6 @@ export const emergency = {
   submitTask: (id: string, body: any) => http.post(`/emergency/tasks/${encodeURIComponent(id)}/submit`, body).then((r) => r.data),
   closeCase: (id: string, body: any) => http.post(`/emergency/cases/${encodeURIComponent(id)}/close`, body).then((r) => r.data),
   createEvent: (body: any) => http.post('/emergency/events', body).then((r) => r.data),
+  inbox: (type: 'verification' | 'inspection') =>
+    http.get<any[]>('/emergency/inbox', { params: { type } }).then((r) => r.data),
 };
