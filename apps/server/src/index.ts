@@ -3,6 +3,7 @@
 import express from 'express';
 import { Pool } from 'pg';
 import { PostgresMetadataRepository, TypeScriptFunctionSandbox, onObjectWrite, ensureRid, evaluateRuleCondition, isCronExpression } from '@ontology/ontology-core';
+import { EmergencyService } from '@ontology/emergency-response';
 import type { OntologyFunction, ActionType, AutomationRule } from '@ontology/ontology-core';
 import { PostgresMappingStore, MappingService } from '@ontology/data-integration';
 import {
@@ -2780,6 +2781,94 @@ const TOOL_FORMAT_HINT = `
 ## 工具调用格式
 请通过平台提供的 function-calling 通道调用工具；不要输出 <tool_call>、<function=...>、<parameter=...> 这类 XML 文本。
 `;
+
+// ---------- 应急响应 API（Ontology 之上的业务层） ----------
+const emergencyService = new EmergencyService(repo);
+
+app.get('/api/emergency/cases', async (_req, res) => {
+  try {
+    res.json(await emergencyService.listCases());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/emergency/cases/:id', async (req, res) => {
+  try {
+    const c = await emergencyService.getCase(req.params.id);
+    if (!c) return res.status(404).json({ error: 'not found' });
+    res.json(c);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/emergency/cases/:id/graph', async (req, res) => {
+  try {
+    res.json(await emergencyService.getGraph(req.params.id));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/emergency/cases/:id/candidates', async (req, res) => {
+  try {
+    res.json(await emergencyService.listCandidates(req.params.id));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/emergency/candidates/:id/accept', async (req, res) => {
+  try {
+    await emergencyService.decideCandidate(req.params.id, true);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/emergency/candidates/:id/reject', async (req, res) => {
+  try {
+    await emergencyService.decideCandidate(req.params.id, false);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/emergency/cases/:id/tasks', async (req, res) => {
+  try {
+    res.json(await emergencyService.listTasks(req.params.id));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/emergency/tasks/:id/receive', async (req, res) => {
+  try {
+    await emergencyService.receiveTask(req.params.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/emergency/tasks/:id/submit', async (req, res) => {
+  try {
+    res.json(await emergencyService.submitTask(req.params.id, req.body ?? {}));
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/emergency/cases/:id/close', async (req, res) => {
+  try {
+    res.json(await emergencyService.closeCase(req.params.id, req.body ?? {}));
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
 
 // 注入建模提示词（不影响未启用 modeling 的 Agent）
 function finalizeAgentConfig(cfg: AIPAgentConfig): AIPAgentConfig {
