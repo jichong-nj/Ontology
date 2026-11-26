@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { MetadataRepository } from '@ontology/ontology-core';
+import { extractFromText } from './ai';
 
 export interface GraphNode {
   id: string;
@@ -314,6 +315,7 @@ export class EmergencyService {
       }, 'sim:unit');
       await this.repo.createLinkInstance('VerificationResponseTask', `VerificationResponse:${id}`, taskRid);
       await this.repo.writeObjectPatch(type, taskRid, { status: 'submitted', submittedAt: now }, 'sim:unit');
+      await this.extractResponse(`VerificationResponse:${id}`).catch(() => {});
       return { id, type: 'VerificationResponse' };
     }
     const id = `IR-${randomUUID().slice(0, 8)}`;
@@ -323,7 +325,58 @@ export class EmergencyService {
     }, 'sim:inspector');
     await this.repo.createLinkInstance('InspectionReportTask', `InspectionReport:${id}`, taskRid);
     await this.repo.writeObjectPatch(type, taskRid, { status: 'submitted', submittedAt: now }, 'sim:inspector');
+    await this.extractResponse(`InspectionReport:${id}`).catch(() => {});
     return { id, type: 'InspectionReport' };
+  }
+
+  async extractResponse(sourceRid: string): Promise<any[]> {
+    const sourceType = String(sourceRid).split(':')[0];
+    if (!['VerificationResponse', 'InspectionReport'].includes(sourceType)) throw new Error('不是回复/报告');
+    const inst = await this.instance(sourceType, sourceRid);
+    if (!inst) throw new Error('来源不存在');
+    const p = inst.properties;
+    const task = await this.instance(sourceType === 'VerificationResponse' ? 'VerificationTask' : 'InspectionTask', String(p.taskRid ?? ''));
+    const caseRid = String(task?.properties.caseRid ?? '');
+    if (!caseRid) throw new Error('任务未关联案件');
+    const result = await extractFromText(String(p.contentText ?? ''), sourceType);
+    if (sourceType === 'InspectionReport' && result.summary) {
+      await this.repo.writeObjectPatch('InspectionReport', sourceRid, { summary: result.summary }, 'ai:extract');
+    }
+    const out: any[] = [];
+    for (const e of result.entities) {
+      const id = `EE-${randomUUID().slice(0, 8)}`;
+      await this.repo.writeObjectPatch('ExtractedEntity', id, {
+        id, caseRid, sourceRid, sourceType: sourceType === 'VerificationResponse' ? 'verification' : 'inspection',
+        entityType: e.entityType, rawText: e.rawText ?? '', value: e.value,
+        confidence: e.confidence ?? 0.5, status: 'pending', createdByAction: 'extractFromText',
+      }, 'ai:extract');
+      out.push({ id, caseRid, ...e });
+    }
+    return out;
+  }
+
+  async listExtracted(caseRid: string): Promise<any[]> {
+    return (await this.all('ExtractedEntity')).filter((e) => e.properties.caseRid === caseRid).map((e) => ({ ...e.properties, objectRid: e.objectRid }));
+  }
+
+  async decideExtracted(id: string, accept: boolean): Promise<void> {
+    const full = String(id).includes(':') ? id : `ExtractedEntity:${id}`;
+    const inst = await this.instance('ExtractedEntity', full);
+    if (!inst) throw new Error('候选不存在');
+    const p = inst.properties;
+    await this.repo.writeObjectPatch('ExtractedEntity', full, { status: accept ? 'accepted' : 'rejected' }, 'emergency:expert');
+    if (!accept) return;
+    // 简单按名称匹配已有本体对象
+    const map: Record<string, string> = { organization: 'Organization', employee: 'Employee', document: 'Document' };
+    const type = map[String(p.entityType)];
+    if (!type) return;
+    const all = await this.all(type);
+    const name = String(p.value ?? '');
+    const hit = all.find((x) => String(x.properties.name ?? x.properties.title ?? x.properties.docNo ?? '') === name);
+    if (hit) {
+      await this.repo.writeObjectPatch('ExtractedEntity', full, { matchedEntityRid: hit.objectRid }, 'emergency:expert');
+      await this.addRef(String(p.caseRid), hit.objectRid, type, 'response', full, `AI抽取：${name}`, 'ai');
+    }
   }
 
   async closeCase(caseRid: string, payload: { note?: string; closureType?: string; finalText?: string; attachments?: unknown[] }): Promise<any> {

@@ -563,6 +563,9 @@ export const emergency = {
   submitTask: (id: string, body: any) => http.post(`/emergency/tasks/${encodeURIComponent(id)}/submit`, body).then((r) => r.data),
   closeCase: (id: string, body: any) => http.post(`/emergency/cases/${encodeURIComponent(id)}/close`, body).then((r) => r.data),
   createEvent: (body: any) => http.post('/emergency/events', body).then((r) => r.data),
+  extracted: (id: string) => http.get<any[]>(`/emergency/cases/${encodeURIComponent(id)}/extracted`).then((r) => r.data),
+  acceptExtracted: (id: string) => http.post(`/emergency/extracted/${encodeURIComponent(id)}/accept`).then((r) => r.data),
+  rejectExtracted: (id: string) => http.post(`/emergency/extracted/${encodeURIComponent(id)}/reject`).then((r) => r.data),
   inbox: (type: 'verification' | 'inspection') =>
     http.get<any[]>('/emergency/inbox', { params: { type } }).then((r) => r.data),
 };

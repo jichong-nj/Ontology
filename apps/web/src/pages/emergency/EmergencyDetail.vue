@@ -17,6 +17,7 @@ const caseId = computed(() => decodeURIComponent(String(route.params.id || '')))
 const detail = ref<any>(null);
 const graph = ref<{ nodes: any[]; edges: any[] }>({ nodes: [], edges: [] });
 const candidates = ref<any[]>([]);
+const extracted = ref<any[]>([]);
 const tasks = ref<any[]>([]);
 const loading = ref(false);
 const selected = ref<any>(null);
@@ -83,10 +84,10 @@ async function load() {
   loading.value = true;
   try {
     const id = caseId.value;
-    const [c, g, cand, t] = await Promise.all([
-      emergency.getCase(id), emergency.graph(id), emergency.candidates(id), emergency.tasks(id),
+    const [c, g, cand, t, ex] = await Promise.all([
+      emergency.getCase(id), emergency.graph(id), emergency.candidates(id), emergency.tasks(id), emergency.extracted(id),
     ]);
-    detail.value = c; graph.value = g; candidates.value = cand; tasks.value = t;
+    detail.value = c; graph.value = g; candidates.value = cand; tasks.value = t; extracted.value = ex;
   } catch (e: any) {
     ElMessage.error(e.message || '加载失败');
   } finally { loading.value = false; }
@@ -105,6 +106,16 @@ function onChartClick(p: any) {
 async function accept(c: any) {
   await emergency.acceptCandidate(c.id);
   ElMessage.success('已加入数据池');
+  await load();
+}
+async function acceptExtracted(e: any) {
+  await emergency.acceptExtracted(e.id);
+  ElMessage.success('已接受');
+  await load();
+}
+async function rejectExtracted(e: any) {
+  await emergency.rejectExtracted(e.id);
+  ElMessage.success('已忽略');
   await load();
 }
 async function reject(c: any) {
@@ -195,6 +206,19 @@ onMounted(load);
           <div class="stat">数据池实体：{{ detail?.refs?.length ?? 0 }}</div>
           <div class="stat">待办任务：{{ tasks.filter((t: any) => t.status !== 'submitted').length }}</div>
         </template>
+
+        <div class="side-section">
+          <div class="side-head"><b>AI 抽取候选</b></div>
+          <div v-if="!extracted.filter((e: any) => e.status === 'pending').length" class="muted">暂无待确认抽取</div>
+          <div v-for="e in extracted.filter((e: any) => e.status === 'pending')" :key="e.id" class="cand">
+            <div class="cand-title">[{{ e.entityType }}] {{ e.value }}</div>
+            <div class="cand-meta">置信度 {{ e.confidence ?? '—' }} · {{ e.rawText }}</div>
+            <div class="cand-ops">
+              <el-button size="small" type="primary" @click="acceptExtracted(e)">接受</el-button>
+              <el-button size="small" @click="rejectExtracted(e)">忽略</el-button>
+            </div>
+          </div>
+        </div>
 
         <div class="side-section">
           <div class="side-head"><b>文档候选</b></div>

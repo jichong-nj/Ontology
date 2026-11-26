@@ -2879,6 +2879,32 @@ app.post('/api/emergency/tasks/:id/submit', async (req, res) => {
   }
 });
 
+app.get('/api/emergency/cases/:id/extracted', async (req, res) => {
+  try {
+    res.json(await emergencyService.listExtracted(req.params.id));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/emergency/extracted/:id/accept', async (req, res) => {
+  try {
+    await emergencyService.decideExtracted(req.params.id, true);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/emergency/extracted/:id/reject', async (req, res) => {
+  try {
+    await emergencyService.decideExtracted(req.params.id, false);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 app.post('/api/emergency/cases/:id/close', async (req, res) => {
   try {
     res.json(await emergencyService.closeCase(req.params.id, req.body ?? {}));
