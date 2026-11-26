@@ -493,3 +493,22 @@ if 全部失败 → failed
 4. 权限、执行身份、审计；
 5. 通知中心 UI（当前 inapp 通知仅 API/DB 可见）；
 6. effect 参数/重试/fallback 的可视化编辑（当前 API 支持，UI 仅基础字段）。
+
+### 13.6 回归测试命令
+
+```bash
+# API：多 effect / notify / webhook / fallback / 级联 / 历史 / cron
+npm run qa:automation
+
+# UI：路由 / 列表 / 历史 / 链路列 / 编辑器（只读）
+npm run qa:automation:ui
+
+# 两者一起
+npm run qa:automation:all
+```
+
+约定：
+
+- API 脚本使用 `qa_` 前缀，自带本地 webhook sink，结束后清理 `qa_%` 的 automation / run / notification；
+- 需要后端 `:4000` 与 PostgreSQL 可连接（`DATABASE_URL` 可覆盖）；
+- UI 脚本需要前端 `:5173`，默认 Chrome `/usr/bin/google-chrome`（`CHROME_PATH` 可覆盖）。

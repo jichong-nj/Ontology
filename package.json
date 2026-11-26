@@ -10,7 +10,10 @@
   "scripts": {
     "db:init": "psql \"$DATABASE_URL\" -f packages/ontology-core/sql/schema.sql",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "qa:automation": "node scripts/qa-automation.mjs",
+    "qa:automation:ui": "node scripts/qa-automation-ui.mjs",
+    "qa:automation:all": "npm run qa:automation && npm run qa:automation:ui"
   },
   "devDependencies": {
     "@types/node": "^22.5.4",
