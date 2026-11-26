@@ -15,10 +15,14 @@ import AlertsPage from '@/pages/AlertsPage.vue';
 import AIPPage from '@/pages/AIPPage.vue';
 import AIPAgentManagement from '@/pages/AIPAgentManagement.vue';
 import ProviderPage from '@/pages/ProviderPage.vue';
+import EmergencyList from '@/pages/emergency/EmergencyList.vue';
+import EmergencyDetail from '@/pages/emergency/EmergencyDetail.vue';
 
 const routes = [
   { path: '/', component: Overview, meta: { title: 'Ontology Manager' } },
   { path: '/alerts', component: AlertsPage, meta: { title: 'Alerts' } },
+  { path: '/emergency', component: EmergencyList, meta: { title: '应急响应' } },
+  { path: '/emergency/:id', component: EmergencyDetail, meta: { title: '应急响应详情' } },
   { path: '/aip', component: AIPPage, meta: { title: 'AIP Chat' } },
   { path: '/aip/agents', component: AIPAgentManagement, meta: { title: 'Agent Management' } },
   { path: '/aip/providers', component: ProviderPage, meta: { title: 'Provider' } },

@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { s2shared, s2, system } from '@/api';
+import { s2shared, s2, system, emergency } from '@/api';
 import type { ReingestReport } from '@/api';
 
 const router = useRouter();
@@ -19,8 +19,12 @@ const iconNav = [
 
 // 顶部告警图标徽标（实时未读/总数）
 const alertCount = ref(0);
+const emergencyCount = ref(0);
 function loadAlertCount() {
   s2.listAlerts().then((d: any[]) => { alertCount.value = d?.length ?? 0; }).catch(() => { alertCount.value = 0; });
+}
+function loadEmergencyCount() {
+  emergency.listCases().then((d: any[]) => { emergencyCount.value = d.filter((c) => c.status === 'in_progress').length; }).catch(() => { emergencyCount.value = 0; });
 }
 
 // 次级侧边面板菜单项（按 Palantir 分组）
@@ -48,6 +52,13 @@ const panelSections = computed<MenuSection[]>(() => {
         { key: 'shared', label: 'Shared Properties', to: '/s2/shared-properties', icon: '🌐', count: sharedCount.value },
         { key: 'value-types', label: 'Value Types', to: '/s2/value-types', icon: '🏷️' },
         { key: 'explore', label: 'Object Explorer', to: '/s2/explore', icon: '🧭' },
+      ]},
+    ];
+  }
+  if (path.startsWith('/emergency')) {
+    return [
+      { title: 'Emergency Response', items: [
+        { key: 'em-cases', label: 'Cases', to: '/emergency', icon: '🚨' },
       ]},
     ];
   }
@@ -85,9 +96,12 @@ function loadSharedCount() {
 }
 onMounted(loadSharedCount);
 onMounted(loadAlertCount);
+onMounted(loadEmergencyCount);
+watch(() => route.path, (p) => { if (p.startsWith('/emergency')) loadEmergencyCount(); });
 
 // 当前激活的图标
 const activeIcon = computed(() => {
+  if (route.path.startsWith('/emergency')) return 'emergency';
   if (route.path.startsWith('/alerts')) return 'alerts';
   if (route.path.startsWith('/aip')) return 'aip';
   if (route.path.startsWith('/s2')) return 's2';
@@ -103,6 +117,7 @@ const pageTitle = computed(() => {
   if (route.path.includes('/object-types/')) return 'Object Type';
   if (route.path.includes('/link-types')) return 'Link Types';
   if (route.path.includes('/connections')) return 'Data Sources';
+  if (route.path.startsWith('/emergency')) return '应急响应';
   return 'Ontology Manager';
 });
 
@@ -162,6 +177,10 @@ async function doReingest() {
         </button>
       </div>
       <div class="nav-bottom">
+        <button class="nav-btn" :class="{ active: activeIcon === 'emergency' }" title="应急响应" @click="router.push('/emergency')">
+          <span class="nav-icon">🚨</span>
+          <span v-if="emergencyCount > 0" class="nav-badge">{{ emergencyCount > 99 ? '99+' : emergencyCount }}</span>
+        </button>
         <button class="nav-btn" title="Settings" @click="openSysSettings">⚙️</button>
       </div>
     </nav>

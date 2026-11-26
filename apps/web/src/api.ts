@@ -549,3 +549,18 @@ export const system = {
   // 查询是否正在进行
   reingestStatus: () => http.get<{ running: boolean }>('/admin/reingest/status').then((r) => r.data),
 };
+
+// ---------- 应急响应（Ontology 之上的业务层） ----------
+export const emergency = {
+  listCases: () => http.get<any[]>('/emergency/cases').then((r) => r.data),
+  getCase: (id: string) => http.get<any>(`/emergency/cases/${encodeURIComponent(id)}`).then((r) => r.data),
+  graph: (id: string) => http.get<{ nodes: any[]; edges: any[] }>(`/emergency/cases/${encodeURIComponent(id)}/graph`).then((r) => r.data),
+  candidates: (id: string) => http.get<any[]>(`/emergency/cases/${encodeURIComponent(id)}/candidates`).then((r) => r.data),
+  acceptCandidate: (id: string) => http.post(`/emergency/candidates/${encodeURIComponent(id)}/accept`).then((r) => r.data),
+  rejectCandidate: (id: string) => http.post(`/emergency/candidates/${encodeURIComponent(id)}/reject`).then((r) => r.data),
+  tasks: (id: string) => http.get<any[]>(`/emergency/cases/${encodeURIComponent(id)}/tasks`).then((r) => r.data),
+  receiveTask: (id: string) => http.post(`/emergency/tasks/${encodeURIComponent(id)}/receive`).then((r) => r.data),
+  submitTask: (id: string, body: any) => http.post(`/emergency/tasks/${encodeURIComponent(id)}/submit`, body).then((r) => r.data),
+  closeCase: (id: string, body: any) => http.post(`/emergency/cases/${encodeURIComponent(id)}/close`, body).then((r) => r.data),
+  createEvent: (body: any) => http.post('/emergency/events', body).then((r) => r.data),
+};
