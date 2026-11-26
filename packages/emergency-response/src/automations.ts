@@ -33,6 +33,40 @@ return async (args, ctx) => {
   return { created };
 };`;
 
+export const INITIAL_CASE_ASSOCIATION_BODY = `
+return async (args, ctx) => {
+  const { repo } = ctx;
+  const cases = Array.isArray(args.flagged) ? args.flagged : [];
+  const events = await ctx.objects('PublicOpinionEvent');
+  const docs = await ctx.objects('Document');
+  const existing = await ctx.objects('DocumentCandidate');
+  const created = [];
+  for (const c of cases) {
+    const caseRid = String(c.rid ?? '');
+    if (!caseRid) continue;
+    const eventRid = String(c.sourceEventRid ?? '');
+    const ev = events.find((e) => e.objectRid === eventRid);
+    if (!ev) continue;
+    const text = [ev.properties.title, ev.properties.contentText, ev.properties.attachmentText]
+      .map((x) => String(x ?? '')).join(' ');
+    for (const d of docs) {
+      const p = d.properties;
+      const docNo = String(p.docNo ?? '');
+      const title = String(p.title ?? '');
+      const hit = (docNo && text.includes(docNo)) || (title && text.includes(title));
+      if (!hit) continue;
+      if (existing.some((x) => x.properties.caseRid === caseRid && x.properties.documentRid === d.objectRid)) continue;
+      const id = 'DC-' + Date.now() + '-' + created.length;
+      await repo.writeObjectPatch('DocumentCandidate', id, {
+        id, caseRid, documentRid: d.objectRid, matchScore: 0.9,
+        source: 'search', status: 'pending', reason: '事件内容/文号命中：' + (docNo || title),
+      }, 'action:initialCaseAssociation');
+      created.push({ id, caseRid, documentRid: d.objectRid });
+    }
+  }
+  return { created };
+};`;
+
 export const functions: OntologyFunction[] = [
   {
     apiName: 'createEmergencyResponse',
@@ -49,6 +83,20 @@ export const functions: OntologyFunction[] = [
     body: CREATE_EMERGENCY_RESPONSE_BODY,
     version: 1,
   },
+  {
+    apiName: 'initialCaseAssociation',
+    displayName: '应急响应初始关联',
+    language: 'typescript',
+    entry: 'initialCaseAssociation',
+    inputs: [
+      { name: 'rule', type: 'string', required: false },
+      { name: 'flagged', type: 'object', required: true },
+    ],
+    outputs: ['object'],
+    description: '案件创建后：按事件标题/正文/文号匹配文档，生成待确认的 DocumentCandidate。',
+    body: INITIAL_CASE_ASSOCIATION_BODY,
+    version: 1,
+  },
 ];
 
 export const actions: ActionType[] = [
@@ -59,6 +107,15 @@ export const actions: ActionType[] = [
     parameters: [],
     validationRules: [],
     effect: { kind: 'function', ref: 'createEmergencyResponse' },
+    version: 1,
+  },
+  {
+    apiName: 'initialCaseAssociation',
+    displayName: '应急响应初始关联',
+    kind: 'standard',
+    parameters: [],
+    validationRules: [],
+    effect: { kind: 'function', ref: 'initialCaseAssociation' },
     version: 1,
   },
 ];
@@ -84,6 +141,20 @@ export const rules: AutomationRule[] = [
       ],
     },
     actionApiName: 'createEmergencyResponse',
+    targetObjectType: 'EmergencyResponse',
+    params: {},
+    version: 1,
+  },
+  {
+    apiName: 'emergencyInitialAssociationRule',
+    displayName: '应急响应初始关联',
+    description: '案件创建后匹配文档，生成待确认候选',
+    enabled: true,
+    trigger: { kind: 'event', on: 'object_write', objectType: 'EmergencyResponse' },
+    condition: {
+      kind: 'property', objectType: 'EmergencyResponse', property: 'status', operator: 'eq', value: 'in_progress',
+    },
+    actionApiName: 'initialCaseAssociation',
     targetObjectType: 'EmergencyResponse',
     params: {},
     version: 1,

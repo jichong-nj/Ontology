@@ -212,6 +212,37 @@ export class EmergencyService {
     return { nodes: [...nodes.values()], edges: [...edges.values()] };
   }
 
+  private async addRef(
+    caseRid: string, entityRid: string, entityType: string,
+    sourceType: string, sourceRid?: string, reason?: string, addedBy = 'rule',
+  ): Promise<void> {
+    const refs = await this.all('CaseEntityRef');
+    if (refs.some((r) => r.properties.caseRid === caseRid && r.properties.entityRid === entityRid)) return;
+    const id = `CER-${randomUUID().slice(0, 8)}`;
+    await this.repo.writeObjectPatch('CaseEntityRef', id, {
+      id, caseRid, entityRid, entityType, status: 'included', addedBy,
+      sourceType, sourceRid: sourceRid ?? '', reason: reason ?? '', addedAt: new Date().toISOString(),
+    }, `emergency:${addedBy}`);
+  }
+
+  // 文档确认后展开：收发文/借阅记录 + 相关单位、人员
+  private async expandDocument(caseRid: string, documentRid: string): Promise<void> {
+    for (const rec of await this.all('DispatchRecord')) {
+      if (rec.properties.documentRid !== documentRid) continue;
+      await this.addRef(caseRid, rec.objectRid, 'DispatchRecord', 'dispatch', rec.objectRid, '文档收发文记录');
+      for (const [field, type] of [['senderOrgRid', 'Organization'], ['receiverOrgRid', 'Organization']] as const) {
+        const rid = rec.properties[field];
+        if (rid) await this.addRef(caseRid, String(rid), type, 'dispatch', rec.objectRid, '收发文相关单位');
+      }
+    }
+    for (const rec of await this.all('BorrowRecord')) {
+      if (rec.properties.documentRid !== documentRid) continue;
+      await this.addRef(caseRid, rec.objectRid, 'BorrowRecord', 'borrow', rec.objectRid, '文档借阅记录');
+      if (rec.properties.orgRid) await this.addRef(caseRid, String(rec.properties.orgRid), 'Organization', 'borrow', rec.objectRid, '借阅单位');
+      if (rec.properties.borrowerRid) await this.addRef(caseRid, String(rec.properties.borrowerRid), 'Employee', 'borrow', rec.objectRid, '借阅人');
+    }
+  }
+
   async listCandidates(caseRid: string): Promise<any[]> {
     const docs = await this.all('Document');
     const docById = new Map(docs.map((d) => [d.objectRid, d.properties]));
@@ -226,12 +257,8 @@ export class EmergencyService {
     const p = cand.properties;
     await this.repo.writeObjectPatch('DocumentCandidate', candidateRid, { status: accept ? 'accepted' : 'rejected' }, 'emergency:expert');
     if (accept) {
-      const refId = `CER-${randomUUID().slice(0, 8)}`;
-      await this.repo.writeObjectPatch('CaseEntityRef', refId, {
-        id: refId, caseRid: p.caseRid, entityRid: p.documentRid, entityType: 'Document',
-        status: 'included', addedBy: 'expert', sourceType: 'search', sourceRid: candidateRid,
-        reason: '专家确认文档候选', confidence: p.matchScore, addedAt: new Date().toISOString(),
-      }, 'emergency:expert');
+      await this.addRef(String(p.caseRid), String(p.documentRid), 'Document', 'search', candidateRid, '专家确认文档候选', 'expert');
+      await this.expandDocument(String(p.caseRid), String(p.documentRid));
     }
   }
 
