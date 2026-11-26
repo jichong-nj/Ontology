@@ -1,5 +1,6 @@
 import type { MetadataRepository } from '@ontology/ontology-core';
 import { objectTypes, linkTypes } from './definitions';
+import { functions as automationFunctions, actions as automationActions, rules as automationRules } from './automations';
 
 export async function ensureEmergencyOntology(repo: MetadataRepository): Promise<void> {
   for (const ot of objectTypes) {
@@ -35,6 +36,31 @@ async function write(repo: MetadataRepository, objectType: string, rid: string, 
 }
 
 // 插入演示数据：文档、收发文、借阅、舆情事件、一个进行中的应急响应
+export async function ensureEmergencyAutomations(repo: MetadataRepository): Promise<void> {
+  for (const fn of automationFunctions) {
+    const existing = await repo.getFunction(fn.apiName);
+    if (!existing) {
+      await repo.createFunction(fn);
+      console.log(`[emergency] 函数已创建: ${fn.apiName}`);
+    } else if (fn.body && existing.body !== fn.body) {
+      await repo.updateFunction(fn.apiName, { body: fn.body });
+      console.log(`[emergency] 函数体已更新: ${fn.apiName}`);
+    }
+  }
+  for (const action of automationActions) {
+    if (!(await repo.getAction(action.apiName))) {
+      await repo.createAction(action);
+      console.log(`[emergency] Action 已创建: ${action.apiName}`);
+    }
+  }
+  for (const rule of automationRules) {
+    if (!(await repo.getRule(rule.apiName))) {
+      await repo.createRule(rule);
+      console.log(`[emergency] Automation 已创建: ${rule.apiName}`);
+    }
+  }
+}
+
 export async function seedEmergencyDemo(repo: MetadataRepository): Promise<void> {
   const orgs = (await repo.listInstances('Organization', { pageSize: 20 })).data;
   const employees = (await repo.listInstances('Employee', { pageSize: 20 })).data;

@@ -59,6 +59,23 @@ export class EmergencyService {
     return d ? { objectRid: d.objectRid, properties: (d.properties ?? {}) as any } : null;
   }
 
+  async createOpinionEvent(payload: Record<string, any>): Promise<any> {
+    const id = String(payload.id ?? `POE-${Date.now()}`);
+    const now = new Date().toISOString();
+    await this.repo.writeObjectPatch('PublicOpinionEvent', id, {
+      id, eventId: String(payload.eventId ?? id), sourceSystem: payload.sourceSystem ?? '舆情监控',
+      websiteName: payload.websiteName ?? '', websiteUrl: payload.websiteUrl ?? '',
+      websiteRegion: payload.websiteRegion ?? '境外', country: payload.country ?? '',
+      accountName: payload.accountName ?? '', accountId: payload.accountId ?? '',
+      publishedAt: payload.publishedAt ?? now.slice(0, 10), title: payload.title ?? '未命名舆情事件',
+      contentText: payload.contentText ?? '', language: payload.language ?? 'zh',
+      keywords: payload.keywords ?? '', classificationLevel: payload.classificationLevel ?? '公开',
+      severity: payload.severity ?? '中', attachments: payload.attachments ?? [],
+      attachmentText: payload.attachmentText ?? '', discoveredAt: now,
+    }, 'sim:opinion');
+    return { id, objectRid: `PublicOpinionEvent:${id}` };
+  }
+
   async listCases(): Promise<CaseSummary[]> {
     const cases = await this.all('EmergencyResponse');
     const vtLinks = await this.links('VerificationTaskCase');

@@ -2785,6 +2785,14 @@ const TOOL_FORMAT_HINT = `
 // ---------- 应急响应 API（Ontology 之上的业务层） ----------
 const emergencyService = new EmergencyService(repo);
 
+app.post('/api/emergency/events', async (req, res) => {
+  try {
+    res.json(await emergencyService.createOpinionEvent(req.body ?? {}));
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 app.get('/api/emergency/cases', async (_req, res) => {
   try {
     res.json(await emergencyService.listCases());
