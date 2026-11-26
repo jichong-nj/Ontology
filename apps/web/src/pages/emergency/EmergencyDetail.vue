@@ -18,6 +18,9 @@ const detail = ref<any>(null);
 const graph = ref<{ nodes: any[]; edges: any[] }>({ nodes: [], edges: [] });
 const candidates = ref<any[]>([]);
 const extracted = ref<any[]>([]);
+const analysis = ref<any>(null);
+const analyzing = ref(false);
+const analysisVisible = ref(false);
 const tasks = ref<any[]>([]);
 const loading = ref(false);
 const selected = ref<any>(null);
@@ -25,6 +28,7 @@ const selectedKind = ref<'node' | 'edge' | null>(null);
 
 const closeVisible = ref(false);
 const closing = ref(false);
+const drafting = ref(false);
 const closeForm = ref({ closureType: 'normal', note: '', finalText: '' });
 
 const typeColors: Record<string, string> = {
@@ -84,10 +88,10 @@ async function load() {
   loading.value = true;
   try {
     const id = caseId.value;
-    const [c, g, cand, t, ex] = await Promise.all([
-      emergency.getCase(id), emergency.graph(id), emergency.candidates(id), emergency.tasks(id), emergency.extracted(id),
+    const [c, g, cand, t, ex, an] = await Promise.all([
+      emergency.getCase(id), emergency.graph(id), emergency.candidates(id), emergency.tasks(id), emergency.extracted(id), emergency.analysis(id),
     ]);
-    detail.value = c; graph.value = g; candidates.value = cand; tasks.value = t; extracted.value = ex;
+    detail.value = c; graph.value = g; candidates.value = cand; tasks.value = t; extracted.value = ex; analysis.value = an;
   } catch (e: any) {
     ElMessage.error(e.message || '加载失败');
   } finally { loading.value = false; }
@@ -136,6 +140,45 @@ async function submit(t: any) {
   ElMessage.success('已提交');
   await load();
 }
+async function startInspection() {
+  const orgRid = selected.value?.id;
+  const { value } = await ElMessageBox.prompt('检查原因', '发起检查', {
+    inputType: 'textarea', inputPlaceholder: '说明为什么检查该单位', confirmButtonText: '发起',
+  });
+  await emergency.createInspection(orgRid ? caseId.value : caseId.value, {
+    orgRid, documentRids: [], reason: value ?? '',
+  });
+  ElMessage.success('检查任务已创建');
+  await load();
+}
+async function runAnalysis() {
+  analyzing.value = true;
+  try {
+    await emergency.analyze(caseId.value);
+    ELMessageReload();
+  } catch (e: any) { ElMessage.error(e.message || 'AI 研判失败'); }
+  finally { analyzing.value = false; }
+}
+function ELMessageReload() { ElMessage.success('AI 研判完成'); analysisVisible.value = true; load(); }
+async function applyAnalysis() {
+  if (!analysis.value?.id) return;
+  await emergency.applyAnalysis(analysis.value.id);
+  ElMessage.success('已应用到数据池');
+  analysisVisible.value = false;
+  await load();
+}
+function targetLabel(rid: string) {
+  return graph.value.nodes.find((n) => n.id === rid)?.label ?? rid;
+}
+async function makeDraft() {
+  drafting.value = true;
+  try {
+    const r = await emergency.closureDraft(caseId.value);
+    closeForm.value.finalText = r.text || '';
+    ElMessage.success('AI 草稿已生成');
+  } catch (e: any) { ElMessage.error(e.message || '生成失败'); }
+  finally { drafting.value = false; }
+}
 async function closeCase() {
   closing.value = true;
   try {
@@ -180,6 +223,15 @@ onMounted(load);
       <div class="graph-wrap">
         <VChart :option="option" autoresize class="graph" @click="onChartClick" />
         <div class="legend-hint">点击节点/关系查看详情；滚轮缩放、拖拽平移</div>
+        <div class="ai-card">
+          <div class="ai-head">🤖 AI 研判</div>
+          <div v-if="analysis" class="ai-summary">{{ analysis.summary }}</div>
+          <div v-else class="ai-summary muted">还没有研判结果</div>
+          <div class="ai-ops">
+            <el-button size="small" :loading="analyzing" @click="runAnalysis">{{ analysis ? '重新生成' : '开始研判' }}</el-button>
+            <el-button v-if="analysis" size="small" type="primary" @click="analysisVisible = true">查看报告</el-button>
+          </div>
+        </div>
       </div>
 
       <aside class="side">
@@ -190,6 +242,7 @@ onMounted(load);
           </div>
           <div class="side-type">{{ selectedKind === 'node' ? selected.type : `关系：${selected.linkType}` }}</div>
           <template v-if="selectedKind === 'node'">
+            <el-button v-if="selected.type === 'Organization'" size="small" type="danger" style="margin-bottom: 8px" @click="startInspection">发起检查</el-button>
             <div v-for="(v, k) in selected.properties" :key="k" class="prop-row">
               <span class="prop-key">{{ k }}</span><span class="prop-val">{{ fmt(v) }}</span>
             </div>
@@ -248,6 +301,29 @@ onMounted(load);
       </aside>
     </div>
 
+    <el-dialog v-model="analysisVisible" title="AI 研判报告" width="680px">
+      <template v-if="analysis">
+        <h4>结论</h4>
+        <p class="ai-text">{{ analysis.summary }}</p>
+        <h4>风险目标</h4>
+        <div v-if="!analysis.findings?.length" class="muted">暂无风险目标</div>
+        <div v-for="f in analysis.findings" :key="f.id" class="finding">
+          <div class="finding-head">
+            <b>{{ targetLabel(f.targetRid) }}</b>
+            <el-tag size="small" :type="f.level === 'high' ? 'danger' : f.level === 'medium' ? 'warning' : 'info'">
+              {{ f.score }} 分
+            </el-tag>
+          </div>
+          <ul><li v-for="(r, i) in f.reasons" :key="i">{{ r }}</li></ul>
+        </div>
+      </template>
+      <template #footer>
+        <el-button @click="analysisVisible = false">关闭</el-button>
+        <el-button :loading="analyzing" @click="runAnalysis">重新生成</el-button>
+        <el-button type="primary" @click="applyAnalysis">一键刷新到数据池</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="closeVisible" title="结束应急响应" width="560px">
       <el-form label-width="90px">
         <el-form-item label="结案类型">
@@ -258,7 +334,10 @@ onMounted(load);
           </el-select>
         </el-form-item>
         <el-form-item label="备注"><el-input v-model="closeForm.note" type="textarea" :rows="2" /></el-form-item>
-        <el-form-item label="结案报告"><el-input v-model="closeForm.finalText" type="textarea" :rows="5" placeholder="AI 草稿将在这里生成（后续接入），可先手填" /></el-form-item>
+        <el-form-item label="结案报告">
+          <el-input v-model="closeForm.finalText" type="textarea" :rows="6" placeholder="可手动填写，或点击下方生成 AI 草稿" />
+          <el-button size="small" style="margin-top: 6px" :loading="drafting" @click="makeDraft">AI 生成草稿</el-button>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="closeVisible = false">取消</el-button>
@@ -279,6 +358,14 @@ onMounted(load);
 .graph-wrap { flex: 1; border: 1px solid #ebeef5; border-radius: 8px; position: relative; min-width: 0; background: #fff; }
 .graph { width: 100%; height: 100%; min-height: 560px; }
 .legend-hint { position: absolute; left: 12px; top: 8px; color: #909399; font-size: 12px; }
+.ai-card { position: absolute; right: 12px; top: 12px; width: 260px; background: #fff; border: 1px solid #e4e7ed; border-radius: 8px; padding: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+.ai-head { font-weight: 600; margin-bottom: 6px; }
+.ai-summary { font-size: 12px; color: #606266; line-height: 1.5; max-height: 90px; overflow: hidden; }
+.ai-ops { margin-top: 8px; display: flex; gap: 6px; }
+.ai-text { font-size: 13px; line-height: 1.7; color: #303133; }
+.finding { border: 1px solid #f0f0f0; border-radius: 6px; padding: 8px; margin-top: 8px; }
+.finding-head { display: flex; justify-content: space-between; align-items: center; }
+.finding ul { margin: 6px 0 0; padding-left: 18px; color: #606266; font-size: 12px; }
 .side { width: 340px; border: 1px solid #ebeef5; border-radius: 8px; padding: 12px; overflow-y: auto; background: #fff; }
 .side-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .side-type { color: #909399; font-size: 12px; margin-bottom: 8px; }

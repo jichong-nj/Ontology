@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { MetadataRepository } from '@ontology/ontology-core';
-import { extractFromText } from './ai';
+import { extractFromText, analyzeCaseText, generateClosureDraftText } from './ai';
 
 export interface GraphNode {
   id: string;
@@ -276,6 +276,25 @@ export class EmergencyService {
     return out.sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')));
   }
 
+  async createInspectionTask(caseRid: string, payload: { orgRid: string; documentRids?: string[]; reason?: string }): Promise<any> {
+    if (!payload?.orgRid) throw new Error('缺少单位');
+    const id = `IT-${randomUUID().slice(0, 8)}`;
+    const now = new Date().toISOString();
+    await this.repo.writeObjectPatch('InspectionTask', id, {
+      id, caseRid, orgRid: payload.orgRid, documentRids: payload.documentRids ?? [],
+      status: 'pending', reason: payload.reason ?? '专家发起检查', source: 'expert', createdAt: now,
+    }, 'emergency:expert');
+    await this.repo.createLinkInstance('InspectionTaskCase', `InspectionTask:${id}`, caseRid);
+    await this.repo.createLinkInstance('InspectionTaskOrg', `InspectionTask:${id}`, payload.orgRid);
+    for (const doc of payload.documentRids ?? []) {
+      await this.repo.createLinkInstance('InspectionTaskDocument', `InspectionTask:${id}`, doc);
+    }
+    await this.repo.createNotification({
+      title: '新的检查任务', body: payload.reason ?? '专家发起检查', level: 'info', source: 'emergency:expert',
+    });
+    return { id, objectRid: `InspectionTask:${id}` };
+  }
+
   async listInbox(type: 'verification' | 'inspection'): Promise<any[]> {
     const taskType = type === 'verification' ? 'VerificationTask' : 'InspectionTask';
     const tasks = await this.all(taskType);
@@ -316,6 +335,7 @@ export class EmergencyService {
       await this.repo.createLinkInstance('VerificationResponseTask', `VerificationResponse:${id}`, taskRid);
       await this.repo.writeObjectPatch(type, taskRid, { status: 'submitted', submittedAt: now }, 'sim:unit');
       await this.extractResponse(`VerificationResponse:${id}`).catch(() => {});
+      await this.analyzeCase(String(p.caseRid ?? '')).catch(() => {});
       return { id, type: 'VerificationResponse' };
     }
     const id = `IR-${randomUUID().slice(0, 8)}`;
@@ -326,6 +346,7 @@ export class EmergencyService {
     await this.repo.createLinkInstance('InspectionReportTask', `InspectionReport:${id}`, taskRid);
     await this.repo.writeObjectPatch(type, taskRid, { status: 'submitted', submittedAt: now }, 'sim:inspector');
     await this.extractResponse(`InspectionReport:${id}`).catch(() => {});
+    await this.analyzeCase(String(p.caseRid ?? '')).catch(() => {});
     return { id, type: 'InspectionReport' };
   }
 
@@ -377,6 +398,76 @@ export class EmergencyService {
       await this.repo.writeObjectPatch('ExtractedEntity', full, { matchedEntityRid: hit.objectRid }, 'emergency:expert');
       await this.addRef(String(p.caseRid), hit.objectRid, type, 'response', full, `AI抽取：${name}`, 'ai');
     }
+  }
+
+  async analyzeCase(caseRid: string): Promise<any> {
+    if (!caseRid) throw new Error('缺少案件');
+    const graph = await this.getGraph(caseRid);
+    const tasks = await this.listTasks(caseRid);
+    const extracted = await this.listExtracted(caseRid);
+    const context = {
+      case: graph.nodes.find((n) => n.type === 'EmergencyResponse')?.properties ?? {},
+      entities: graph.nodes.filter((n) => n.type !== 'EmergencyResponse').map((n) => ({ type: n.type, label: n.label, properties: n.properties })),
+      tasks: tasks.map((t) => ({ type: t.taskType, org: t.orgRid, status: t.status, reason: t.reason })),
+      extracted: extracted.map((e) => ({ type: e.entityType, value: e.value, status: e.status })),
+    };
+    const result = await analyzeCaseText(JSON.stringify(context));
+    const analysisId = `AR-${randomUUID().slice(0, 8)}`;
+    await this.repo.writeObjectPatch('AnalysisRun', analysisId, {
+      id: analysisId, caseRid, scopeSnapshot: { nodeRids: graph.nodes.map((n) => n.id) },
+      summary: result.summary, model: 'local-provider', createdAt: new Date().toISOString(),
+    }, 'ai:analyze');
+
+    const findings: any[] = [];
+    for (const rt of result.riskTargets) {
+      const type = rt.targetType === 'employee' ? 'Employee' : 'Organization';
+      const hit = graph.nodes.find((n) => n.type === type && (n.label === rt.name || n.label.includes(rt.name) || rt.name.includes(n.label)));
+      if (!hit) continue;
+      const id = `RF-${randomUUID().slice(0, 8)}`;
+      await this.repo.writeObjectPatch('RiskFinding', id, {
+        id, analysisId, targetRid: hit.id, targetType: type, score: rt.score,
+        level: rt.score >= 80 ? 'high' : rt.score >= 50 ? 'medium' : 'low',
+        reasons: rt.reasons, evidenceRids: [], status: 'suggested', createdAt: new Date().toISOString(),
+      }, 'ai:analyze');
+      findings.push({ id, targetRid: hit.id, targetType: type, score: rt.score, reasons: rt.reasons });
+    }
+    return { analysisId, summary: result.summary, suggestedActions: result.suggestedActions, findings };
+  }
+
+  async latestAnalysis(caseRid: string): Promise<any | null> {
+    const runs = (await this.all('AnalysisRun')).filter((r) => r.properties.caseRid === caseRid)
+      .sort((a, b) => String(b.properties.createdAt ?? '').localeCompare(String(a.properties.createdAt ?? '')));
+    if (!runs.length) return null;
+    const run = runs[0];
+    const findings = (await this.all('RiskFinding')).filter((f) => f.properties.analysisId === run.properties.id);
+    return { ...run.properties, findings: findings.map((f) => ({ ...f.properties, objectRid: f.objectRid })) };
+  }
+
+  async applyAnalysis(analysisId: string): Promise<void> {
+    const run = await this.instance('AnalysisRun', analysisId);
+    const caseRid = String(run?.properties.caseRid ?? '');
+    const findings = (await this.all('RiskFinding')).filter((f) => f.properties.analysisId === analysisId);
+    for (const f of findings) {
+      const p = f.properties;
+      await this.repo.writeObjectPatch('RiskFinding', f.objectRid, { status: 'confirmed' }, 'emergency:expert');
+      if (caseRid && p.targetRid) await this.addRef(caseRid, String(p.targetRid), String(p.targetType ?? 'Organization'), 'analysis', analysisId, 'AI 研判确认', 'ai');
+    }
+  }
+
+  async generateClosureDraft(caseRid: string): Promise<{ text: string }> {
+    const c = await this.instance('EmergencyResponse', caseRid);
+    if (!c) throw new Error('案件不存在');
+    const tasks = await this.listTasks(caseRid);
+    const analysis = await this.latestAnalysis(caseRid);
+    const graph = await this.getGraph(caseRid);
+    const context = {
+      case: c.properties,
+      analysis: analysis ? { summary: analysis.summary, findings: analysis.findings } : null,
+      tasks: tasks.map((t) => ({ type: t.taskType, org: t.orgRid, status: t.status, reason: t.reason })),
+      entities: graph.nodes.filter((n) => ['Organization', 'Employee', 'Document'].includes(n.type)).map((n) => ({ type: n.type, label: n.label })),
+    };
+    const text = await generateClosureDraftText(JSON.stringify(context));
+    return { text };
   }
 
   async closeCase(caseRid: string, payload: { note?: string; closureType?: string; finalText?: string; attachments?: unknown[] }): Promise<any> {
