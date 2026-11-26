@@ -2904,6 +2904,24 @@ app.post('/api/emergency/analysis/:id/apply', async (req, res) => {
   }
 });
 
+app.post('/api/emergency/cases/:id/ref-status', async (req, res) => {
+  try {
+    const { entityRid, status } = req.body ?? {};
+    await emergencyService.setRefStatus(req.params.id, String(entityRid ?? ''), String(status ?? ''));
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/emergency/cases/:id/manual-entity', async (req, res) => {
+  try {
+    res.json(await emergencyService.addManualEntity(req.params.id, req.body ?? {}));
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 app.post('/api/emergency/cases/:id/inspection-task', async (req, res) => {
   try {
     res.json(await emergencyService.createInspectionTask(req.params.id, req.body ?? {}));

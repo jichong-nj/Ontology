@@ -21,6 +21,8 @@ const extracted = ref<any[]>([]);
 const analysis = ref<any>(null);
 const analyzing = ref(false);
 const analysisVisible = ref(false);
+const manualVisible = ref(false);
+const manualForm = ref({ entityType: 'Organization', name: '' });
 const tasks = ref<any[]>([]);
 const loading = ref(false);
 const selected = ref<any>(null);
@@ -140,6 +142,26 @@ async function submit(t: any) {
   ElMessage.success('已提交');
   await load();
 }
+async function excludeSelected() {
+  if (!selected.value) return;
+  await emergency.setRefStatus(caseId.value, selected.value.id, 'cleared');
+  ElMessage.success('已排除');
+  selected.value = null; selectedKind.value = null;
+  await load();
+}
+async function restoreRef(r: any) {
+  await emergency.setRefStatus(caseId.value, r.entityRid, 'included');
+  ElMessage.success('已恢复');
+  await load();
+}
+async function addManual() {
+  if (!manualForm.value.name.trim()) return ElMessage.warning('请填写名称');
+  await emergency.addManualEntity(caseId.value, manualForm.value);
+  ElMessage.success('已添加并进入数据池');
+  manualVisible.value = false;
+  manualForm.value.name = '';
+  await load();
+}
 async function startInspection() {
   const orgRid = selected.value?.id;
   const { value } = await ElMessageBox.prompt('检查原因', '发起检查', {
@@ -215,6 +237,7 @@ onMounted(load);
       </div>
       <div class="actions">
         <el-button @click="load">刷新</el-button>
+        <el-button @click="manualVisible = true">手工添加</el-button>
         <el-button type="danger" :disabled="detail?.status === 'closed'" @click="closeVisible = true">结束应急响应</el-button>
       </div>
     </div>
@@ -243,6 +266,7 @@ onMounted(load);
           <div class="side-type">{{ selectedKind === 'node' ? selected.type : `关系：${selected.linkType}` }}</div>
           <template v-if="selectedKind === 'node'">
             <el-button v-if="selected.type === 'Organization'" size="small" type="danger" style="margin-bottom: 8px" @click="startInspection">发起检查</el-button>
+            <el-button v-if="['Organization','Employee'].includes(selected.type)" size="small" style="margin-bottom: 8px" @click="excludeSelected">排除</el-button>
             <div v-for="(v, k) in selected.properties" :key="k" class="prop-row">
               <span class="prop-key">{{ k }}</span><span class="prop-val">{{ fmt(v) }}</span>
             </div>
@@ -287,6 +311,16 @@ onMounted(load);
         </div>
 
         <div class="side-section">
+          <div class="side-head"><b>已排除</b></div>
+          <div v-if="!(detail?.refs ?? []).filter((r: any) => ['cleared','excluded'].includes(r.status)).length" class="muted">暂无</div>
+          <div v-for="r in (detail?.refs ?? []).filter((r: any) => ['cleared','excluded'].includes(r.status))" :key="r.id" class="task">
+            <div class="task-title">{{ r.entityRid }}</div>
+            <div class="task-meta">{{ r.status }} · {{ r.reason }}</div>
+            <el-button size="small" style="margin-top: 4px" @click="restoreRef(r)">恢复</el-button>
+          </div>
+        </div>
+
+        <div class="side-section">
           <div class="side-head"><b>处置任务</b></div>
           <div v-if="!tasks.length" class="muted">暂无任务</div>
           <div v-for="t in tasks" :key="t.objectRid" class="task">
@@ -321,6 +355,23 @@ onMounted(load);
         <el-button @click="analysisVisible = false">关闭</el-button>
         <el-button :loading="analyzing" @click="runAnalysis">重新生成</el-button>
         <el-button type="primary" @click="applyAnalysis">一键刷新到数据池</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="manualVisible" title="手工添加实体" width="480px">
+      <el-form label-width="90px">
+        <el-form-item label="类型">
+          <el-select v-model="manualForm.entityType" style="width: 180px">
+            <el-option label="单位 Organization" value="Organization" />
+            <el-option label="人员 Employee" value="Employee" />
+            <el-option label="文档 Document" value="Document" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="名称"><el-input v-model="manualForm.name" placeholder="单位/人员/文档名称" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="manualVisible = false">取消</el-button>
+        <el-button type="primary" @click="addManual">添加</el-button>
       </template>
     </el-dialog>
 

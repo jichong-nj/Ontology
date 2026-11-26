@@ -120,10 +120,18 @@ export class EmergencyService {
   async getGraph(caseRid: string): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
     const nodes = new Map<string, GraphNode>();
     const edges = new Map<string, GraphEdge>();
+    const excluded = new Set<string>();
+    for (const r of await this.all('CaseEntityRef')) {
+      if (String(r.properties.caseRid) === caseRid && ['cleared', 'excluded'].includes(String(r.properties.status))) {
+        excluded.add(String(r.properties.entityRid));
+      }
+    }
     const addNode = (rid: string, type: string, props: Record<string, any>, caseStatus?: string) => {
+      if (excluded.has(rid)) return;
       if (!nodes.has(rid)) nodes.set(rid, { id: rid, type, label: labelOf(type, props, rid), properties: props, caseStatus });
     };
     const addEdge = (source: string, target: string, label: string, linkType: string, recordRid?: string) => {
+      if (excluded.has(source) || excluded.has(target)) return;
       const id = `${linkType}:${source}->${target}`;
       if (!edges.has(id)) edges.set(id, { id, source, target, label, linkType, recordRid });
     };
@@ -152,6 +160,7 @@ export class EmergencyService {
     for (const r of refs) {
       const { entityRid, entityType, status } = r.properties as any;
       if (!entityRid) continue;
+      if (status === 'cleared' || status === 'excluded') continue;
       await addEntity(String(entityRid), String(entityType ?? String(entityRid).split(':')[0]));
       addEdge(caseRid, String(entityRid), `纳入(${status ?? 'included'})`, 'CaseEntityRef');
     }
@@ -276,6 +285,25 @@ export class EmergencyService {
     return out.sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')));
   }
 
+  async addManualEntity(caseRid: string, payload: { entityType: string; name: string; extra?: Record<string, unknown> }): Promise<any> {
+    const type = String(payload.entityType ?? '');
+    if (!['Organization', 'Employee', 'Document'].includes(type)) throw new Error('只支持 Organization/Employee/Document');
+    if (!payload.name?.trim()) throw new Error('名称必填');
+    const id = `MAN-${randomUUID().slice(0, 8)}`;
+    const now = new Date().toISOString();
+    const base: Record<string, unknown> = {
+      id, sourceType: 'manual', createdBy: 'expert', originCaseId: caseRid, createdAt: now,
+    };
+    if (type === 'Document') Object.assign(base, { title: payload.name, docNo: '', classificationLevel: '内部' });
+    else if (type === 'Organization') Object.assign(base, { name: payload.name, code: id, orgType: '外部', status: 'active' });
+    else Object.assign(base, { name: payload.name });
+    if (type === 'Employee') Object.assign(base, { empCode: id, departmentId: 0, status: 'active' });
+    Object.assign(base, payload.extra ?? {});
+    await this.repo.writeObjectPatch(type, id, base, 'emergency:expert');
+    await this.addRef(caseRid, `${type}:${id}`, type, 'manual', id, '专家手工添加', 'expert');
+    return { id, objectRid: `${type}:${id}` };
+  }
+
   async createInspectionTask(caseRid: string, payload: { orgRid: string; documentRids?: string[]; reason?: string }): Promise<any> {
     if (!payload?.orgRid) throw new Error('缺少单位');
     const id = `IT-${randomUUID().slice(0, 8)}`;
@@ -398,6 +426,16 @@ export class EmergencyService {
       await this.repo.writeObjectPatch('ExtractedEntity', full, { matchedEntityRid: hit.objectRid }, 'emergency:expert');
       await this.addRef(String(p.caseRid), hit.objectRid, type, 'response', full, `AI抽取：${name}`, 'ai');
     }
+  }
+
+  async setRefStatus(caseRid: string, entityRid: string, status: string): Promise<void> {
+    if (!['included', 'cleared', 'excluded', 'watch'].includes(status)) throw new Error('非法状态');
+    const refs = await this.all('CaseEntityRef');
+    const ref = refs.find((r) => r.properties.caseRid === caseRid && r.properties.entityRid === entityRid);
+    if (!ref) throw new Error('该实体不在案件数据池中');
+    await this.repo.writeObjectPatch('CaseEntityRef', ref.objectRid, {
+      status, decidedBy: 'expert', decidedAt: new Date().toISOString(),
+    }, 'emergency:expert');
   }
 
   async analyzeCase(caseRid: string): Promise<any> {

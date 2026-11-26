@@ -564,6 +564,8 @@ export const emergency = {
   closureDraft: (id: string) => http.post<{ text: string }>(`/emergency/cases/${encodeURIComponent(id)}/closure-draft`).then((r) => r.data),
   closeCase: (id: string, body: any) => http.post(`/emergency/cases/${encodeURIComponent(id)}/close`, body).then((r) => r.data),
   createEvent: (body: any) => http.post('/emergency/events', body).then((r) => r.data),
+  setRefStatus: (id: string, body: any) => http.post(`/emergency/cases/${encodeURIComponent(id)}/ref-status`, body).then((r) => r.data),
+  addManualEntity: (id: string, body: any) => http.post(`/emergency/cases/${encodeURIComponent(id)}/manual-entity`, body).then((r) => r.data),
   createInspection: (id: string, body: any) => http.post(`/emergency/cases/${encodeURIComponent(id)}/inspection-task`, body).then((r) => r.data),
   analysis: (id: string) => http.get<any>(`/emergency/cases/${encodeURIComponent(id)}/analysis`).then((r) => r.data),
   analyze: (id: string) => http.post(`/emergency/cases/${encodeURIComponent(id)}/analyze`).then((r) => r.data),
