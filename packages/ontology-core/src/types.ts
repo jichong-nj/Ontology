@@ -377,9 +377,16 @@ export interface MetadataRepository {
   aggregateQuery(objectType: string, opts: AggregateQueryOptions): Promise<AggregateQueryRow[]>;
   createAutomationRun(run: AutomationRun): Promise<void>;
   finishAutomationRun(id: string, patch: Partial<AutomationRun>): Promise<void>;
-  listAutomationRuns(opts?: { automationApiName?: string; limit?: number; offset?: number }): Promise<AutomationRun[]>;
+  listAutomationRuns(opts?: { automationApiName?: string; status?: string; triggerKind?: string; limit?: number; offset?: number }): Promise<AutomationRun[]>;
   getAutomationRun(id: string): Promise<AutomationRun | null>;
   createNotification(n: NotificationItem): Promise<void>;
+  createStagedEffect(input: {
+    automationApiName: string; runId?: string; effect: AutomationEffect;
+    flagged: Array<Record<string, unknown>>;
+  }): Promise<StagedEffect>;
+  listStagedEffects(status?: string): Promise<StagedEffect[]>;
+  getStagedEffect(id: string): Promise<StagedEffect | null>;
+  finishStagedEffect(id: string, status: 'approved' | 'rejected'): Promise<void>;
   listNotifications(limit?: number): Promise<NotificationItem[]>;
   searchAround(objectType: string, opts: {
     rids?: string[]; filter?: InstanceFilter[]; linkType: string; direction: 'source' | 'target';
@@ -461,6 +468,8 @@ export type RuleCondition =
 export interface AutomationEffectOptions {
   retry?: { maxAttempts: number; backoffMs?: number };
   fallback?: AutomationEffect;
+  // 暂存执行：不立即生效，等人工审批
+  staging?: boolean;
 }
 
 export type AutomationEffect =
@@ -471,6 +480,8 @@ export type AutomationEffect =
 
 export interface AutomationExecution {
   mode?: 'sequential' | 'parallel';
+  // 整个 automation 的 effect 默认暂存
+  staging?: boolean;
   maxRetries?: number;
   timeoutMs?: number;
   chainDepthLimit?: number;
@@ -501,6 +512,17 @@ export interface AutomationRun {
   startedAt: string;
   finishedAt?: string;
   durationMs?: number;
+}
+
+export interface StagedEffect {
+  id: string;
+  automationApiName: string;
+  runId?: string;
+  effect: AutomationEffect;
+  flagged: Array<Record<string, unknown>>;
+  status: 'pending' | 'approved' | 'rejected';
+  createdAt: string;
+  decidedAt?: string;
 }
 
 export interface NotificationItem {

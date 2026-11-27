@@ -315,6 +315,17 @@ export class RuleScheduler {
     chain: AutomationContext,
   ): Promise<AutomationEffectResult> {
     const started = Date.now();
+    // 暂存执行：不立即生效，等人工审批
+    if (rule.execution?.staging || (effect as any).staging) {
+      const staged = await this.repo.createStagedEffect({
+        automationApiName: rule.apiName, runId, effect,
+        flagged: flagged as unknown as Array<Record<string, unknown>>,
+      });
+      return {
+        kind: effect.kind, ref: this.effectRef(effect), ok: true, attempts: 0,
+        durationMs: Date.now() - started, result: { staged: true, stagedId: staged.id },
+      };
+    }
     const maxAttempts = Math.max(1, effect.retry?.maxAttempts ?? rule.execution?.maxRetries ?? 1);
     let lastError: string | undefined;
     let attempts = 0;
@@ -503,6 +514,24 @@ export class RuleScheduler {
   ): Promise<RuleEvaluationResult[]> {
     await this.dispatchObjectWrite(objectType, objectRid, patch, chain);
     return [];
+  }
+
+  // 审批暂存 effect：按原 automation/flagged 执行
+  async approveStagedEffect(id: string): Promise<unknown> {
+    const staged = await this.repo.getStagedEffect(id);
+    if (!staged) throw new Error('暂存记录不存在');
+    if (staged.status !== 'pending') throw new Error('该记录已处理');
+    const rule = await this.repo.getRule(staged.automationApiName);
+    if (!rule) throw new Error('原 automation 不存在');
+    const base: RuleEvaluationResult = {
+      rule: rule.apiName, trigger: rule.trigger.kind, ran: false,
+      flaggedCount: staged.flagged.length, actionsInvoked: 0, skippedByPrecondition: 0,
+    };
+    const result = await this.performEffect(
+      rule, staged.effect, staged.flagged as unknown as FlaggedItem[], staged.runId ?? '', base,
+    );
+    await this.repo.finishStagedEffect(id, 'approved');
+    return result;
   }
 
   // 手动触发所有规则（API 调用）

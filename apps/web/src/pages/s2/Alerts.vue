@@ -79,6 +79,7 @@ const form = reactive({
   timeoutMs: 15000,
   cooldownSeconds: 0,
   chainDepthLimit: 5,
+  staging: false,
   description: '',
   targetObjectType: 'Alert',
   // 参数有两种编辑视图：结构化表单(paramsForm) 与 高级 JSON(paramsText)，双向同步
@@ -207,19 +208,54 @@ const runsVisible = ref(false);
 const runsTitle = ref('');
 const runs = ref<any[]>([]);
 const runsLoading = ref(false);
+const runsApiName = ref('');
+const runStatus = ref('');
+const runTriggerKind = ref('');
 
-async function openRuns(r: RuleItem) {
-  runsTitle.value = `运行历史 · ${r.apiName}`;
-  runsVisible.value = true;
+async function loadRuns() {
+  if (!runsApiName.value) return;
   runsLoading.value = true;
   try {
-    runs.value = await s2.listAutomationRuns(r.apiName, 100);
+    runs.value = await s2.listAutomationRuns(runsApiName.value, {
+      limit: 100, status: runStatus.value || undefined, triggerKind: runTriggerKind.value || undefined,
+    });
   } catch (e: any) {
     ElMessage.error(e.message || '加载运行历史失败');
     runs.value = [];
   } finally {
     runsLoading.value = false;
   }
+}
+
+const stagedVisible = ref(false);
+const staged = ref<any[]>([]);
+const stagedLoading = ref(false);
+
+async function openStaged() {
+  stagedVisible.value = true;
+  stagedLoading.value = true;
+  try { staged.value = await s2.listStagedEffects('pending'); }
+  catch (e: any) { ElMessage.error(e.message || '加载待审批失败'); staged.value = []; }
+  finally { stagedLoading.value = false; }
+}
+async function approveStaged(row: any) {
+  await s2.approveStagedEffect(row.id);
+  ElMessage.success('已审批执行');
+  await openStaged();
+}
+async function rejectStaged(row: any) {
+  await s2.rejectStagedEffect(row.id);
+  ElMessage.success('已拒绝');
+  await openStaged();
+}
+
+async function openRuns(r: RuleItem) {
+  runsTitle.value = `运行历史 · ${r.apiName}`;
+  runsApiName.value = r.apiName;
+  runStatus.value = '';
+  runTriggerKind.value = '';
+  runsVisible.value = true;
+  await loadRuns();
 }
 function fmtRunTime(v?: string): string {
   if (!v) return '—';
@@ -350,6 +386,7 @@ function openCreate() {
     timeoutMs: 15000,
     cooldownSeconds: 0,
     chainDepthLimit: 5,
+    staging: false,
     description: '',
     targetObjectType: 'Alert',
     paramsText: '{\n  "threshold": 0.8\n}',
@@ -385,6 +422,7 @@ async function openEdit(rule: RuleItem) {
     timeoutMs: rule.execution?.timeoutMs ?? 15000,
     cooldownSeconds: rule.execution?.cooldownSeconds ?? 0,
     chainDepthLimit: rule.execution?.chainDepthLimit ?? 5,
+    staging: rule.execution?.staging ?? false,
     description: rule.description ?? '',
     targetObjectType: rule.targetObjectType,
     paramsText: JSON.stringify(rule.params ?? {}, null, 2),
@@ -440,7 +478,7 @@ async function save() {
         condition: conditionPayload(),
         ...(condKind.value === 'function' ? { conditionFunction: form.conditionFunction } : { conditionFunction: null }),
         effects: effectsPayload(),
-        execution: { mode: form.execMode, maxRetries: Number(form.maxRetries), timeoutMs: Number(form.timeoutMs), cooldownSeconds: Number(form.cooldownSeconds), chainDepthLimit: Number(form.chainDepthLimit) },
+        execution: { mode: form.execMode, maxRetries: Number(form.maxRetries), timeoutMs: Number(form.timeoutMs), cooldownSeconds: Number(form.cooldownSeconds), chainDepthLimit: Number(form.chainDepthLimit), staging: form.staging },
         description: form.description,
         actionApiName: form.effects.find((e: any) => e.kind === 'action')?.actionApiName ?? null,
         targetObjectType: form.targetObjectType,
@@ -457,7 +495,7 @@ async function save() {
           ? { conditionFunction: form.conditionFunction }
           : { condition: conditionPayload() }),
         effects: effectsPayload(),
-        execution: { mode: form.execMode, maxRetries: Number(form.maxRetries), timeoutMs: Number(form.timeoutMs), cooldownSeconds: Number(form.cooldownSeconds), chainDepthLimit: Number(form.chainDepthLimit) },
+        execution: { mode: form.execMode, maxRetries: Number(form.maxRetries), timeoutMs: Number(form.timeoutMs), cooldownSeconds: Number(form.cooldownSeconds), chainDepthLimit: Number(form.chainDepthLimit), staging: form.staging },
         description: form.description,
         actionApiName: form.effects.find((e: any) => e.kind === 'action')?.actionApiName ?? null,
         targetObjectType: form.targetObjectType,
@@ -530,6 +568,7 @@ onMounted(load);
       </div>
       <div class="page-actions">
         <ElButton :loading="loading" @click="load"><ElIcon><Refresh /></ElIcon> 刷新</ElButton>
+        <ElButton @click="openStaged">待审批</ElButton>
         <ElButton type="warning" :loading="running" @click="runRules">运行全部规则</ElButton>
         <ElButton type="primary" @click="openCreate"><ElIcon><Plus /></ElIcon> 新建 Automation</ElButton>
       </div>
@@ -723,6 +762,7 @@ onMounted(load);
           <ElInput v-model.number="form.cooldownSeconds" type="number" style="width: 80px" />
           <span class="hint" style="margin: 0 6px">链深</span>
           <ElInput v-model.number="form.chainDepthLimit" type="number" style="width: 70px" />
+          <ElCheckbox v-model="form.staging" style="margin-left: 10px">暂存执行（人工审批）</ElCheckbox>
         </ElFormItem>
 
         <!-- 条件参数：可视化结构化表单（仅函数条件需要） -->
@@ -801,8 +841,40 @@ onMounted(load);
     </ElDialog>
   </div>
 
+    <!-- 暂存执行待审批 -->
+    <ElDialog v-model="stagedVisible" title="待审批的暂存执行" width="760px">
+      <ElTable :data="staged" v-loading="stagedLoading" size="small" border max-height="400">
+        <ElTableColumn prop="automationApiName" label="Automation" min-width="180" />
+        <ElTableColumn label="Effect" min-width="160">
+          <template #default="{ row }">{{ row.effect?.kind }} · {{ row.effect?.actionApiName || row.effect?.function || row.effect?.title || row.effect?.url || '' }}</template>
+        </ElTableColumn>
+        <ElTableColumn prop="createdAt" label="创建时间" width="180">
+          <template #default="{ row }">{{ fmtRunTime(row.createdAt) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="操作" width="170">
+          <template #default="{ row }">
+            <ElButton size="small" type="primary" @click="approveStaged(row)">通过并执行</ElButton>
+            <ElButton size="small" @click="rejectStaged(row)">拒绝</ElButton>
+          </template>
+        </ElTableColumn>
+      </ElTable>
+      <template #footer><ElButton @click="stagedVisible = false">关闭</ElButton></template>
+    </ElDialog>
+
     <!-- 运行历史 -->
     <ElDialog v-model="runsVisible" :title="runsTitle" width="960px">
+      <div class="run-filters">
+        <ElSelect v-model="runStatus" clearable placeholder="全部状态" style="width: 130px" @change="loadRuns">
+          <ElOption label="succeeded" value="succeeded" />
+          <ElOption label="partial" value="partial" />
+          <ElOption label="failed" value="failed" />
+          <ElOption label="skipped" value="skipped" />
+        </ElSelect>
+        <ElSelect v-model="runTriggerKind" clearable placeholder="全部触发" style="width: 130px" @change="loadRuns">
+          <ElOption label="schedule" value="schedule" />
+          <ElOption label="event" value="event" />
+        </ElSelect>
+      </div>
       <ElTable :data="runs" v-loading="runsLoading" size="small" border max-height="420">
         <ElTableColumn label="开始时间" width="180"><template #default="{ row }">{{ fmtRunTime(row.startedAt) }}</template></ElTableColumn>
         <ElTableColumn label="状态" width="110">
@@ -861,6 +933,7 @@ onMounted(load);
 .param-cell { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .param-tag { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
 .param-more { font-family: var(--font-mono); }
+.run-filters { display: flex; gap: 8px; margin-bottom: 10px; }
 .params-view {
   margin: 0; padding: 10px 12px;
   background: #f6f8fa; border: 1px solid #e5e7eb; border-radius: 6px;

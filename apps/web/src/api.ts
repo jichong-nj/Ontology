@@ -293,9 +293,13 @@ export const s2 = {
   createAutomation: (def: any) => http.post('/s2/automations', def).then((r) => r.data),
   updateAutomation: (apiName: string, patch: any) => http.put(`/s2/automations/${apiName}`, patch).then((r) => r.data),
   deleteAutomation: (apiName: string) => http.delete(`/s2/automations/${apiName}`).then((r) => r.data),
+  listStagedEffects: (status = 'pending') =>
+    http.get<any[]>('/s2/staged-effects', { params: { status } }).then((r) => r.data),
+  approveStagedEffect: (id: string) => http.post(`/s2/staged-effects/${id}/approve`).then((r) => r.data),
+  rejectStagedEffect: (id: string) => http.post(`/s2/staged-effects/${id}/reject`).then((r) => r.data),
   runAutomation: (apiName: string) => http.post(`/s2/automations/${apiName}/run`).then((r) => r.data),
-  listAutomationRuns: (apiName: string, limit = 50) =>
-    http.get<any[]>(`/s2/automations/${apiName}/runs`, { params: { limit } }).then((r) => r.data),
+  listAutomationRuns: (apiName: string, opts: { limit?: number; status?: string; triggerKind?: string } = {}) =>
+    http.get<any[]>(`/s2/automations/${apiName}/runs`, { params: { limit: opts.limit ?? 50, status: opts.status, triggerKind: opts.triggerKind } }).then((r) => r.data),
   getAutomationRun: (id: string) => http.get<any>(`/s2/automation-runs/${id}`).then((r) => r.data),
   listNotifications: (limit = 50) => http.get<any[]>('/s2/notifications', { params: { limit } }).then((r) => r.data),
   runRules: () => http.post<{ ok: boolean; results: unknown[] }>('/s2/rules/run').then((r) => r.data),

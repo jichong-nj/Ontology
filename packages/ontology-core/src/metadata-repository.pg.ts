@@ -14,6 +14,7 @@ import {
   AggregateQueryRow,
   AutomationRun,
   NotificationItem,
+  StagedEffect,
   DerivedSpec,
   parseDerivedSpec,
   AutomationRule,
@@ -1716,10 +1717,14 @@ export class PostgresMetadataRepository implements MetadataRepository {
     await this.pool.query(`UPDATE automation_run SET ${sets.join(',')} WHERE id=$${i}`, vals);
   }
 
-  async listAutomationRuns(opts?: { automationApiName?: string; limit?: number; offset?: number }): Promise<AutomationRun[]> {
+  async listAutomationRuns(opts?: {
+    automationApiName?: string; status?: string; triggerKind?: string; limit?: number; offset?: number;
+  }): Promise<AutomationRun[]> {
     const params: unknown[] = [];
     const wheres: string[] = [];
     if (opts?.automationApiName) { params.push(opts.automationApiName); wheres.push(`automation_api_name=$${params.length}`); }
+    if (opts?.status) { params.push(opts.status); wheres.push(`status=$${params.length}`); }
+    if (opts?.triggerKind) { params.push(opts.triggerKind); wheres.push(`trigger_kind=$${params.length}`); }
     const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 500);
     params.push(limit);
     params.push(opts?.offset ?? 0);
@@ -1734,6 +1739,42 @@ export class PostgresMetadataRepository implements MetadataRepository {
   async getAutomationRun(id: string): Promise<AutomationRun | null> {
     const { rows } = await this.pool.query(`SELECT * FROM automation_run WHERE id=$1`, [id]);
     return rows[0] ? rowToAutomationRun(rows[0]) : null;
+  }
+
+  async createStagedEffect(input: {
+    automationApiName: string; runId?: string; effect: any;
+    flagged: Array<Record<string, unknown>>;
+  }): Promise<StagedEffect> {
+    const id = `SE-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    await this.pool.query(
+      `INSERT INTO automation_staged_effect (id, automation_api_name, run_id, effect, flagged)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [id, input.automationApiName, input.runId ?? null, JSON.stringify(input.effect), JSON.stringify(input.flagged ?? [])],
+    );
+    const created = await this.getStagedEffect(id);
+    return created!;
+  }
+
+  async listStagedEffects(status = 'pending'): Promise<StagedEffect[]> {
+    const params: unknown[] = [];
+    let where = '';
+    if (status) { params.push(status); where = `WHERE status=$1`; }
+    const { rows } = await this.pool.query(
+      `SELECT * FROM automation_staged_effect ${where} ORDER BY created_at DESC LIMIT 200`, params,
+    );
+    return rows.map(rowToStagedEffect);
+  }
+
+  async getStagedEffect(id: string): Promise<StagedEffect | null> {
+    const { rows } = await this.pool.query(`SELECT * FROM automation_staged_effect WHERE id=$1`, [id]);
+    return rows[0] ? rowToStagedEffect(rows[0]) : null;
+  }
+
+  async finishStagedEffect(id: string, status: 'approved' | 'rejected'): Promise<void> {
+    await this.pool.query(
+      `UPDATE automation_staged_effect SET status=$1, decided_at=now() WHERE id=$2 AND status='pending'`,
+      [status, id],
+    );
   }
 
   async createNotification(n: NotificationItem): Promise<void> {
@@ -1978,6 +2019,19 @@ function rowToAIPMessage(r: any): AIPMessage {
     content: r.content,
     timeline,
     createdAt: r.created_at,
+  };
+}
+
+function rowToStagedEffect(r: any): StagedEffect {
+  return {
+    id: r.id,
+    automationApiName: r.automation_api_name,
+    runId: r.run_id ?? undefined,
+    effect: r.effect,
+    flagged: r.flagged ?? [],
+    status: r.status,
+    createdAt: r.created_at,
+    decidedAt: r.decided_at ?? undefined,
   };
 }
 

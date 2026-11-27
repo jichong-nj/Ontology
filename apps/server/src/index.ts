@@ -648,6 +648,35 @@ app.get('/api/s2/automations/:apiName', async (req, res) => {
   res.json(rule);
 });
 
+app.get('/api/s2/staged-effects', async (req, res) => {
+  try {
+    const status = (req.query.status as string) || 'pending';
+    res.json(await repo.listStagedEffects(status));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/s2/staged-effects/:id/approve', async (req, res) => {
+  try {
+    await startRuleSchedulerIfNeeded();
+    if (!ruleScheduler) throw new Error('调度器未启动');
+    const result = await ruleScheduler.approveStagedEffect(req.params.id);
+    res.json({ ok: true, result });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/s2/staged-effects/:id/reject', async (req, res) => {
+  try {
+    await repo.finishStagedEffect(req.params.id, 'rejected');
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 app.post('/api/s2/automations', async (req, res) => {
   try {
     const def = req.body as any;
@@ -711,7 +740,12 @@ app.get('/api/s2/automations/:apiName/runs', async (req, res) => {
   try {
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
     const offset = Math.max(Number(req.query.offset) || 0, 0);
-    res.json(await repo.listAutomationRuns({ automationApiName: req.params.apiName, limit, offset }));
+    res.json(await repo.listAutomationRuns({
+      automationApiName: req.params.apiName,
+      status: (req.query.status as string) || undefined,
+      triggerKind: (req.query.triggerKind as string) || undefined,
+      limit, offset,
+    }));
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }
