@@ -83,6 +83,10 @@ export class RuleScheduler {
   private lastCronMinute = new Map<string, string>();
   private lastObjectRun = new Map<string, number>();
   private eventTimers = new Map<string, NodeJS.Timeout>();
+  private scheduledEvents = new Map<string, {
+    rule: AutomationRule; objectType: string; objectRid: string;
+    patch: Record<string, unknown>; chain?: AutomationContext;
+  }>();
   private running = new Map<string, boolean>();
   private tickMs: number;
   private repo: MetadataRepository;
@@ -108,6 +112,7 @@ export class RuleScheduler {
     this.timer = null;
     for (const t of this.eventTimers.values()) clearTimeout(t);
     this.eventTimers.clear();
+    this.scheduledEvents.clear();
   }
 
   private async tick() {
@@ -116,6 +121,19 @@ export class RuleScheduler {
     const now = Date.now();
     const scheduled = rules.filter((r) => r.trigger.kind === 'schedule');
     await Promise.all(scheduled.map((r) => this.evaluateRule(r, now)));
+    await this.flushScheduledEvents();
+  }
+
+  // scheduled 模式：事件先缓冲，下一次 tick 统一评估
+  private async flushScheduledEvents(): Promise<void> {
+    if (!this.scheduledEvents.size) return;
+    const items = [...this.scheduledEvents.values()];
+    this.scheduledEvents.clear();
+    for (const item of items) {
+      await this.evaluateRule(item.rule, Date.now(), {
+        objectType: item.objectType, objectRid: item.objectRid, patch: item.patch, __chain: item.chain,
+      }).catch((e) => console.warn(`[automation] ${item.rule.apiName} 定时事件失败: ${e?.message ?? e}`));
+    }
   }
 
   // 单次规则评估（可被 API 手动触发，或 event 触发器调用）
@@ -447,6 +465,7 @@ export class RuleScheduler {
       const trig = rule.trigger as {
         kind: 'event'; debounceMs?: number; batchMode?: 'per_rid' | 'per_type';
         changeTypes?: Array<'created' | 'updated' | 'deleted'>; changeFields?: string[];
+        scope?: 'object' | 'type'; evaluationMode?: 'live' | 'scheduled';
       };
       const allowedTypes = trig.changeTypes ?? ['created', 'updated'];
       if (!allowedTypes.includes(changeType)) continue;
@@ -456,9 +475,13 @@ export class RuleScheduler {
         const changed = trig.changeFields.some((f) => JSON.stringify((before as any)[f]) !== JSON.stringify((after as any)[f]));
         if (!changed) continue;
       }
-      const debounceMs = Math.max(0, Number(trig.debounceMs ?? 1000));
       const mode = trig.batchMode ?? 'per_rid';
       const key = `${rule.apiName}:${mode === 'per_rid' ? objectRid : objectType}`;
+      if ((trig.evaluationMode ?? 'live') === 'scheduled') {
+        this.scheduledEvents.set(key, { rule, objectType, objectRid, patch, chain });
+        continue;
+      }
+      const debounceMs = Math.max(0, Number(trig.debounceMs ?? 1000));
       const prev = this.eventTimers.get(key);
       if (prev) clearTimeout(prev);
       const timer = setTimeout(() => {

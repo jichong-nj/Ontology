@@ -10,7 +10,7 @@ interface RuleItem {
   apiName: string;
   displayName: string;
   enabled: boolean;
-  trigger: { kind: 'schedule' | 'event'; intervalSeconds?: number; cron?: string; on?: string; objectType?: string; conditionProperty?: string; debounceMs?: number; batchMode?: 'per_rid' | 'per_type'; changeTypes?: string[]; changeFields?: string[]; scope?: 'object' | 'type' };
+  trigger: { kind: 'schedule' | 'event'; intervalSeconds?: number; cron?: string; on?: string; objectType?: string; conditionProperty?: string; debounceMs?: number; batchMode?: 'per_rid' | 'per_type'; changeTypes?: string[]; changeFields?: string[]; scope?: 'object' | 'type'; evaluationMode?: 'live' | 'scheduled' };
   conditionFunction?: string;
   condition?: any;
   actionApiName?: string;
@@ -70,12 +70,15 @@ const form = reactive({
   changeTypes: ['created', 'updated'] as string[],
   changeFields: '',
   scope: 'object' as 'object' | 'type',
+  evaluationMode: 'live' as 'live' | 'scheduled',
   conditionFunction: '',
   actionApiName: '',
   effects: [] as any[],
   execMode: 'sequential' as 'sequential' | 'parallel',
   maxRetries: 1,
   timeoutMs: 15000,
+  cooldownSeconds: 0,
+  chainDepthLimit: 5,
   description: '',
   targetObjectType: 'Alert',
   // 参数有两种编辑视图：结构化表单(paramsForm) 与 高级 JSON(paramsText)，双向同步
@@ -309,6 +312,7 @@ function openCreate() {
     changeTypes: ['created', 'updated'],
     changeFields: '',
     scope: 'object',
+    evaluationMode: 'live',
     conditionFunction: functions.value[0]?.apiName ?? '',
     actionApiName: actions.value[0]?.apiName ?? '',
     effects: actions.value[0] ? [{ kind: 'action', actionApiName: actions.value[0].apiName }] : [],
@@ -317,6 +321,8 @@ function openCreate() {
     execMode: 'sequential',
     maxRetries: 1,
     timeoutMs: 15000,
+    cooldownSeconds: 0,
+    chainDepthLimit: 5,
     description: '',
     targetObjectType: 'Alert',
     paramsText: '{\n  "threshold": 0.8\n}',
@@ -341,6 +347,7 @@ async function openEdit(rule: RuleItem) {
     changeTypes: rule.trigger.changeTypes ?? ['created', 'updated'],
     changeFields: (rule.trigger.changeFields ?? []).join(','),
     scope: rule.trigger.scope ?? 'object',
+    evaluationMode: rule.trigger.evaluationMode ?? 'live',
     conditionFunction: rule.conditionFunction,
     actionApiName: rule.actionApiName ?? '',
     effects: rule.effects?.length ? JSON.parse(JSON.stringify(rule.effects)) : (rule.actionApiName ? [{ kind: 'action', actionApiName: rule.actionApiName }] : []),
@@ -349,6 +356,8 @@ async function openEdit(rule: RuleItem) {
     execMode: rule.execution?.mode ?? 'sequential',
     maxRetries: rule.execution?.maxRetries ?? 1,
     timeoutMs: rule.execution?.timeoutMs ?? 15000,
+    cooldownSeconds: rule.execution?.cooldownSeconds ?? 0,
+    chainDepthLimit: rule.execution?.chainDepthLimit ?? 5,
     description: rule.description ?? '',
     targetObjectType: rule.targetObjectType,
     paramsText: JSON.stringify(rule.params ?? {}, null, 2),
@@ -391,6 +400,7 @@ async function save() {
           changeTypes: form.changeTypes,
           changeFields: form.changeFields.split(',').map((x) => x.trim()).filter(Boolean),
           scope: form.scope,
+          evaluationMode: form.evaluationMode,
         };
 
   saving.value = true;
@@ -403,7 +413,7 @@ async function save() {
         condition: conditionPayload(),
         ...(condKind.value === 'function' ? { conditionFunction: form.conditionFunction } : { conditionFunction: null }),
         effects: form.effects,
-        execution: { mode: form.execMode, maxRetries: Number(form.maxRetries), timeoutMs: Number(form.timeoutMs) },
+        execution: { mode: form.execMode, maxRetries: Number(form.maxRetries), timeoutMs: Number(form.timeoutMs), cooldownSeconds: Number(form.cooldownSeconds), chainDepthLimit: Number(form.chainDepthLimit) },
         description: form.description,
         actionApiName: form.effects.find((e: any) => e.kind === 'action')?.actionApiName ?? null,
         targetObjectType: form.targetObjectType,
@@ -420,7 +430,7 @@ async function save() {
           ? { conditionFunction: form.conditionFunction }
           : { condition: conditionPayload() }),
         effects: form.effects,
-        execution: { mode: form.execMode, maxRetries: Number(form.maxRetries), timeoutMs: Number(form.timeoutMs) },
+        execution: { mode: form.execMode, maxRetries: Number(form.maxRetries), timeoutMs: Number(form.timeoutMs), cooldownSeconds: Number(form.cooldownSeconds), chainDepthLimit: Number(form.chainDepthLimit) },
         description: form.description,
         actionApiName: form.effects.find((e: any) => e.kind === 'action')?.actionApiName ?? null,
         targetObjectType: form.targetObjectType,
@@ -598,6 +608,12 @@ onMounted(load);
             <ElOption label="整个对象类型（type）" value="type" />
           </ElSelect>
         </ElFormItem>
+        <ElFormItem v-if="form.triggerKind === 'event'" label="评估模式">
+          <ElSelect v-model="form.evaluationMode" style="width: 220px">
+            <ElOption label="实时 live（按 debounce 立即评估）" value="live" />
+            <ElOption label="定时 scheduled（缓冲到下一次 tick）" value="scheduled" />
+          </ElSelect>
+        </ElFormItem>
         <ElFormItem label="条件类型">
           <ElRadioGroup v-model="condKind">
             <ElRadioButton value="function">函数</ElRadioButton>
@@ -666,7 +682,11 @@ onMounted(load);
           <span class="hint" style="margin: 0 6px">重试</span>
           <ElInput v-model.number="form.maxRetries" type="number" style="width: 80px" />
           <span class="hint" style="margin: 0 6px">超时(ms)</span>
-          <ElInput v-model.number="form.timeoutMs" type="number" style="width: 120px" />
+          <ElInput v-model.number="form.timeoutMs" type="number" style="width: 110px" />
+          <span class="hint" style="margin: 0 6px">冷却(s)</span>
+          <ElInput v-model.number="form.cooldownSeconds" type="number" style="width: 80px" />
+          <span class="hint" style="margin: 0 6px">链深</span>
+          <ElInput v-model.number="form.chainDepthLimit" type="number" style="width: 70px" />
         </ElFormItem>
 
         <!-- 条件参数：可视化结构化表单（仅函数条件需要） -->

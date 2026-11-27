@@ -446,6 +446,8 @@ export type RuleTrigger =
       changeFields?: string[];
       // object：只评估当前写入对象；type：评估整个对象类型（默认 object）
       scope?: 'object' | 'type';
+      // live：事件到达即按 debounce 评估；scheduled：缓冲到下一次调度 tick
+      evaluationMode?: 'live' | 'scheduled';
     };
 
 // 自动化规则：通用的「满足条件就执行动作」编排单元（对齐 Palantir Watchdog + Action Type + Schedule）。
