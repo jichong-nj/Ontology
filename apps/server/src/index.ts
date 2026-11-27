@@ -40,42 +40,24 @@ const store = new PostgresMappingStore(pool);
 const mappingSvc = new MappingService(store, repo);
 
 // ---------- 业务场景引导（S3 实例下推 + 函数注册） ----------
-// 共享沙箱：首次使用时惰性构建（注册企业业务函数），供 HTTP 调用与后台调度器复用，
-// 不依赖 bootstrap 是否已执行，提升健壮性与可测试性。
+// 共享沙箱：首次使用时惰性构建（注册企业业务函数），供 HTTP 调用与后台调度器复用。
 let sharedSandbox: TypeScriptFunctionSandbox | null = null;
 async function getSandbox(): Promise<TypeScriptFunctionSandbox> {
   if (!sharedSandbox) {
     sharedSandbox = buildSandbox(repo);
-    // 预热时把元数据库中存库可编辑的函数体注册进来（含前端创建的函数）
     await registerDbFunctions(repo, sharedSandbox);
   }
   return sharedSandbox;
 }
+
 let ruleScheduler: import('@ontology/ontology-core').RuleScheduler | null = null;
 
-// ---------- 对象写入事件 → 事件触发规则（去抖） ----------
-// 只覆盖平台自身写入（同步/动作/函数）；源库直接变更需先同步进本体。
-const EVENT_DEBOUNCE_MS = 1000;
-const pendingWriteEvents = new Map<string, { rid: string; patch: Record<string, unknown>; chain?: any; timer: NodeJS.Timeout }>();
-
+// ---------- 对象写入事件 → 事件触发规则（按 Automation 配置调度） ----------
+// 去抖/批量策略由每条 Automation 的 trigger 配置决定（debounceMs / batchMode）。
 onObjectWrite((e) => {
-  if (!ruleScheduler) return;                       // 没有调度器（无启用规则）直接忽略
-  const prev = pendingWriteEvents.get(e.objectType);
-  if (prev) clearTimeout(prev.timer);
-  const entry = { rid: e.objectRid, patch: e.patch, chain: e.chain, timer: undefined as unknown as NodeJS.Timeout };
-  entry.timer = setTimeout(async () => {
-    pendingWriteEvents.delete(e.objectType);
-    try {
-      const results = await ruleScheduler!.handleObjectWrite(e.objectType, entry.rid, entry.patch, entry.chain);
-      const fired = results.filter((r) => r.ran);
-      if (fired.length) {
-        console.log(`[scheduler] 对象写入事件 ${e.objectType}: ${fired.length} 条事件规则执行`);
-      }
-    } catch (err: any) {
-      console.error('[scheduler] 事件触发失败:', err.message);
-    }
-  }, EVENT_DEBOUNCE_MS);
-  pendingWriteEvents.set(e.objectType, entry);
+  if (!ruleScheduler) return;
+  void ruleScheduler.dispatchObjectWrite(e.objectType, e.objectRid, e.patch, e.chain)
+    .catch((err: any) => console.error('[scheduler] 事件调度失败:', err.message));
 });
 
 // ---------- 数据重新灌入（S1/S2/S3 bootstrap 的可复用实现） ----------

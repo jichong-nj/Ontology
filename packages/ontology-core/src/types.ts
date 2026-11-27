@@ -431,7 +431,16 @@ export interface MetadataRepository {
 // - event: 由对象写入事件触发（对应 Palantir 流式/对象事件触发，Step 2 新增）。
 export type RuleTrigger =
   | { kind: 'schedule'; intervalSeconds?: number; cron?: string }
-  | { kind: 'event'; on: 'object_write'; objectType: string; conditionProperty?: string };
+  | {
+      kind: 'event';
+      on: 'object_write';
+      objectType: string;
+      conditionProperty?: string;
+      // 事件去抖（毫秒）；默认 1000
+      debounceMs?: number;
+      // per_rid：每个对象实例单独排队；per_type：同类型合并
+      batchMode?: 'per_rid' | 'per_type';
+    };
 
 // 自动化规则：通用的「满足条件就执行动作」编排单元（对齐 Palantir Watchdog + Action Type + Schedule）。
 // 规则本身不绑定"告警"语义——告警仅是 createDimissionAlert 这个 Action 的产物之一。

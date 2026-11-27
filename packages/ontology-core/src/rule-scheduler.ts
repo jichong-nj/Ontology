@@ -82,6 +82,7 @@ export class RuleScheduler {
   private lastRanAt = new Map<string, number>();
   private lastCronMinute = new Map<string, string>();
   private lastObjectRun = new Map<string, number>();
+  private eventTimers = new Map<string, NodeJS.Timeout>();
   private running = new Map<string, boolean>();
   private tickMs: number;
   private repo: MetadataRepository;
@@ -105,6 +106,8 @@ export class RuleScheduler {
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    for (const t of this.eventTimers.values()) clearTimeout(t);
+    this.eventTimers.clear();
   }
 
   private async tick() {
@@ -412,19 +415,13 @@ export class RuleScheduler {
     throw new Error(`不支持的 effect 类型: ${(effect as any).kind}`);
   }
 
-  // event 触发器入口：当某对象类型发生写入时由平台调用，触发匹配的 event 规则。
-  // （Step 2 提供入口，实际接线（监听 object_write）由各业务层按需挂载。）
-  // event 触发器入口：当某对象类型发生写入时由平台调用，触发匹配的 event 规则。
-  // objectRid / patch 为预留参数：未来可用于基于 r.trigger.conditionProperty 的细粒度匹配过滤，
-  // 当前仅按 objectType 粗匹配后交由条件函数评估。
-  async handleObjectWrite(
+  // event 触发器入口：按每条 Automation 自己的 debounceMs / batchMode 排队。
+  async dispatchObjectWrite(
     objectType: string,
     objectRid: string,
     patch: Record<string, unknown>,
     chain?: AutomationContext,
-  ): Promise<RuleEvaluationResult[]> {
-    void objectRid;
-    void patch;
+  ): Promise<void> {
     const rules = await this.repo.listRules();
     const matched = rules.filter(
       (r) =>
@@ -433,8 +430,31 @@ export class RuleScheduler {
         r.trigger.on === 'object_write' &&
         r.trigger.objectType === objectType,
     );
-    const now = Date.now();
-    return Promise.all(matched.map((r) => this.evaluateRule(r, now, { objectType, objectRid, patch, __chain: chain })));
+    for (const rule of matched) {
+      const trig = rule.trigger as { kind: 'event'; debounceMs?: number; batchMode?: 'per_rid' | 'per_type' };
+      const debounceMs = Math.max(0, Number(trig.debounceMs ?? 1000));
+      const mode = trig.batchMode ?? 'per_rid';
+      const key = `${rule.apiName}:${mode === 'per_rid' ? objectRid : objectType}`;
+      const prev = this.eventTimers.get(key);
+      if (prev) clearTimeout(prev);
+      const timer = setTimeout(() => {
+        this.eventTimers.delete(key);
+        void this.evaluateRule(rule, Date.now(), { objectType, objectRid, patch, __chain: chain })
+          .catch((e) => console.warn(`[automation] ${rule.apiName} 事件执行失败: ${e?.message ?? e}`));
+      }, debounceMs);
+      this.eventTimers.set(key, timer);
+    }
+  }
+
+  // 兼容旧入口：立即排队并返回空结果（等待由 debounceMs 决定）。
+  async handleObjectWrite(
+    objectType: string,
+    objectRid: string,
+    patch: Record<string, unknown>,
+    chain?: AutomationContext,
+  ): Promise<RuleEvaluationResult[]> {
+    await this.dispatchObjectWrite(objectType, objectRid, patch, chain);
+    return [];
   }
 
   // 手动触发所有规则（API 调用）

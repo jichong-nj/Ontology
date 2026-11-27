@@ -177,7 +177,7 @@ export const rules: AutomationRule[] = [
     displayName: '境外涉密舆情自动建案',
     description: '境外网站 + 机密/绝密 → 创建应急响应',
     enabled: true,
-    trigger: { kind: 'event', on: 'object_write', objectType: 'PublicOpinionEvent' },
+    trigger: { kind: 'event', on: 'object_write', objectType: 'PublicOpinionEvent', debounceMs: 1000, batchMode: 'per_rid' },
     condition: {
       kind: 'all',
       conditions: [
@@ -201,7 +201,7 @@ export const rules: AutomationRule[] = [
     displayName: '应急响应初始关联',
     description: '案件创建后匹配文档，生成待确认候选',
     enabled: true,
-    trigger: { kind: 'event', on: 'object_write', objectType: 'EmergencyResponse' },
+    trigger: { kind: 'event', on: 'object_write', objectType: 'EmergencyResponse', debounceMs: 1000, batchMode: 'per_rid' },
     condition: {
       kind: 'property', objectType: 'EmergencyResponse', property: 'status', operator: 'eq', value: 'in_progress',
     },
@@ -215,7 +215,7 @@ export const rules: AutomationRule[] = [
     displayName: '新单位自动建核查任务',
     description: 'CaseEntityRef 中新增 Organization 时，一单位一核查任务',
     enabled: true,
-    trigger: { kind: 'event', on: 'object_write', objectType: 'CaseEntityRef' },
+    trigger: { kind: 'event', on: 'object_write', objectType: 'CaseEntityRef', debounceMs: 1000, batchMode: 'per_rid' },
     condition: {
       kind: 'all',
       conditions: [

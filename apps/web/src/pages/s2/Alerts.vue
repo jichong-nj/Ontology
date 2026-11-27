@@ -10,7 +10,7 @@ interface RuleItem {
   apiName: string;
   displayName: string;
   enabled: boolean;
-  trigger: { kind: 'schedule' | 'event'; intervalSeconds?: number; cron?: string; on?: string; objectType?: string; conditionProperty?: string };
+  trigger: { kind: 'schedule' | 'event'; intervalSeconds?: number; cron?: string; on?: string; objectType?: string; conditionProperty?: string; debounceMs?: number; batchMode?: 'per_rid' | 'per_type' };
   conditionFunction?: string;
   condition?: any;
   actionApiName?: string;
@@ -65,6 +65,8 @@ const form = reactive({
   intervalSeconds: 60,
   cron: '',
   eventObjectType: '',
+  debounceMs: 1000,
+  batchMode: 'per_rid' as 'per_rid' | 'per_type',
   conditionFunction: '',
   actionApiName: '',
   effects: [] as any[],
@@ -299,6 +301,8 @@ function openCreate() {
     triggerKind: 'schedule',
     intervalSeconds: 60,
     eventObjectType: objectTypes.value[0]?.apiName ?? '',
+    debounceMs: 1000,
+    batchMode: 'per_rid',
     conditionFunction: functions.value[0]?.apiName ?? '',
     actionApiName: actions.value[0]?.apiName ?? '',
     effects: actions.value[0] ? [{ kind: 'action', actionApiName: actions.value[0].apiName }] : [],
@@ -326,6 +330,8 @@ async function openEdit(rule: RuleItem) {
     triggerKind: rule.trigger.kind,
     intervalSeconds: rule.trigger.intervalSeconds ?? 60,
     eventObjectType: rule.trigger.objectType ?? objectTypes.value[0]?.apiName ?? '',
+    debounceMs: rule.trigger.debounceMs ?? 1000,
+    batchMode: rule.trigger.batchMode ?? 'per_rid',
     conditionFunction: rule.conditionFunction,
     actionApiName: rule.actionApiName ?? '',
     effects: rule.effects?.length ? JSON.parse(JSON.stringify(rule.effects)) : (rule.actionApiName ? [{ kind: 'action', actionApiName: rule.actionApiName }] : []),
@@ -370,7 +376,10 @@ async function save() {
   const trigger =
     form.triggerKind === 'schedule'
       ? { kind: 'schedule' as const, intervalSeconds: Number(form.intervalSeconds) }
-      : { kind: 'event' as const, on: 'object_write' as const, objectType: form.eventObjectType };
+      : {
+          kind: 'event' as const, on: 'object_write' as const, objectType: form.eventObjectType,
+          debounceMs: Number(form.debounceMs), batchMode: form.batchMode,
+        };
 
   saving.value = true;
   await tryRequest(async () => {
@@ -550,6 +559,16 @@ onMounted(load);
             <ElOption v-for="o in objectTypes" :key="o.apiName" :label="`${o.displayName} (${o.apiName})`" :value="o.apiName" />
           </ElSelect>
           <div class="hint">当该对象类型发生写入(object_write)时，触发规则条件评估。</div>
+        </ElFormItem>
+        <ElFormItem v-if="form.triggerKind === 'event'" label="事件去抖(ms)">
+          <ElInput v-model.number="form.debounceMs" type="number" :min="0" style="width: 160px" />
+          <div class="hint">同一对象在该时间窗口内多次写入，只触发一次；0 表示不等待。</div>
+        </ElFormItem>
+        <ElFormItem v-if="form.triggerKind === 'event'" label="批量方式">
+          <ElSelect v-model="form.batchMode" style="width: 220px">
+            <ElOption label="每个对象实例单独排队（per_rid）" value="per_rid" />
+            <ElOption label="同对象类型合并（per_type）" value="per_type" />
+          </ElSelect>
         </ElFormItem>
         <ElFormItem label="条件类型">
           <ElRadioGroup v-model="condKind">
