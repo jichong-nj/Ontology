@@ -10,7 +10,7 @@ interface RuleItem {
   apiName: string;
   displayName: string;
   enabled: boolean;
-  trigger: { kind: 'schedule' | 'event'; intervalSeconds?: number; cron?: string; on?: string; objectType?: string; conditionProperty?: string; debounceMs?: number; batchMode?: 'per_rid' | 'per_type' };
+  trigger: { kind: 'schedule' | 'event'; intervalSeconds?: number; cron?: string; on?: string; objectType?: string; conditionProperty?: string; debounceMs?: number; batchMode?: 'per_rid' | 'per_type'; changeTypes?: string[]; changeFields?: string[]; scope?: 'object' | 'type' };
   conditionFunction?: string;
   condition?: any;
   actionApiName?: string;
@@ -67,6 +67,9 @@ const form = reactive({
   eventObjectType: '',
   debounceMs: 1000,
   batchMode: 'per_rid' as 'per_rid' | 'per_type',
+  changeTypes: ['created', 'updated'] as string[],
+  changeFields: '',
+  scope: 'object' as 'object' | 'type',
   conditionFunction: '',
   actionApiName: '',
   effects: [] as any[],
@@ -303,6 +306,9 @@ function openCreate() {
     eventObjectType: objectTypes.value[0]?.apiName ?? '',
     debounceMs: 1000,
     batchMode: 'per_rid',
+    changeTypes: ['created', 'updated'],
+    changeFields: '',
+    scope: 'object',
     conditionFunction: functions.value[0]?.apiName ?? '',
     actionApiName: actions.value[0]?.apiName ?? '',
     effects: actions.value[0] ? [{ kind: 'action', actionApiName: actions.value[0].apiName }] : [],
@@ -332,6 +338,9 @@ async function openEdit(rule: RuleItem) {
     eventObjectType: rule.trigger.objectType ?? objectTypes.value[0]?.apiName ?? '',
     debounceMs: rule.trigger.debounceMs ?? 1000,
     batchMode: rule.trigger.batchMode ?? 'per_rid',
+    changeTypes: rule.trigger.changeTypes ?? ['created', 'updated'],
+    changeFields: (rule.trigger.changeFields ?? []).join(','),
+    scope: rule.trigger.scope ?? 'object',
     conditionFunction: rule.conditionFunction,
     actionApiName: rule.actionApiName ?? '',
     effects: rule.effects?.length ? JSON.parse(JSON.stringify(rule.effects)) : (rule.actionApiName ? [{ kind: 'action', actionApiName: rule.actionApiName }] : []),
@@ -379,6 +388,9 @@ async function save() {
       : {
           kind: 'event' as const, on: 'object_write' as const, objectType: form.eventObjectType,
           debounceMs: Number(form.debounceMs), batchMode: form.batchMode,
+          changeTypes: form.changeTypes,
+          changeFields: form.changeFields.split(',').map((x) => x.trim()).filter(Boolean),
+          scope: form.scope,
         };
 
   saving.value = true;
@@ -568,6 +580,22 @@ onMounted(load);
           <ElSelect v-model="form.batchMode" style="width: 220px">
             <ElOption label="每个对象实例单独排队（per_rid）" value="per_rid" />
             <ElOption label="同对象类型合并（per_type）" value="per_type" />
+          </ElSelect>
+        </ElFormItem>
+        <ElFormItem v-if="form.triggerKind === 'event'" label="变更类型">
+          <ElSelect v-model="form.changeTypes" multiple style="width: 320px">
+            <ElOption label="新增 created" value="created" />
+            <ElOption label="修改 updated" value="updated" />
+            <ElOption label="删除 deleted" value="deleted" />
+          </ElSelect>
+        </ElFormItem>
+        <ElFormItem v-if="form.triggerKind === 'event'" label="字段级触发">
+          <ElInput v-model="form.changeFields" placeholder="可选：status,level（逗号分隔；仅 updated 生效）" />
+        </ElFormItem>
+        <ElFormItem v-if="form.triggerKind === 'event'" label="评估范围">
+          <ElSelect v-model="form.scope" style="width: 220px">
+            <ElOption label="仅当前写入对象（object）" value="object" />
+            <ElOption label="整个对象类型（type）" value="type" />
           </ElSelect>
         </ElFormItem>
         <ElFormItem label="条件类型">

@@ -626,31 +626,34 @@ export class PostgresMetadataRepository implements MetadataRepository {
   async writeObjectPatch(objectType: string, objectRid: string, patch: unknown, actor: string): Promise<void> {
     // RID 规范化：裸 RID 自动补类型前缀（兼容旧调用方/沙箱函数），保证全局唯一。
     const normRid = ensureRid(objectType, objectRid);
-    // 写入前校验：先取现有 patch 做浅合并（与 SQL 的 patch || EXCLUDED.patch 一致），
-    // 再交给 validator 校验完整实例（可判断必填字段）；validator 抛错即拒绝写入。
+    const incoming = (patch ?? {}) as Record<string, unknown>;
+    const { rows } = await this.pool.query(
+      `SELECT patch FROM object_write WHERE object_type=$1 AND object_rid=$2`,
+      [objectType, normRid],
+    );
+    const before = (rows[0]?.patch ?? null) as Record<string, unknown> | null;
+    const merged = { ...(before ?? {}), ...incoming };
+    // 写入前校验：交给 validator 校验完整实例（可判断必填字段）；抛错即拒绝写入。
     if (this.patchValidator) {
-      const { rows } = await this.pool.query(
-        `SELECT patch FROM object_write WHERE object_type=$1 AND object_rid=$2`,
-        [objectType, normRid],
-      );
-      const existing = (rows[0]?.patch ?? {}) as Record<string, unknown>;
-      const merged = { ...existing, ...((patch ?? {}) as Record<string, unknown>) };
-      await this.patchValidator(objectType, merged, actor, (patch ?? {}) as Record<string, unknown>);
+      await this.patchValidator(objectType, merged, actor, incoming);
     }
     // 每实例一行：存在则合并 patch（修改单个属性不覆盖其他属性），不存在则插入。
     await this.pool.query(
       `INSERT INTO object_write (object_type, object_rid, patch, actor) VALUES ($1,$2,$3,$4)
        ON CONFLICT (object_type, object_rid)
        DO UPDATE SET patch = object_write.patch || EXCLUDED.patch, actor = EXCLUDED.actor`,
-      [objectType, normRid, JSON.stringify(patch), actor],
+      [objectType, normRid, JSON.stringify(incoming), actor],
     );
     // 发布对象写入事件（供事件触发规则/订阅方消费）
     emitObjectWrite({
       objectType,
       objectRid: normRid,
-      patch: (patch ?? {}) as Record<string, unknown>,
+      patch: incoming,
       actor,
       at: Date.now(),
+      changeType: before ? 'updated' : 'created',
+      beforePatch: before,
+      afterPatch: merged,
       chain: getAutomationContext(),
     });
   }
@@ -715,10 +718,22 @@ export class PostgresMetadataRepository implements MetadataRepository {
 
   // 删除单个对象实例（平台生成型对象用；调用方负责授权与级联）
   async deleteObjectWrite(objectType: string, objectRid: string): Promise<boolean> {
+    const normRid = ensureRid(objectType, objectRid);
+    const { rows } = await this.pool.query(
+      `SELECT patch FROM object_write WHERE object_type=$1 AND object_rid=$2`,
+      [objectType, normRid],
+    );
     const { rowCount } = await this.pool.query(
       `DELETE FROM object_write WHERE object_type=$1 AND object_rid=$2`,
-      [objectType, objectRid],
+      [objectType, normRid],
     );
+    if ((rowCount ?? 0) > 0) {
+      emitObjectWrite({
+        objectType, objectRid: normRid, patch: {}, actor: 'delete', at: Date.now(),
+        changeType: 'deleted', beforePatch: (rows[0]?.patch ?? null), afterPatch: {},
+        chain: getAutomationContext(),
+      });
+    }
     return (rowCount ?? 0) > 0;
   }
 

@@ -204,6 +204,17 @@ export class RuleScheduler {
         flagged = extractFlagged(output);
         matched = flagged.length > 0;
       }
+      // 事件规则默认只评估「当前写入对象」；scope=type 时保留整类评估
+      if (rule.trigger.kind === 'event') {
+        const trig = rule.trigger as { scope?: 'object' | 'type' };
+        const rid = (triggerContext as any)?.objectRid;
+        if ((trig.scope ?? 'object') === 'object' && rid) {
+          const scoped = flagged.filter((f: any) => String(f.rid ?? f.objectRid ?? '') === String(rid));
+          flagged = scoped;
+          matched = scoped.length > 0;
+        }
+      }
+
       base.ran = true;
       base.flaggedCount = flagged.length;
 
@@ -421,6 +432,7 @@ export class RuleScheduler {
     objectRid: string,
     patch: Record<string, unknown>,
     chain?: AutomationContext,
+    meta?: { changeType?: 'created' | 'updated' | 'deleted'; beforePatch?: Record<string, unknown> | null; afterPatch?: Record<string, unknown> },
   ): Promise<void> {
     const rules = await this.repo.listRules();
     const matched = rules.filter(
@@ -430,8 +442,20 @@ export class RuleScheduler {
         r.trigger.on === 'object_write' &&
         r.trigger.objectType === objectType,
     );
+    const changeType = meta?.changeType ?? 'updated';
     for (const rule of matched) {
-      const trig = rule.trigger as { kind: 'event'; debounceMs?: number; batchMode?: 'per_rid' | 'per_type' };
+      const trig = rule.trigger as {
+        kind: 'event'; debounceMs?: number; batchMode?: 'per_rid' | 'per_type';
+        changeTypes?: Array<'created' | 'updated' | 'deleted'>; changeFields?: string[];
+      };
+      const allowedTypes = trig.changeTypes ?? ['created', 'updated'];
+      if (!allowedTypes.includes(changeType)) continue;
+      if (changeType === 'updated' && trig.changeFields?.length) {
+        const before = meta?.beforePatch ?? {};
+        const after = meta?.afterPatch ?? {};
+        const changed = trig.changeFields.some((f) => JSON.stringify((before as any)[f]) !== JSON.stringify((after as any)[f]));
+        if (!changed) continue;
+      }
       const debounceMs = Math.max(0, Number(trig.debounceMs ?? 1000));
       const mode = trig.batchMode ?? 'per_rid';
       const key = `${rule.apiName}:${mode === 'per_rid' ? objectRid : objectType}`;

@@ -440,6 +440,12 @@ export type RuleTrigger =
       debounceMs?: number;
       // per_rid：每个对象实例单独排队；per_type：同类型合并
       batchMode?: 'per_rid' | 'per_type';
+      // 监听的变更类型；默认 created + updated
+      changeTypes?: Array<'created' | 'updated' | 'deleted'>;
+      // updated 时只有这些字段发生变化才触发（可选）
+      changeFields?: string[];
+      // object：只评估当前写入对象；type：评估整个对象类型（默认 object）
+      scope?: 'object' | 'type';
     };
 
 // 自动化规则：通用的「满足条件就执行动作」编排单元（对齐 Palantir Watchdog + Action Type + Schedule）。

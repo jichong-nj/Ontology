@@ -56,8 +56,9 @@ let ruleScheduler: import('@ontology/ontology-core').RuleScheduler | null = null
 // 去抖/批量策略由每条 Automation 的 trigger 配置决定（debounceMs / batchMode）。
 onObjectWrite((e) => {
   if (!ruleScheduler) return;
-  void ruleScheduler.dispatchObjectWrite(e.objectType, e.objectRid, e.patch, e.chain)
-    .catch((err: any) => console.error('[scheduler] 事件调度失败:', err.message));
+  void ruleScheduler.dispatchObjectWrite(e.objectType, e.objectRid, e.patch, e.chain, {
+    changeType: e.changeType, beforePatch: e.beforePatch, afterPatch: e.afterPatch,
+  }).catch((err: any) => console.error('[scheduler] 事件调度失败:', err.message));
 });
 
 // ---------- 数据重新灌入（S1/S2/S3 bootstrap 的可复用实现） ----------
