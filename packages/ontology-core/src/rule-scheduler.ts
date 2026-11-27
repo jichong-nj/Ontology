@@ -85,7 +85,7 @@ export class RuleScheduler {
   private eventTimers = new Map<string, NodeJS.Timeout>();
   private scheduledEvents = new Map<string, {
     rule: AutomationRule; objectType: string; objectRid: string;
-    patch: Record<string, unknown>; chain?: AutomationContext;
+    patch: Record<string, unknown>; chain?: AutomationContext; changeType?: string;
   }>();
   private running = new Map<string, boolean>();
   private tickMs: number;
@@ -132,6 +132,7 @@ export class RuleScheduler {
     for (const item of items) {
       await this.evaluateRule(item.rule, Date.now(), {
         objectType: item.objectType, objectRid: item.objectRid, patch: item.patch, __chain: item.chain,
+        changeType: item.changeType,
       }).catch((e) => console.warn(`[automation] ${item.rule.apiName} 定时事件失败: ${e?.message ?? e}`));
     }
   }
@@ -478,7 +479,7 @@ export class RuleScheduler {
       const mode = trig.batchMode ?? 'per_rid';
       const key = `${rule.apiName}:${mode === 'per_rid' ? objectRid : objectType}`;
       if ((trig.evaluationMode ?? 'live') === 'scheduled') {
-        this.scheduledEvents.set(key, { rule, objectType, objectRid, patch, chain });
+        this.scheduledEvents.set(key, { rule, objectType, objectRid, patch, chain, changeType });
         continue;
       }
       const debounceMs = Math.max(0, Number(trig.debounceMs ?? 1000));
@@ -486,7 +487,7 @@ export class RuleScheduler {
       if (prev) clearTimeout(prev);
       const timer = setTimeout(() => {
         this.eventTimers.delete(key);
-        void this.evaluateRule(rule, Date.now(), { objectType, objectRid, patch, __chain: chain })
+        void this.evaluateRule(rule, Date.now(), { objectType, objectRid, patch, __chain: chain, changeType })
           .catch((e) => console.warn(`[automation] ${rule.apiName} 事件执行失败: ${e?.message ?? e}`));
       }, debounceMs);
       this.eventTimers.set(key, timer);

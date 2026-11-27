@@ -100,12 +100,39 @@ function effectSummary(r: RuleItem): string[] {
   });
 }
 function addEffect(kind = 'action') {
-  if (kind === 'action') form.effects.push({ kind, actionApiName: actions.value[0]?.apiName ?? '' });
-  else if (kind === 'function') form.effects.push({ kind, function: functions.value[0]?.apiName ?? '' });
-  else if (kind === 'notify') form.effects.push({ kind, channel: 'inapp', title: '', body: '', level: 'info' });
-  else form.effects.push({ kind, url: '', method: 'POST' });
+  if (kind === 'action') form.effects.push({ kind, actionApiName: actions.value[0]?.apiName ?? '', retryMaxAttempts: 1, fallbackKind: '' });
+  else if (kind === 'function') form.effects.push({ kind, function: functions.value[0]?.apiName ?? '', retryMaxAttempts: 1, fallbackKind: '' });
+  else if (kind === 'notify') form.effects.push({ kind, channel: 'inapp', title: '', body: '', level: 'info', retryMaxAttempts: 1, fallbackKind: '' });
+  else form.effects.push({ kind, url: '', method: 'POST', retryMaxAttempts: 1, fallbackKind: '' });
 }
 function removeEffect(i: number) { form.effects.splice(i, 1); }
+
+function effectToForm(e: any): any {
+  return {
+    ...e,
+    retryMaxAttempts: e?.retry?.maxAttempts ?? 1,
+    fallbackKind: e?.fallback?.kind ?? '',
+    fallbackTitle: e?.fallback?.title ?? '',
+    fallbackUrl: e?.fallback?.url ?? e?.fallback?.webhookUrl ?? '',
+  };
+}
+
+function effectsForForm(effects: any[] | undefined): any[] {
+  return (effects ?? []).map(effectToForm);
+}
+
+function effectsPayload(): any[] {
+  return form.effects.map((e: any) => {
+    const { retryMaxAttempts, fallbackKind, fallbackTitle, fallbackUrl, ...rest } = e;
+    const out: any = { ...rest };
+    if (Number(retryMaxAttempts) > 0) out.retry = { maxAttempts: Number(retryMaxAttempts) };
+    else delete out.retry;
+    if (fallbackKind === 'notify') out.fallback = { kind: 'notify', channel: 'inapp', title: fallbackTitle || `${form.displayName || form.apiName} 失败回退` };
+    else if (fallbackKind === 'webhook') out.fallback = { kind: 'webhook', url: fallbackUrl };
+    else delete out.fallback;
+    return out;
+  });
+}
 
 function propsOf(apiName: string) {
   return objectTypes.value.find((o) => o.apiName === apiName)?.properties ?? [];
@@ -315,7 +342,7 @@ function openCreate() {
     evaluationMode: 'live',
     conditionFunction: functions.value[0]?.apiName ?? '',
     actionApiName: actions.value[0]?.apiName ?? '',
-    effects: actions.value[0] ? [{ kind: 'action', actionApiName: actions.value[0].apiName }] : [],
+    effects: actions.value[0] ? [effectToForm({ kind: 'action', actionApiName: actions.value[0].apiName })] : [],
     triggerMode: 'interval',
     cron: '',
     execMode: 'sequential',
@@ -350,7 +377,7 @@ async function openEdit(rule: RuleItem) {
     evaluationMode: rule.trigger.evaluationMode ?? 'live',
     conditionFunction: rule.conditionFunction,
     actionApiName: rule.actionApiName ?? '',
-    effects: rule.effects?.length ? JSON.parse(JSON.stringify(rule.effects)) : (rule.actionApiName ? [{ kind: 'action', actionApiName: rule.actionApiName }] : []),
+    effects: rule.effects?.length ? effectsForForm(JSON.parse(JSON.stringify(rule.effects))) : (rule.actionApiName ? [effectToForm({ kind: 'action', actionApiName: rule.actionApiName })] : []),
     triggerMode: rule.trigger?.cron ? 'cron' : 'interval',
     cron: rule.trigger?.cron ?? '',
     execMode: rule.execution?.mode ?? 'sequential',
@@ -412,7 +439,7 @@ async function save() {
         trigger,
         condition: conditionPayload(),
         ...(condKind.value === 'function' ? { conditionFunction: form.conditionFunction } : { conditionFunction: null }),
-        effects: form.effects,
+        effects: effectsPayload(),
         execution: { mode: form.execMode, maxRetries: Number(form.maxRetries), timeoutMs: Number(form.timeoutMs), cooldownSeconds: Number(form.cooldownSeconds), chainDepthLimit: Number(form.chainDepthLimit) },
         description: form.description,
         actionApiName: form.effects.find((e: any) => e.kind === 'action')?.actionApiName ?? null,
@@ -429,7 +456,7 @@ async function save() {
         ...(condKind.value === 'function'
           ? { conditionFunction: form.conditionFunction }
           : { condition: conditionPayload() }),
-        effects: form.effects,
+        effects: effectsPayload(),
         execution: { mode: form.execMode, maxRetries: Number(form.maxRetries), timeoutMs: Number(form.timeoutMs), cooldownSeconds: Number(form.cooldownSeconds), chainDepthLimit: Number(form.chainDepthLimit) },
         description: form.description,
         actionApiName: form.effects.find((e: any) => e.kind === 'action')?.actionApiName ?? null,
@@ -661,6 +688,15 @@ onMounted(load);
               <template v-else>
                 <ElInput v-model="e.url" placeholder="https://..." style="width: 260px" />
               </template>
+              <span class="hint" style="margin-left: 4px">重试</span>
+              <ElInput v-model.number="e.retryMaxAttempts" type="number" :min="1" style="width: 64px" />
+              <ElSelect v-model="e.fallbackKind" style="width: 110px">
+                <ElOption label="无回退" value="" />
+                <ElOption label="回退通知" value="notify" />
+                <ElOption label="回退Webhook" value="webhook" />
+              </ElSelect>
+              <ElInput v-if="e.fallbackKind === 'notify'" v-model="e.fallbackTitle" placeholder="回退通知标题" style="width: 150px" />
+              <ElInput v-if="e.fallbackKind === 'webhook'" v-model="e.fallbackUrl" placeholder="回退 Webhook URL" style="width: 190px" />
               <ElButton text type="danger" @click="removeEffect(i)">删除</ElButton>
             </div>
             <div class="effect-add">
@@ -766,11 +802,20 @@ onMounted(load);
   </div>
 
     <!-- 运行历史 -->
-    <ElDialog v-model="runsVisible" :title="runsTitle" width="840px">
+    <ElDialog v-model="runsVisible" :title="runsTitle" width="960px">
       <ElTable :data="runs" v-loading="runsLoading" size="small" border max-height="420">
         <ElTableColumn label="开始时间" width="180"><template #default="{ row }">{{ fmtRunTime(row.startedAt) }}</template></ElTableColumn>
         <ElTableColumn label="状态" width="110">
           <template #default="{ row }"><ElTag :type="runStatusType(row.status)" size="small">{{ row.status }}</ElTag></template>
+        </ElTableColumn>
+        <ElTableColumn label="触发" width="190">
+          <template #default="{ row }">
+            <span v-if="row.triggerContext?.objectType" class="mono">
+              {{ row.triggerContext.objectType }}
+              <template v-if="row.triggerContext.changeType"> · {{ row.triggerContext.changeType }}</template>
+            </span>
+            <span v-else class="mono">{{ row.triggerKind }}</span>
+          </template>
         </ElTableColumn>
         <ElTableColumn prop="matchedCount" label="命中" width="70" />
         <ElTableColumn label="效果" min-width="220">
